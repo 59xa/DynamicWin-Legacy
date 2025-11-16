@@ -36,7 +36,7 @@ git pull https://github.com/59xa/DynamicWin.git
 - Feel free to contribute to this project as you wish. Open any issues on the issues page if you encounter any bugs.
 <br>
 
-**Quick disclaimer**: The codebase is currently structured terribly and almost un-maintainable. Codebase refactoring is currently in the works starting with **`v1.40b`**.
+**Quick disclaimer**: The codebase is currently structured terribly and almost un-maintainable. Codebase refactoring is currently in the works starting with **`v1.4.0b`**.
 
 # Features
 > [!NOTE]
