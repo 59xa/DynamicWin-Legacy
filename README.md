@@ -10,10 +10,10 @@
   <img src="ReadmeFiles/IslandGif-1_Volume.gif" style="border-radius:15px" alt="animated" width="1000" height="auto" />
 </p>
 
-<p xmlns:cc="http://creativecommons.org/ns#" xmlns:dct="http://purl.org/dc/terms/"><a property="dct:title" rel="cc:attributionURL" href="https://github.com/FlorianButz/DynamicWin">DynamicWin</a> by <a rel="cc:attributionURL dct:creator" property="cc:attributionName" href="https://github.com/FlorianButz">Florian Butz</a> is licenced under <a href="https://creativecommons.org/licenses/by-sa/4.0/?ref=chooser-v1" target="_blank" rel="license noopener noreferrer" style="display:inline-block;">CC BY-SA 4.0<img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/cc.svg?ref=chooser-v1" alt=""><img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/by.svg?ref=chooser-v1" alt=""><img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/sa.svg?ref=chooser-v1" alt=""></a></p>
+<p xmlns:cc="http://creativecommons.org/ns#" xmlns:dct="http://purl.org/dc/terms/"><a property="dct:title" rel="cc:attributionURL" href="https://github.com/59xa/DynamicWin-Legacy">DynamicWin Legacy</a> by <a rel="cc:attributionURL dct:creator" property="cc:attributionName" href="https://github.com/FlorianButz">Florian Butz</a> is maintained by <a rel="cc:attributionURL dct:maintainer" property="cc:attributionName" href="https://github.com/59xa">59xa</a> and is licenced under <a href="https://creativecommons.org/licenses/by-sa/4.0/?ref=chooser-v1" target="_blank" rel="license noopener noreferrer" style="display:inline-block;">CC BY-SA 4.0<img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/cc.svg?ref=chooser-v1" alt=""><img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/by.svg?ref=chooser-v1" alt=""><img style="height:22px!important;margin-left:3px;vertical-align:text-bottom;" src="https://mirrors.creativecommons.org/presskit/icons/sa.svg?ref=chooser-v1" alt=""></a></p>
 
 > [!NOTE]
-> I am [59xa](https://github.com/59xa), the current maintainer and developer for DynamicWin. While [FlorianButz](https://github.com/FlorianButz) has discontinued this project for the time being, expect updates and features within my [repository](https://github.com/59xa/DynamicWin) instead before they get merged into the [main repository](https://github.com/FlorianButz/DynamicWin).
+> This repository holds the legacy code and releases for DynamicWin developed by [FlorianButz](https://github.com/FlorianButz), and is maintained by [59xa](https://github.com/59xa). Please do not report issues and missing features in this repository regarding version 2.0 as this repository only accepts version 1.0 issues. For version 2.0 releases, click [here](https://github.com/FlorianButz/DynamicWin).
 
 ### What is it?
 A [Dynamic Island](https://support.apple.com/de-de/guide/iphone/iph28f50d10d/ios) inspired Windows App that brings in a bunch of features like widgets or a file tray that works like a clipboard.
@@ -29,12 +29,14 @@ git pull https://github.com/59xa/DynamicWin.git
 ```
 
 ### Future plans/continued support:
-- Despite FlorianButz abandoning DynamicWin for the time being, I am dedicated to implement more features to the best of my ability.
-- Your support truly means a lot to us to keep maintaining DynamicWin. Keep an eye out whenever a new release comes out.
+- While [version 2.0](https://github.com/FlorianButz/DynamicWin) of this software has been made public, the legacy codebase will continue to exist and maintained by me until FlorianButz decides to pull the legacy support.
+- This repository is no longer connected to the original repository's fork network. Please report your issues regarding V2  [here](https://github.com/FlorianButz/DynamicWin).
+- V1 (this repository) will co-exist with V2, and will not serve as a replacement but an alternative for users to use.
+- Your support truly means a lot to us to keep maintaining DynamicWin Legacy. Keep an eye out whenever a new release comes out.
 - Feel free to contribute to this project as you wish. Open any issues on the issues page if you encounter any bugs.
 <br>
 
-**Quick disclaimer**: The codebase is currently structured terribly and almost un-maintainable. A possible re-write of the entire codebase may happen some time in the future.
+**Quick disclaimer**: The codebase is currently structured terribly and almost un-maintainable. Codebase refactoring is currently in the works starting with **`v1.40b`**.
 
 # Features
 > [!NOTE]
@@ -61,17 +63,21 @@ DynamicWin has a variety of features, currently including: <br>
 - [x] Timer <sub>(Displaying current running timer)</sub>
 - [x] CPU/GPU Usage Display
 
-## File Tray <br>
+## File Distribution & Management <br>
 
 <p align="center">
   <img style="border-radius:15px" src="ReadmeFiles/IslandGif-2_Tray.gif" alt="animated" width="1000" height="auto" />
 </p>
 
-Files can be dragged over the island to add them to the file tray. The tray can be accessed when hovering over the island and clicking on the 'Tray' button. The files are stored until they are dragged out again. They can also be removed by selecting the file and right clicking. A context menu will popup and you can click on - **"Remove Selected Files"** or **"Remove Selected Files"** to copy the files. <br>
-Idea for the future: An implementation of a service like [SnapDrop](https://snapdrop.net) to allow for an "AirDrop" kind of feature using the file tray.
+- [x] File Tray <sub><br>
+Files can be dragged over the island to add them to the file tray. The tray can be accessed when hovering over the island and clicking on the 'Tray' button. The files are stored until they are dragged out again. They can also be removed by selecting the file and right clicking. A context menu will popup and you can click on - **"Remove Selected Files"** or **"Remove Selected Files"** to copy the files.</sub> <br>
+- [ ] SnapDrop API implementation<br><sub>
+While this low-priority, please expect the introduction of this feature in the near future.
+</sub>
+
 
 > [!WARNING]
-> If you are using the file tray to import files in to an app (e.g. After Effects) make sure to not remove the files from the tray. Apps that only copy a link to the file will loose it after you remove the file from the tray.
+> If you are using the file tray to import files in to an app (e.g. After Effects) make sure to not remove the files from the tray. Apps that only copy a link to the file will be lost after you remove the file from the tray.
 
 ## Spotify Integration
 
