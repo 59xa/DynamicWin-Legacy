@@ -72,7 +72,7 @@ DynamicWin has a variety of features, currently including: <br>
 - [x] File Tray <sub><br>
 Files can be dragged over the island to add them to the file tray. The tray can be accessed when hovering over the island and clicking on the 'Tray' button. The files are stored until they are dragged out again. They can also be removed by selecting the file and right clicking. A context menu will popup and you can click on - **"Remove Selected Files"** or **"Remove Selected Files"** to copy the files.</sub> <br>
 - [ ] SnapDrop API implementation<br><sub>
-While this low-priority, please expect the introduction of this feature in the near future.
+While this feature is low-priority, please expect the introduction of this feature in the near future.
 </sub>
 
 
