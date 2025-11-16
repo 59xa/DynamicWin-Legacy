@@ -1,4 +1,4 @@
-# DynamicWin
+# DynamicWin Legacy
 
 <p align="center">
   <img src="https://img.shields.io/badge/c%23-%23239120.svg?style=for-the-badge&logo=csharp&logoColor=white">
@@ -118,7 +118,7 @@ Too fast interactions might confuse the animation system and will result in an e
 
 # Creating an Extension
 To create an extension you need an IDE like [Visual Studio 2022](https://visualstudio.microsoft.com/de/vs/community/).
-- Create a new C# project of the type "Class Library". Ensure that the target framework is `.NET 8.0`.
+- Create a new C# project of the type "Class Library". Ensure that the target framework is `.NET 9.0`.
 - It is required to add `DynamicWin.dll` and SkiaSharp DLLs as assembly dependencies to your project. [More information regarding this through here.](https://learn.microsoft.com/en-us/visualstudio/ide/how-to-add-or-remove-references-by-using-the-reference-manager?view=vs-2022)
 - Create a new C# class file, if it's not already there. Rename the class to something like "MyExtension".
 - All extensions must have a class that implements the `IDynamicWinExtension` interface.<br>
@@ -196,7 +196,7 @@ public List<IRegisterableWidget> GetExtensionWidgets() // Returns all Widgets th
 }
 ```
 
-Now you're done. Build the project and go to your project's output folder. (Most times located under `\bin\Debug\net8.0\` or `\bin\Release\net8.0\` and move **ONLY** the DLL file that has the name of your project in to the `%appdata%/DynamicWin/Extensions` folder. In this case, my output DLL is called `TestExtension.dll`. <br><br>
+Now you're done. Build the project and go to your project's output folder. (Most times located under `\bin\Debug\net9.0\` or `\bin\Release\net9.0\` and move **ONLY** the DLL file that has the name of your project in to the `%appdata%/DynamicWin/Extensions` folder. In this case, my output DLL is called `TestExtension.dll`. <br><br>
 After that you can run DynamicWin and test your extension. This was of course a very bare bones example.
 
 > [!TIP]
