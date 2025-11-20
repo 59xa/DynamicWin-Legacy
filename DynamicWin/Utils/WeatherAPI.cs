@@ -6,6 +6,10 @@ using CsvHelper;
 using DynamicWin.Resources;
 using DynamicWin.UI.Widgets.Big;
 using Newtonsoft.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Linq;
+using System.Collections.Generic;
 
 /*
 *   Overview:
@@ -29,6 +33,20 @@ namespace DynamicWin.Utils
     // Initialise weather API class
     public class WeatherAPI
     {
+        // Reuse a single HttpClient for the app lifetime (recommended)
+        private static readonly HttpClient s_httpClient = new HttpClient();
+
+        // Cache CSV parsing to avoid reopening/parsing the file repeatedly
+        private static Task<List<Country>>? s_cachedCsvTask;
+        private static Task<List<Country>> GetCachedCsvAsync()
+        {
+            if (s_cachedCsvTask == null)
+            {
+                s_cachedCsvTask = LoadCsvAsync();
+            }
+            return s_cachedCsvTask;
+        }
+
         // Initialise WeatherData struct
         private WeatherData _WeatherData = new WeatherData();
         public WeatherData _Weather { get => _WeatherData; }
@@ -42,17 +60,13 @@ namespace DynamicWin.Utils
         /// <param name="type">Optional parameter that defines whether index value is "default" or "city"</param>
         /// <returns>void</returns>
         public async Task Fetch(int idx, string? type, CancellationToken token = default, CancellationTokenSource? cts = null)
-        {   
-            // Load required values
-            // MAINTAINER: "i feel like this could be implemented in a better way without compromising optimisation"
-            string[] _c = await LoadCountryNamesAsync();
-            string[] _ct = await LoadCityNamesAsync(RegisterWeatherWidgetSettings.saveData.countryIndex);
+        {
+            // Load required values once; CSV parsing is cached now.
+            string[] _c = (await LoadCountryNamesAsync()).ToArray();
+            string[] _ct = (await LoadCityNamesAsync(RegisterWeatherWidgetSettings.saveData.countryIndex));
 
-            using var httpClient = new HttpClient();
-
-            // Asynchronous task to handle HTTP protocol calls
-
-            // TODO: Refactor this to use a single instance of HttpClient
+            // Use shared HttpClient
+            // Loop fetch: cancellation-aware
             while (!token.IsCancellationRequested && RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen == false)
             {
                 if (token.IsCancellationRequested || RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen)
@@ -67,29 +81,38 @@ namespace DynamicWin.Utils
                     throw new OperationCanceledException(token);
                 }
 
-                    string response = string.Empty;
+                string response = string.Empty;
                 var lat = string.Empty; var lon = string.Empty;
                 Location location = default;
 
                 // If index is Default, fetch geo-location forecast instead
                 if (_c[RegisterWeatherWidgetSettings.saveData.countryIndex] == "Default" && type == "default")
                 {
-                    Debug.WriteLine("[WEATHER API] Forecast data request is default.", idx, type);
-                    response = await httpClient.GetStringAsync("https://ipinfo.io/geo");
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] Forecast data request is default.");
+#endif
+                    response = await s_httpClient.GetStringAsync("https://ipinfo.io/geo").ConfigureAwait(false);
                     location = JsonConvert.DeserializeObject<Location>(response);
 
-                    lat = location.loc.Split(',')[0];
-                    lon = location.loc.Split(',')[1];
+                    if (location.Equals(default(Location))) // Fallback if deserialization fails
+                        location = new Location();
+
+                    var locParts = (location.loc ?? "0,0").Split(',');
+                    lat = locParts.Length > 0 ? locParts[0] : "0";
+                    lon = locParts.Length > 1 ? locParts[1] : "0";
                 }
                 else // Read preference set by user, then return requested values
                 {
-                    Debug.WriteLine("[WEATHER API] Forecast data request is user-defined.", idx, type);
-                    string city = _ct[RegisterWeatherWidgetSettings.saveData.cityIndex];
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] Forecast data request is user-defined.");
+#endif
+                    string city = (_ct.Length > RegisterWeatherWidgetSettings.saveData.cityIndex && RegisterWeatherWidgetSettings.saveData.cityIndex >= 0) ? _ct[RegisterWeatherWidgetSettings.saveData.cityIndex] : string.Empty;
                     string country = _c[RegisterWeatherWidgetSettings.saveData.countryIndex];
 
                     var loc = LoadLatLong(RegisterWeatherWidgetSettings.saveData.countryIndex, RegisterWeatherWidgetSettings.saveData.cityIndex);
-                    lat = loc.Split(',')[0];
-                    lon = loc.Split(',')[1];
+                    var locParts = (loc ?? "0,0").Split(',');
+                    lat = locParts.Length > 0 ? locParts[0] : "0";
+                    lon = locParts.Length > 1 ? locParts[1] : "0";
 
                     location = new Location { city = city, region = country, loc = loc };
                 }
@@ -97,20 +120,15 @@ namespace DynamicWin.Utils
                 string _t = null;
                 string _w = null;
 
-                // Initialise XML reader
-                XmlTextReader reader = null;
+                // Read XML from weather service using HttpClient stream + XmlReader (async) to avoid blocking
+                string uri = string.Format("https://tile-service.weather.microsoft.com/livetile/front/{0},{1}", lat, lon);
                 try
                 {
-                    // Concatenate retrieved latitude and longitude values to the URI
-                    string _u = String.Format("https://tile-service.weather.microsoft.com/livetile/front/{0},{1}", lat, lon);
-
+                    using var stream = await s_httpClient.GetStreamAsync(uri).ConfigureAwait(false);
+                    var settings = new XmlReaderSettings { IgnoreWhitespace = true };
+                    using var reader = XmlReader.Create(stream, settings);
                     int _n = 0;
-
-                    reader = new XmlTextReader(_u);
-                    reader.WhitespaceHandling = WhitespaceHandling.None; // Ensure no whitespaces when fetching data
-
-                    // Read information fetched from the URI
-                    while (reader.Read())
+                    while (await reader.ReadAsync().ConfigureAwait(false))
                     {
                         if (reader.NodeType == XmlNodeType.Text)
                         {
@@ -120,10 +138,13 @@ namespace DynamicWin.Utils
                         }
                     }
                 }
-
-                finally
+                catch (Exception ex)
                 {
-                    if (reader != null) reader.Close(); // Ensure this is closed to prevent memory leaks
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] Error fetching/parsing weather XML: " + ex);
+#endif
+                    _t = "0";
+                    _w = string.Empty;
                 }
 
                 // Ensure _t is not null or empty
@@ -140,14 +161,23 @@ namespace DynamicWin.Utils
                 string _fahrText = fahrValue.ToString("0.#");
                 string _celcText = celcValue.ToString("0.#");
 
-                Debug.WriteLine(String.Format("[WEATHER API] {0}, {1}F({2}°C), {3}", location.city, _t, _celcText, _w));
+#if DEBUG
+                Debug.WriteLine(string.Format("[WEATHER API] {0}, {1}F({2}°C), {3}", location.city, _t, _celcText, _w));
+#endif
 
                 _WeatherData = new WeatherData() { city = location.city, region = location.region, celsius = _celcText + "°C", fahrenheit = _fahrText + "F", weatherText = _w };
                 _OnWeatherDataReceived?.Invoke(_WeatherData);
 
+#if DEBUG
                 Debug.WriteLine("[WEATHER API] IDX = {0}, TYPE = {1}", idx, type);
+#endif
 
-                await Task.Delay(120000, token); // Wait for 2 minutes before re-fetching data
+                // Wait for 2 minutes or until cancelled
+                try
+                {
+                    await Task.Delay(120000, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { break; }
             }
 
             if (token.IsCancellationRequested || RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen)
@@ -174,7 +204,7 @@ namespace DynamicWin.Utils
             using var stream = new FileStream(Res.WeatherLocations, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var reader = new StreamReader(stream);
 
-            string csvText = await reader.ReadToEndAsync();
+            string csvText = await reader.ReadToEndAsync().ConfigureAwait(false);
 
             using var stringReader = new StringReader(csvText);
             using var csv = new CsvReader(stringReader, System.Globalization.CultureInfo.InvariantCulture);
@@ -194,7 +224,7 @@ namespace DynamicWin.Utils
         /// <returns>A list of country names.</returns>
         public static async Task<string[]> LoadCountryNamesAsync()
         {
-            var countries = await LoadCsvAsync();
+            var countries = await GetCachedCsvAsync().ConfigureAwait(false);
             var countryNames = countries
                 .Select(c => c.country)
                 .Distinct()
@@ -210,7 +240,7 @@ namespace DynamicWin.Utils
         /// <returns>A list of city names for a specific country.</returns>
         public static async Task<string[]> LoadCityNamesAsync(int idx)
         {
-            var countries = await LoadCsvAsync();
+            var countries = await GetCachedCsvAsync().ConfigureAwait(false);
             var countryNames = countries.Select(c => c.country).Distinct().ToArray();
 
             var cities = countries
@@ -233,7 +263,7 @@ namespace DynamicWin.Utils
                 .Order()
                 .ToArray();
 
-            RegisterWeatherWidgetSettings.saveData.totalCities = cities.Length - 1;
+            RegisterWeatherWidgetSettings.saveData.totalCities = Math.Max(0, cities.Length - 1);
 
             return cities;
         }
@@ -246,7 +276,7 @@ namespace DynamicWin.Utils
         /// <returns>A string that contains both the latitude and longitude value.</returns>
         public static async Task<string> LoadLatLongAsync(int idx, int idx2)
         {
-            var countries = await LoadCsvAsync();
+            var countries = await GetCachedCsvAsync().ConfigureAwait(false);
             var countryNames = countries.Select(c => c.country).Distinct().ToArray();
             var selectedCountry = countryNames[idx];
 
