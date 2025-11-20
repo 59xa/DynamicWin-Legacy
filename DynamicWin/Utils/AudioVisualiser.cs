@@ -3,6 +3,8 @@ using DynamicWin.UI;
 using NAudio.Wave;
 using SkiaSharp;
 using System.Numerics;
+using System;
+using System.Buffers;
 
 /*
 *   Overview:
@@ -27,6 +29,10 @@ namespace DynamicWin.Utils
         private float[] fftMagnitudes;
         private float[] barHeight;
         private float[] barMax;
+
+        // Reuse arrays to avoid per-callback allocations
+        private readonly Complex[] samples;
+        private readonly float[] tempFloatBuffer;
 
         // Implement bar bias to replicate the look seen on iPhones
         private readonly float[] barBias = new float[] { 1f, 0.6f, 0.9f, 1f, 1f, 2f };
@@ -70,6 +76,10 @@ namespace DynamicWin.Utils
             barHeight = new float[barCount];
             barMax = new float[barCount];
             for (int i = 0; i < barCount; i++) barMax[i] = 0f;
+
+            // Reuse buffers to avoid allocations per audio callback
+            samples = new Complex[fftLength];
+            tempFloatBuffer = new float[fftLength];
 
             // Capture default device audio
             if (DynamicWinMain.defaultDevice != null)
@@ -196,28 +206,29 @@ namespace DynamicWin.Utils
         /// <param name="e">Value provided by the event</param>
         private void OnDataAvailable(object? sender, WaveInEventArgs e)
         {
-            // Convert byte array to float array
-            var buffer = new float[e.BytesRecorded / 4];
-            Buffer.BlockCopy(e.Buffer, 0, buffer, 0, e.BytesRecorded);
+            // Avoid reallocating buffers each time: copy into pre-allocated tempFloatBuffer
+            int availableSamples = Math.Min(fftLength, e.BytesRecorded / 4);
+            if (availableSamples <= 0) return;
 
-            var samples = new Complex[fftLength];
+            // Copy bytes -> tempFloatBuffer (assumes 32-bit float PCM)
+            Buffer.BlockCopy(e.Buffer, 0, tempFloatBuffer, 0, availableSamples * 4);
 
-            // For-loop to fill array with audio data
-            for (int i = 0; i < fftLength && i < buffer.Length; i++)
+            // prepare the Complex buffer
+            for (int i = 0; i < fftLength; i++)
             {
+                float value = i < availableSamples ? tempFloatBuffer[i] : 0f;
                 float window = 0.5f * (1 - MathF.Cos(2 * MathF.PI * i / (fftLength - 1)));
-                samples[i] = new Complex(buffer[i] * window, 0);
+                samples[i] = new Complex(value * window, 0);
             }
 
-            // Convert time-domain audio to frequency-domain
+            // Do FFT in-place
             FFT(samples);
 
-
-            // Ensure thread-safety
+            // Store magnitudes (thread-safe)
             lock (fftLock)
             {
-                // Calculate and store magnitude per frequency bin
-                for (int i = 0; i < fftMagnitudes.Length; i++)
+                int len = Math.Min(fftMagnitudes.Length, samples.Length);
+                for (int i = 0; i < len; i++)
                 {
                     fftMagnitudes[i] = (float)samples[i].Magnitude;
                 }
