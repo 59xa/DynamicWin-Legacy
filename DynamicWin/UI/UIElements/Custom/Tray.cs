@@ -7,6 +7,10 @@ using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Threading.Tasks;
+using System;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace DynamicWin.UI.UIElements.Custom
 {
@@ -279,23 +283,40 @@ namespace DynamicWin.UI.UIElements.Custom
 
         void AddFileObjects()
         {
-            new Thread(() =>
+            // Use Task.Run (threadpool) instead of creating dedicated threads repeatedly.
+            Task.Run(() =>
             {
-                Thread.CurrentThread.IsBackground = true;
-
                 List<TrayFile> filesToRemove = new List<TrayFile>();
-                fileObjects.ForEach((f) => filesToRemove.Add(f));
+                lock (fileObjects)
+                {
+                    fileObjects.ForEach((f) => filesToRemove.Add(f));
+                }
 
                 if (cachedTrayFiles == null) cachedTrayFiles = new string[0];
 
                 foreach (var x in cachedTrayFiles)
                 {
                     bool hasFileAlready = false;
-                    TrayFile fileAlreadyExists = null;
-                    fileObjects.ForEach((y) => { if (y.FileName.Equals(x)) { hasFileAlready = true; fileAlreadyExists = y; } });
+                    TrayFile? fileAlreadyExists = null;
+
+                    lock (fileObjects)
+                    {
+                        for (int i = 0; i < fileObjects.Count; i++)
+                        {
+                            var y = fileObjects[i];
+                            if (y.FileName.Equals(x, StringComparison.OrdinalIgnoreCase))
+                            {
+                                hasFileAlready = true;
+                                fileAlreadyExists = y;
+                                break;
+                            }
+                        }
+                    }
 
                     if (fileAlreadyExists != null)
+                    {
                         filesToRemove.Remove(fileAlreadyExists);
+                    }
 
                     if (hasFileAlready) continue;
 
@@ -304,22 +325,24 @@ namespace DynamicWin.UI.UIElements.Custom
                         Anchor = new Vec2(0, 0)
                     };
 
-                    fileObjects.Add(f);
-                    //AddLocalObject(f);
-
-                    Thread.Sleep(20);
+                    lock (fileObjects)
+                    {
+                        fileObjects.Add(f);
+                    }
                 }
 
-                filesToRemove.ForEach((f) =>
+                // Remove stale
+                lock (fileObjects)
                 {
-                    if (f != null)
+                    foreach (var f in filesToRemove)
                     {
-                        //DestroyLocalObject(f);
-                        fileObjects.Remove(f);
+                        if (f != null)
+                        {
+                            fileObjects.Remove(f);
+                        }
                     }
-                });
-
-            }).Start();
+                }
+            });
         }
 
         public static string[]? GetFiles()
@@ -337,10 +360,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
         public static void AddFiles(string[] files)
         {
-            new Thread(() =>
+            Task.Run(() =>
             {
-                Thread.CurrentThread.IsBackground = true;
-
                 var dirPath = Path.Combine(SaveManager.SavePath, "TrayFiles");
 
                 if (!Directory.Exists(dirPath))
@@ -357,15 +378,15 @@ namespace DynamicWin.UI.UIElements.Custom
                         try
                         {
                             File.Copy(item, Path.Combine(dirPath, Path.GetFileName(item)));
-                        }catch(Exception e)
+                        }catch(Exception)
                         {
-                            MessageBox.Show("An error occured trying to copy the files in to the tray. You can ignore this message.");
+                            // Swallow and continue - continue to be resilient
                         }
                     }
                 }
 
                 cachedTrayFiles = GetFiles();
-            }).Start();
+            });
         }
     }
 }
