@@ -179,6 +179,12 @@
     <None Update="Resources\Inter_24pt-Regular.ttf">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <None Update="Resources\Satoshi-Black.otf">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Resources\Satoshi-Regular.otf">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="Resources\sounds\TimerOver.wav">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

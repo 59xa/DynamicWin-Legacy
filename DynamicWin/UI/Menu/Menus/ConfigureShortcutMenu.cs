@@ -81,7 +81,7 @@ namespace DynamicWin.UI.Menu.Menus
             elementTitle = new DWText(island, "Untitled", new Vec2(25, 25), UIAlignment.TopLeft);
             elementTitle.Anchor.X = 0;
             elementTitle.TextSize = 24;
-            elementTitle.Font = Res.InterBold;
+            elementTitle.Font = Res.SatoshiBold;
             objects.Add(elementTitle);
 
             dropFileElement = new DropFileElement(island, new Vec2(0, 55), new Vec2(IslandSize().X - 45, 70), "Drop file to open here", 18, alignment: UIAlignment.TopCenter)

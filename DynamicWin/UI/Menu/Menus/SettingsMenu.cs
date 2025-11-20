@@ -79,13 +79,13 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             var generalTitle = new DWText(island, "General", new Vec2(25, 0), UIAlignment.TopLeft);
-            generalTitle.Font = Res.InterBold;
+            generalTitle.Font = Res.SatoshiBold;
             generalTitle.Anchor.X = 0;
             objects.Add(generalTitle);
 
             {
                 var islandModesTitle = new DWText(island, "Island Mode", new Vec2(25, 0), UIAlignment.TopLeft);
-                islandModesTitle.Font = Res.InterRegular;
+                islandModesTitle.Font = Res.SatoshiRegular;
                 islandModesTitle.Color = Theme.TextSecond;
                 islandModesTitle.TextSize = 15;
                 islandModesTitle.Anchor.X = 0;
@@ -125,7 +125,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var selectedMonitorTitle = new DWText(island, "Selected Monitor", new Vec2(25, 0), UIAlignment.TopLeft);
-                selectedMonitorTitle.Font = Res.InterRegular;
+                selectedMonitorTitle.Font = Res.SatoshiRegular;
                 selectedMonitorTitle.TextSize = 15;
                 selectedMonitorTitle.Anchor.X = 0;
                 objects.Add(selectedMonitorTitle);
@@ -150,7 +150,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var themeTitle = new DWText(island, "Themes", new Vec2(25, 0), UIAlignment.TopLeft);
-                themeTitle.Font = Res.InterRegular;
+                themeTitle.Font = Res.SatoshiRegular;
                 themeTitle.TextSize = 15;
                 themeTitle.Anchor.X = 0;
                 objects.Add(themeTitle);
@@ -168,14 +168,14 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             var widgetsTitle = new DWText(island, "Widgets", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetsTitle.Font = Res.InterBold;
+            widgetsTitle.Font = Res.SatoshiBold;
             widgetsTitle.Color = Theme.TextSecond;
             widgetsTitle.Anchor.X = 0;
             objects.Add(widgetsTitle);
 
             {
                 var wTitle = new DWText(island, "Small widgets (right click to add/edit)", new Vec2(25, 0), UIAlignment.TopLeft);
-                wTitle.Font = Res.InterRegular;
+                wTitle.Font = Res.SatoshiRegular;
                 wTitle.Color = Theme.TextSecond;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
@@ -187,7 +187,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var wTitle = new DWText(island, "Big widgets (right click to add/edit)", new Vec2(25, 15), UIAlignment.TopLeft);
-                wTitle.Font = Res.InterRegular;
+                wTitle.Font = Res.SatoshiRegular;
                 wTitle.Color = Theme.TextSecond;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
@@ -205,7 +205,7 @@ namespace DynamicWin.UI.Menu.Menus
             });
 
             var widgetOptionsTitle = new DWText(island, "Widget Settings", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetOptionsTitle.Font = Res.InterBold;
+            widgetOptionsTitle.Font = Res.SatoshiBold;
             widgetOptionsTitle.Color = Theme.TextSecond;
             widgetOptionsTitle.Anchor.X = 0;
             objects.Add(widgetOptionsTitle);
@@ -214,7 +214,7 @@ namespace DynamicWin.UI.Menu.Menus
                 foreach(var option in customOptions)
                 {
                     var wTitle = new DWText(island, option.SettingTitle, new Vec2(25, 0), UIAlignment.TopLeft);
-                    wTitle.Font = Res.InterRegular;
+                    wTitle.Font = Res.SatoshiRegular;
                     wTitle.TextSize = 15;
                     wTitle.Anchor.X = 0;
                     objects.Add(wTitle);
@@ -232,7 +232,7 @@ namespace DynamicWin.UI.Menu.Menus
                         if (optionItem is DWText)
                         {
                             ((DWText)optionItem).Color = Theme.TextThird;
-                            ((DWText)optionItem).Font = Res.InterRegular;
+                            ((DWText)optionItem).Font = Res.SatoshiRegular;
                             ((DWText)optionItem).TextSize = 13;
                         }else if(optionItem is DWCheckbox)
                         {
@@ -248,10 +248,11 @@ namespace DynamicWin.UI.Menu.Menus
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
-                TextSize = 15
+                TextSize = 15,
+                Font = Res.SatoshiBold
             });
 
-            objects.Add(new DWText(island, "Made by Florian Butz with ♡", new Vec2(25, 0), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, "Created by Florian Butz", new Vec2(25, 0), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
@@ -262,8 +263,8 @@ namespace DynamicWin.UI.Menu.Menus
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
-                TextSize = 12,
-                Font = Resources.Res.InterBold
+                TextSize = 15,
+                Font = Resources.Res.SatoshiBold
             });
 
             objects.Add(new DWText(island, "Licenced under CC BY-SA 4.0", new Vec2(25, 0), UIAlignment.TopLeft)
@@ -277,7 +278,7 @@ namespace DynamicWin.UI.Menu.Menus
             {
                 roundRadius = 25
             };
-            backBtn.Text.Font = Resources.Res.InterBold;
+            backBtn.Text.Font = Resources.Res.SatoshiBold;
 
             bottomMask = new UIObject(island, Vec2.zero, new Vec2(IslandSizeBig().X - 230, 75), UIAlignment.BottomCenter)
             {

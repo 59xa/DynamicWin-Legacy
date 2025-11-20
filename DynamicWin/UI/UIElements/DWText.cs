@@ -34,7 +34,7 @@ namespace DynamicWin.UI.UIElements
         {
             this.text = text;
             Color = Theme.TextMain;
-            font = Resources.Res.InterRegular;
+            font = Resources.Res.SatoshiRegular;
         }
 
         public override void Draw(SKCanvas canvas)

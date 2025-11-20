@@ -1,4 +1,5 @@
 ﻿using DynamicWin.Main;
+using DynamicWin.Resources;
 using DynamicWin.UI.Menu.Menus;
 using DynamicWin.UI.UIElements;
 using DynamicWin.Utils;
@@ -60,7 +61,7 @@ namespace DynamicWin.UI.Widgets.Small
         {
             var objects = new List<UIObject>();
 
-            var militaryTime = new DWCheckbox(null, "24-Hour Time", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
+            var militaryTime = new DWCheckbox(null, "Use 24-hour format", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
 
             militaryTime.clickCallback += () =>
             {
@@ -83,6 +84,7 @@ namespace DynamicWin.UI.Widgets.Small
         {
             timeText = new DWText(this, GetTime(), Vec2.zero, UIAlignment.Center);
             timeText.TextSize = 14;
+            timeText.Font = Res.SatoshiBold;
             AddLocalObject(timeText);
         }
 

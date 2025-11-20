@@ -235,7 +235,7 @@ namespace DynamicWin.UI.Widgets.Big
             _ForecastText = new DWText(this, "--", new Vec2(32.5f, 37.5f), UIAlignment.TopLeft)
             {
                 TextSize = 13,
-                Font = Res.InterBold,
+                Font = Res.SatoshiBold,
                 Anchor = new Vec2(0, 0.5f),
                 Color = Theme.TextThird
             };
@@ -246,7 +246,7 @@ namespace DynamicWin.UI.Widgets.Big
             _TemperatureText = new DWText(this, "--", new Vec2(15, -27.5f), UIAlignment.BottomLeft)
             {
                 TextSize = 34,
-                Font = Res.InterBold,
+                Font = Res.SatoshiBold,
                 Anchor = new Vec2(0, 0.5f),
                 Color = Theme.TextMain
             };
