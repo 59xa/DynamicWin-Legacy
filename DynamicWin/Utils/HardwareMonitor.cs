@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace DynamicWin.Utils
 {
@@ -16,6 +17,13 @@ namespace DynamicWin.Utils
 
         public static HardwareMonitor instance;
 
+        Computer computer;
+        float lastCpu = 0;
+        string lastRam = "";
+
+        // Use a lock to prevent reentrancy rather than a busy boolean
+        private readonly object _lock = new object();
+
         public HardwareMonitor()
         {
             instance = this;
@@ -23,6 +31,7 @@ namespace DynamicWin.Utils
             timer = new System.Timers.Timer();
             timer.Interval = 1000;
             timer.Elapsed += Timer_Elapsed;
+            timer.AutoReset = true;
 
             computer = new Computer()
             {
@@ -30,51 +39,55 @@ namespace DynamicWin.Utils
                 IsCpuEnabled = true // Enable CPU monitoring
             };
 
+            // Open once and keep the computer object open during lifetime (much cheaper than Open/Close each tick)
+            try
+            {
+                computer.Open();
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("HardwareMonitor: error opening Computer: " + ex);
+#endif
+            }
+
             timer.Start();
         }
 
-        Computer computer;
-        float lastCpu = 0;
-        string lastRam = "";
-
-        private static long _iPrevCall;
-        private static bool _isBusy;
         private void Timer_Elapsed(object? sender, System.Timers.ElapsedEventArgs e)
         {
-            if (_isBusy)
+            // Try to acquire lock quickly; if busy, skip this tick
+            if (!Monitor.TryEnter(_lock))
             {
-                // Skip this time.
-                Debug.WriteLine($"HardwareMonitor SKIPPED when called again during #{_iPrevCall}");
+#if DEBUG
+                Debug.WriteLine("HardwareMonitor SKIPPED due to reentrant call");
+#endif
                 return;
             }
 
-            _isBusy = true;
-            _iPrevCall++;
-            var iCall = _iPrevCall;
             try
             {
-                Debug.WriteLine($"HardwareMonitor BEFORE #{iCall}");
-
-                computer.Open();
-
+#if DEBUG
+                Debug.WriteLine($"HardwareMonitor BEGIN");
+#endif
                 foreach (var hardware in computer.Hardware)
                 {
+                    if (hardware == null) continue;
+
                     if (hardware.HardwareType == HardwareType.Cpu)
                     {
-                        if (hardware == null) continue;
                         hardware.Update();
                         foreach (var sensor in hardware.Sensors)
                         {
                             if (sensor.SensorType == SensorType.Load && sensor.Name == "CPU Total")
                             {
                                 lastCpu = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
+                                break;
                             }
                         }
                     }
-
-                    if (hardware.HardwareType == HardwareType.Memory)
+                    else if (hardware.HardwareType == HardwareType.Memory)
                     {
-                        if (hardware == null) continue;
                         hardware.Update();
 
                         float memUsed = 0;
@@ -90,35 +103,41 @@ namespace DynamicWin.Utils
                             {
                                 memFree = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
                             }
-                            lastRam = memUsed + "GB / " + Mathf.LimitDecimalPoints(memFree + memUsed, 0) + "GB";
                         }
+
+                        lastRam = memUsed + "GB / " + Mathf.LimitDecimalPoints(memFree + memUsed, 0) + "GB";
                     }
                 }
 
                 usageString = $"CPU: {lastCpu}%    RAM: {lastRam}";
 
-                instance.computer.Close();
-
-                Debug.WriteLine($"HardwareMonitor AFTER #{iCall}");
+#if DEBUG
+                Debug.WriteLine($"HardwareMonitor END");
+#endif
             }
             catch (Exception ex)
             {
+#if DEBUG
                 Debug.WriteLine(ex.ToString());
-                Debug.WriteLine($"HardwareMonitor EXCEPTION #{iCall}");
-                return;
+                Debug.WriteLine($"HardwareMonitor EXCEPTION");
+#endif
             }
             finally
             {
-                _isBusy = false;
+                Monitor.Exit(_lock);
             }
         }
 
         public static void Stop()
         {
-            if( instance.computer != null )
+            try
             {
-                instance.computer.Close();
+                if (instance?.computer != null)
+                {
+                    instance.computer.Close();
+                }
             }
+            catch (Exception) { }
         }
     }
 }
