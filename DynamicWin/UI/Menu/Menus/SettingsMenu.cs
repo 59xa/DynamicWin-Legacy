@@ -62,10 +62,10 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.Save();
         }
 
-        Checkbox allowBlur;
-        Checkbox allowAnimation;
-        Checkbox antiAliasing;
-        Checkbox runOnStartup;
+        DWCheckbox allowBlur;
+        DWCheckbox allowAnimation;
+        DWCheckbox antiAliasing;
+        DWCheckbox runOnStartup;
 
         public override List<UIObject> InitializeMenu(IslandObject island)
         {
@@ -102,22 +102,22 @@ namespace DynamicWin.UI.Menu.Menus
                 objects.Add(islandMode);
             }
 
-            allowBlur = new Checkbox(island, "Toggle blur", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            allowBlur = new DWCheckbox(island, "Toggle blur", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             allowBlur.IsChecked = Settings.AllowBlur;
             allowBlur.Anchor.X = 0;
             objects.Add(allowBlur);
 
-            allowAnimation = new Checkbox(island, "Toggle animations", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            allowAnimation = new DWCheckbox(island, "Toggle animations", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             allowAnimation.IsChecked = Settings.AllowAnimation;
             allowAnimation.Anchor.X = 0;
             objects.Add(allowAnimation);
 
-            antiAliasing = new Checkbox(island, "Toggle anti-aliasing", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            antiAliasing = new DWCheckbox(island, "Toggle anti-aliasing", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             antiAliasing.IsChecked = Settings.AntiAliasing;
             antiAliasing.Anchor.X = 0;
             objects.Add(antiAliasing);
 
-            runOnStartup = new Checkbox(island, "Start application on login", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            runOnStartup = new DWCheckbox(island, "Start application on login", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             runOnStartup.IsChecked = Settings.RunOnStartup;
             runOnStartup.Anchor.X = 0;
             objects.Add(runOnStartup);
@@ -234,7 +234,7 @@ namespace DynamicWin.UI.Menu.Menus
                             ((DWText)optionItem).Color = Theme.TextThird;
                             ((DWText)optionItem).Font = Res.InterRegular;
                             ((DWText)optionItem).TextSize = 13;
-                        }else if(optionItem is Checkbox)
+                        }else if(optionItem is DWCheckbox)
                         {
                             optionItem.Size = new Vec2(25, 25);
                         }
@@ -904,38 +904,6 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             return ctx;
-        }
-    }
-
-    public class Checkbox : DWImageButton
-    {
-        bool isChecked = false;
-        public bool IsChecked { get { return isChecked; } set => SetChecked(value); }
-
-        void SetChecked(bool isChecked)
-        {
-            this.isChecked = isChecked;
-            Image.Image = isChecked ? Res.Check : null;
-        }
-
-        public Checkbox(UIObject? parent, string buttonText, Vec2 position, Vec2 size, Action clickCallback, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, Res.Check, position, size, clickCallback, alignment)
-        {
-            var text = new DWText(this, buttonText, new Vec2(15, 0), UIAlignment.MiddleRight);
-            text.Color = Theme.TextSecond;
-            text.Anchor.X = 0;
-            text.TextSize = size.Y / 1.5f;
-            AddLocalObject(text);
-
-            SetChecked(false);
-
-            hoverScaleMulti = new Vec2(1.05f, 1f);
-            clickScaleMulti = new Vec2(0.975f, 1f);
-        }
-
-        public override void OnMouseUp()
-        {
-            IsChecked = !IsChecked;
-            base.OnMouseUp();
         }
     }
 }
