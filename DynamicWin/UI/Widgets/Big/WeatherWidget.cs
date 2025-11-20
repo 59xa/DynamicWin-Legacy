@@ -13,10 +13,10 @@ using Newtonsoft.Json.Linq;
 *    - Migrates existing settings configured by user from the legacy WeatherWidget configuration.
 *    - Allows user to finally change weather location than locking them with their current IP address geo-location.
 *    
-*   Author:                 Megan Park
+*   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          17 May 2025 09:26 KST (UTC+9)
+*   Last Modified:          20 November 2025
 */
 
 namespace DynamicWin.UI.Widgets.Big
@@ -169,8 +169,6 @@ namespace DynamicWin.UI.Widgets.Big
                 // Context menu display configuration
                 contextMenu.IsOpen = true;
                 contextMenu.MaxHeight = 500f;
-                contextMenu.VerticalOffset = selectLocationButton.Position.Y - 400;
-                contextMenu.HorizontalOffset = selectLocationButton.Position.X - 1100;
             };
 
             // Add all objects
