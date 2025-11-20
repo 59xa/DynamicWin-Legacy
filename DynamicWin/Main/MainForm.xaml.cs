@@ -104,7 +104,6 @@ namespace DynamicWin.Main
             _trayIcon.Visible = true;
         }
 
-
         public void SetMonitor(int monitorIndex)
         {
             var screen = System.Windows.Forms.Screen.AllScreens[Math.Clamp(monitorIndex, 0, GetMonitorCount() - 1)];
@@ -157,11 +156,14 @@ namespace DynamicWin.Main
             if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
 
             var customControl = new RendererMain();
-            
+
             var parent = new Grid();
             parent.Children.Add(customControl);
 
             this.Content = parent;
+
+            // Ensure the new renderer is called from the centralized, throttled MainForm loop
+            onMainFormRender += customControl.Frame;
         }
 
         public void MainForm_DragEnter(object? sender, DragEventArgs e)
@@ -253,7 +255,7 @@ namespace DynamicWin.Main
         {
             isDragging = false;
 
-            if(MenuManager.Instance.ActiveMenu is ConfigureShortcutMenu)
+            if (MenuManager.Instance.ActiveMenu is ConfigureShortcutMenu)
             {
                 if (e.Data.GetDataPresent(DataFormats.FileDrop))
                 {

@@ -61,18 +61,22 @@ namespace DynamicWin.Main
             MainForm.Instance.Drop += MainForm.Instance.OnDrop;
             MainForm.Instance.MouseWheel += MainForm.Instance.OnScroll;
 
-            // Get refresh rate
-            int refreshRate = GetRefreshRate();
+            // Get refresh rate via centralized helper
+            int refreshRate = DisplayHelper.GetRefreshRate();
             Debug.WriteLine($"Monitor Refresh Rate: {refreshRate} Hz");
 
-            CompositionTarget.Rendering += OnRendering;
+            // Register to MainForm's centrally throttled render callback instead of subscribing directly to CompositionTarget.Rendering.
+            MainForm.Instance.onMainFormRender += Frame;
 
             isInitialized = true;
         }
 
         public void Destroy()
         {
-            CompositionTarget.Rendering -= OnRendering;
+            // Unregister from central render callback
+            if (MainForm.Instance != null)
+                MainForm.Instance.onMainFormRender -= Frame;
+
             // if (fallbackTimer != null) fallbackTimer.Stop();
 
             KeyHandler.onKeyDown -= OnKeyRegistered;
@@ -83,10 +87,12 @@ namespace DynamicWin.Main
             instance = null;
         }
 
-        private void OnRendering(object sender, EventArgs e)
+        // Called from MainForm's throttled rendering loop
+        public void Frame()
         {
             Update();
-            Render();
+            // InvalidateVisual must be called on UI thread; this Frame runs on UI thread because MainForm invokes onMainFormRender from CompositionTarget.Rendering.
+            InvalidateVisual();
         }
 
         private void OnKeyRegistered(Keys key, KeyModifier modifier)
@@ -168,11 +174,6 @@ namespace DynamicWin.Main
             }
         }
 
-        private void Render()
-        {
-            Dispatcher.Invoke(() => InvalidateVisual());
-        }
-
         protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
         {
             base.OnPaintSurface(e);
@@ -244,51 +245,6 @@ namespace DynamicWin.Main
             var islandMask = islandObject.GetRect();
             islandMask.Deflate(new SKSize(1, 1));
             return islandMask;
-        }
-
-        // Native PInvoke to get monitor refresh rate
-        private const int ENUM_CURRENT_SETTINGS = -1;
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-        private struct DEVMODE
-        {
-            private const int CCHDEVICENAME = 32;
-            private const int CCHFORMNAME = 32;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICENAME)]
-            public string dmDeviceName;
-            public ushort dmSpecVersion;
-            public ushort dmDriverVersion;
-            public ushort dmSize;
-            public ushort dmDriverExtra;
-            public uint dmFields;
-            public int dmPositionX;
-            public int dmPositionY;
-            public uint dmDisplayOrientation;
-            public uint dmDisplayFixedOutput;
-            public short dmColor;
-            public short dmDuplex;
-            public short dmYResolution;
-            public short dmTTOption;
-            public short dmCollate;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHFORMNAME)]
-            public string dmFormName;
-            public ushort dmLogPixels;
-            public uint dmBitsPerPel;
-            public uint dmPelsWidth;
-            public uint dmPelsHeight;
-            public uint dmDisplayFlags;
-            public uint dmDisplayFrequency;
-        }
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        private static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
-
-        private int GetRefreshRate()
-        {
-            DEVMODE devMode = new DEVMODE();
-            devMode.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
-            if (EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref devMode))
-                return (int)devMode.dmDisplayFrequency;
-            return 60;
         }
     }
 }
