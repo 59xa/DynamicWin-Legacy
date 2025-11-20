@@ -85,13 +85,13 @@ namespace DynamicWin.UI.Widgets.Big
             var objects = new List<UIObject>();
 
             // Logic for hiding weather location
-            var hideLocationCheckbox = new Checkbox(null, "Hide location", new Vec2(25, 25), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
+            var hideLocationCheckbox = new DWCheckbox(null, "Hide location", new Vec2(25, 25), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
             hideLocationCheckbox.IsChecked = saveData.hideLocation;
 
             hideLocationCheckbox.clickCallback += () => saveData.hideLocation = hideLocationCheckbox.IsChecked;
 
             // Logic for toggling temperature measurement preference
-            var useCelsiusCheckbox = new Checkbox(null, "Use Celsius as temperature measurement", new Vec2(25, 0), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
+            var useCelsiusCheckbox = new DWCheckbox(null, "Use Celsius as temperature measurement", new Vec2(25, 0), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
             useCelsiusCheckbox.IsChecked = saveData.useCelsius;
 
             useCelsiusCheckbox.clickCallback += () => saveData.useCelsius = useCelsiusCheckbox.IsChecked;

@@ -69,7 +69,7 @@ namespace DynamicWin.UI.Widgets.Small
                 saveData.indicatorThreshold = x;
             };
 
-            var enableIndicatorCheckbox = new Checkbox(null, "Display microphone indicator", new Vec2(25, 0), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
+            var enableIndicatorCheckbox = new DWCheckbox(null, "Display microphone indicator", new Vec2(25, 0), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
             enableIndicatorCheckbox.IsChecked = saveData.enableIndicator;
 
             var thresholdText = new DWText(null, "Threshold", new Vec2(25, 0), UIAlignment.TopLeft);
