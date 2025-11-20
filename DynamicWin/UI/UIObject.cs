@@ -443,7 +443,7 @@ namespace DynamicWin.UI
 
         public virtual SKRoundRect GetRect()
         {
-            var rect = SKRect.Create((int)Position.X, (int)Position.Y, (int)Size.X, (int)Size.Y);
+            SKRect rect = SKRect.Create(Position.X, Position.Y, Size.X, Size.Y);
             return new SKRoundRect(rect, roundRadius);
         }
 
@@ -451,10 +451,14 @@ namespace DynamicWin.UI
 
         public virtual SKRoundRect GetInteractionRect()
         {
-            var rect = SKRect.Create((int)Position.X, (int)Position.Y, (int)Size.X, (int)Size.Y);
-            var r = new SKRoundRect(rect, roundRadius);
-            r.Deflate(-expandInteractionRect, -expandInteractionRect);
-            return r;
+            SKRect rect = SKRect.Create(
+                Position.X - expandInteractionRect,
+                Position.Y - expandInteractionRect,
+                Size.X + 2 * expandInteractionRect,
+                Size.Y + 2 * expandInteractionRect
+            );
+
+            return new SKRoundRect(rect, roundRadius);
         }
 
         ContextMenu? contextMenu = null;
