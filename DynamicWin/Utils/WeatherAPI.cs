@@ -13,10 +13,10 @@ using Newtonsoft.Json;
 *    - Allows user to easily access a list of countries and cities in a comma-separated value format.
 *    - Handles both IP address geo-location and user-configured weather forecast.
 *    
-*   Author:                 Megan Park
+*   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          18 May 2025 09:23 KST (UTC+9)
+*   Last Modified:          20 November 2025
 *   
 *   TO MAINTAINERS:
 *    - When fetching weather data, the API might hallucinate, and retrieve forecast data from a different city.
@@ -126,15 +126,24 @@ namespace DynamicWin.Utils
                     if (reader != null) reader.Close(); // Ensure this is closed to prevent memory leaks
                 }
 
-                string _fahr = _t.Replace("°", "");
-                double _celc = (Double.Parse(_fahr) - 32.0) * (double)5 / 9;
-                string _celcText = _celc.ToString("#.#");
+                // Ensure _t is not null or empty
+                string _fahrRaw = string.IsNullOrWhiteSpace(_t) ? "0" : _t.Replace("°", "");
+
+                // Try parsing the Fahrenheit temperature
+                if (!double.TryParse(_fahrRaw, out double fahrValue))
+                    fahrValue = 0; // Fallback if parsing fails
+
+                // Convert to Celsius
+                double celcValue = (fahrValue - 32.0) * 5.0 / 9.0;
+
+                // Format the output with 1 decimal place
+                string _fahrText = fahrValue.ToString("0.#");
+                string _celcText = celcValue.ToString("0.#");
 
                 Debug.WriteLine(String.Format("[WEATHER API] {0}, {1}F({2}°C), {3}", location.city, _t, _celcText, _w));
 
-                _WeatherData = new WeatherData() { city = location.city, region = location.region, celsius = _celcText + "°C", fahrenheit = _fahr + "F", weatherText = _w };
+                _WeatherData = new WeatherData() { city = location.city, region = location.region, celsius = _celcText + "°C", fahrenheit = _fahrText + "F", weatherText = _w };
                 _OnWeatherDataReceived?.Invoke(_WeatherData);
-                
 
                 Debug.WriteLine("[WEATHER API] IDX = {0}, TYPE = {1}", idx, type);
 
