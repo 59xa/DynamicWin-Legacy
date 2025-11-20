@@ -306,11 +306,13 @@ namespace DynamicWin.UI
 
             if (drawLocalObjects)
             {
-                new List<UIObject>(localObjects).ForEach((UIObject obj) =>
+                for (int i = 0; i < localObjects.Count; i++)
                 {
+                    var obj = localObjects[i];
+                    if (obj == null) continue;
                     obj.blurAmount = GetBlur();
                     obj.UpdateCall(deltaTime);
-                });
+                }
             }
         }
 
@@ -324,10 +326,11 @@ namespace DynamicWin.UI
 
             if (drawLocalObjects)
             {
-                new List<UIObject>(localObjects).ForEach((UIObject obj) =>
+                for (int i = 0; i < localObjects.Count; i++)
                 {
+                    var obj = localObjects[i];
                     obj.DrawCall(canvas);
-                });
+                }
             }
         }
 
