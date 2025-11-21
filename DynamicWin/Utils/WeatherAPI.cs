@@ -122,10 +122,13 @@ namespace DynamicWin.Utils
 
                 // Read XML from weather service using HttpClient stream + XmlReader (async) to avoid blocking
                 string uri = string.Format("https://tile-service.weather.microsoft.com/livetile/front/{0},{1}", lat, lon);
+#if DEBUG
+                Debug.WriteLine(uri);
+#endif
                 try
                 {
                     using var stream = await s_httpClient.GetStreamAsync(uri).ConfigureAwait(false);
-                    var settings = new XmlReaderSettings { IgnoreWhitespace = true };
+                    var settings = new XmlReaderSettings { IgnoreWhitespace = true, Async = true };
                     using var reader = XmlReader.Create(stream, settings);
                     int _n = 0;
                     while (await reader.ReadAsync().ConfigureAwait(false))
