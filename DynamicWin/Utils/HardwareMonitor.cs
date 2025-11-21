@@ -11,38 +11,40 @@ namespace DynamicWin.Utils
 {
     internal class HardwareMonitor
     {
-        System.Timers.Timer timer;
+        private Timer timer;
 
         public static string usageString = " ";
 
         public static HardwareMonitor instance;
 
-        Computer computer;
-        float lastCpu = 0;
-        string lastRam = "";
+        private Computer computer;
+        private float lastCpu = 0;
+        private string lastRam = "";
 
-        // Use a lock to prevent reentrancy rather than a busy boolean
         private readonly object _lock = new object();
+
+        private IHardware? cpuHardware;
+        private IHardware? memoryHardware;
+        private ISensor? cpuLoadSensor;
+        private ISensor? memoryUsedSensor;
+        private ISensor? memoryAvailableSensor;
+
+        private const int IntervalMs = 1500;
 
         public HardwareMonitor()
         {
             instance = this;
 
-            timer = new System.Timers.Timer();
-            timer.Interval = 1000;
-            timer.Elapsed += Timer_Elapsed;
-            timer.AutoReset = true;
-
             computer = new Computer()
             {
                 IsMemoryEnabled = true,
-                IsCpuEnabled = true // Enable CPU monitoring
+                IsCpuEnabled = true
             };
 
-            // Open once and keep the computer object open during lifetime (much cheaper than Open/Close each tick)
             try
             {
                 computer.Open();
+                InitializeSensors();
             }
             catch (Exception ex)
             {
@@ -51,12 +53,88 @@ namespace DynamicWin.Utils
 #endif
             }
 
-            timer.Start();
+            timer = new Timer(TimerCallback, null, IntervalMs, IntervalMs);
         }
 
-        private void Timer_Elapsed(object? sender, System.Timers.ElapsedEventArgs e)
+        private void InitializeSensors()
         {
-            // Try to acquire lock quickly; if busy, skip this tick
+            try
+            {
+                foreach (var hw in computer.Hardware)
+                {
+                    if (hw == null) continue;
+
+                    if (hw.HardwareType == HardwareType.Cpu && cpuHardware == null)
+                    {
+                        cpuHardware = hw;
+
+                        foreach (var s in hw.Sensors)
+                        {
+                            if (s.SensorType == SensorType.Load && s.Name == "CPU Total")
+                            {
+                                cpuLoadSensor = s;
+                                break;
+                            }
+                        }
+                    }
+                    else if (hw.HardwareType == HardwareType.Memory && memoryHardware == null)
+                    {
+                        memoryHardware = hw;
+                        foreach (var s in hw.Sensors)
+                        {
+                            if (s.Name == "Memory Used")
+                                memoryUsedSensor = s;
+                            else if (s.Name == "Memory Available")
+                                memoryAvailableSensor = s;
+                        }
+                    }
+
+                    if (hw.SubHardware != null && hw.SubHardware.Length > 0)
+                    {
+                        foreach (var sub in hw.SubHardware)
+                        {
+                            if (sub == null) continue;
+
+                            if (sub.HardwareType == HardwareType.Cpu && cpuHardware == null)
+                            {
+                                cpuHardware = sub;
+                                foreach (var s in sub.Sensors)
+                                {
+                                    if (s.SensorType == SensorType.Load && s.Name == "CPU Total")
+                                    {
+                                        cpuLoadSensor = s;
+                                        break;
+                                    }
+                                }
+                            }
+                            else if (sub.HardwareType == HardwareType.Memory && memoryHardware == null)
+                            {
+                                memoryHardware = sub;
+                                foreach (var s in sub.Sensors)
+                                {
+                                    if (s.Name == "Memory Used")
+                                        memoryUsedSensor = s;
+                                    else if (s.Name == "Memory Available")
+                                        memoryAvailableSensor = s;
+                                }
+                            }
+                        }
+                    }
+
+                    if (cpuHardware != null && memoryHardware != null && cpuLoadSensor != null && memoryUsedSensor != null && memoryAvailableSensor != null)
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("HardwareMonitor: InitializeSensors exception: " + ex);
+#endif
+            }
+        }
+
+        private void TimerCallback(object? state)
+        {
             if (!Monitor.TryEnter(_lock))
             {
 #if DEBUG
@@ -70,43 +148,42 @@ namespace DynamicWin.Utils
 #if DEBUG
                 Debug.WriteLine($"HardwareMonitor BEGIN");
 #endif
-                foreach (var hardware in computer.Hardware)
+                if (cpuHardware == null || memoryHardware == null || cpuLoadSensor == null || memoryUsedSensor == null || memoryAvailableSensor == null)
                 {
-                    if (hardware == null) continue;
+                    InitializeSensors();
+                }
 
-                    if (hardware.HardwareType == HardwareType.Cpu)
+                if (cpuHardware != null)
+                {
+                    try
                     {
-                        hardware.Update();
-                        foreach (var sensor in hardware.Sensors)
+                        cpuHardware.Update();
+                        if (cpuLoadSensor != null && cpuLoadSensor.Value.HasValue)
                         {
-                            if (sensor.SensorType == SensorType.Load && sensor.Name == "CPU Total")
-                            {
-                                lastCpu = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
-                                break;
-                            }
+                            lastCpu = Mathf.LimitDecimalPoints((float)cpuLoadSensor.Value.GetValueOrDefault(), 1);
                         }
                     }
-                    else if (hardware.HardwareType == HardwareType.Memory)
+                    catch { /* tolerate sensor update failures */ }
+                }
+
+                if (memoryHardware != null)
+                {
+                    try
                     {
-                        hardware.Update();
+                        memoryHardware.Update();
 
                         float memUsed = 0;
                         float memFree = 0;
 
-                        foreach (var sensor in hardware.Sensors)
-                        {
-                            if (sensor.Name == "Memory Used")
-                            {
-                                memUsed = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
-                            }
-                            else if (sensor.Name == "Memory Available")
-                            {
-                                memFree = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
-                            }
-                        }
+                        if (memoryUsedSensor != null && memoryUsedSensor.Value.HasValue)
+                            memUsed = Mathf.LimitDecimalPoints((float)memoryUsedSensor.Value.GetValueOrDefault(), 1);
+
+                        if (memoryAvailableSensor != null && memoryAvailableSensor.Value.HasValue)
+                            memFree = Mathf.LimitDecimalPoints((float)memoryAvailableSensor.Value.GetValueOrDefault(), 1);
 
                         lastRam = memUsed + "GB / " + Mathf.LimitDecimalPoints(memFree + memUsed, 0) + "GB";
                     }
+                    catch { }
                 }
 
                 usageString = $"CPU: {lastCpu}%    RAM: {lastRam}";
@@ -132,9 +209,24 @@ namespace DynamicWin.Utils
         {
             try
             {
-                if (instance?.computer != null)
+                if (instance != null)
                 {
-                    instance.computer.Close();
+                    // stop and dispose timer
+                    try
+                    {
+                        instance.timer?.Change(Timeout.Infinite, Timeout.Infinite);
+                        instance.timer?.Dispose();
+                    }
+                    catch { }
+
+                    if (instance.computer != null)
+                    {
+                        try
+                        {
+                            instance.computer.Close();
+                        }
+                        catch { }
+                    }
                 }
             }
             catch (Exception) { }
