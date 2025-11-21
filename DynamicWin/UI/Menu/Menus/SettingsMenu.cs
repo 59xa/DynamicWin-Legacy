@@ -67,6 +67,8 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox antiAliasing;
         DWCheckbox runOnStartup;
 
+        UIObject bottomMask;
+
         public override List<UIObject> InitializeMenu(IslandObject island)
         {
             var objects = base.InitializeMenu(island);
@@ -278,13 +280,15 @@ namespace DynamicWin.UI.Menu.Menus
             {
                 roundRadius = 25
             };
-            backBtn.Text.Font = Resources.Res.SatoshiBold;
+            backBtn.Text.Font = Res.SatoshiBold;
 
-            bottomMask = new UIObject(island, Vec2.zero, new Vec2(IslandSizeBig().X - 230, 75), UIAlignment.BottomCenter)
+            bottomMask = new BottomMask(island, backBtn)
             {
-                Anchor = new Vec2(0.5, 1.1),
-                Color = Theme.IslandBackground,
-                roundRadius = 50
+                padding = 20,
+                alpha = 0.7f,
+                roundRadius = 50,
+                shadowStrength = 10f,
+                shadowColor = new Col(0, 0, 0)
             };
 
             objects.Add(bottomMask);
@@ -293,7 +297,6 @@ namespace DynamicWin.UI.Menu.Menus
             return objects;
         }
 
-        UIObject bottomMask;
         SmallWidgetAdder smallWidgetAdder;
         BigWidgetAdder bigWidgetAdder;
 
