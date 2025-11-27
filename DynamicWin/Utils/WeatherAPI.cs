@@ -20,7 +20,7 @@ using System.Collections.Generic;
 *   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          20 November 2025
+*   Last Modified:          27 November 2025
 *   
 *   TO MAINTAINERS:
 *    - When fetching weather data, the API might hallucinate, and retrieve forecast data from a different city.
@@ -115,60 +115,99 @@ namespace DynamicWin.Utils
                     lon = locParts.Length > 1 ? locParts[1] : "0";
 
                     location = new Location { city = city, region = country, loc = loc };
+
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] CITY = {0}, LATITUDE = {1}, LONGITUDE = {2}",
+                        city, lat, lon);
+#endif
                 }
 
-                string _t = null;
-                string _w = null;
-
-                // Read XML from weather service using HttpClient stream + XmlReader (async) to avoid blocking
-                string uri = string.Format("https://tile-service.weather.microsoft.com/livetile/front/{0},{1}", lat, lon);
+                // Use Open-Meteo instead of Microsoft's Tile Service Weather API as it's proven to be unreliable and inconsistent when fetching values
+                string uri = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m";
 #if DEBUG
                 Debug.WriteLine(uri);
 #endif
+
+                OpenMeteoResponse? meteo = null;
+
+                // Attempt to fetch values from defined API
                 try
                 {
-                    using var stream = await s_httpClient.GetStreamAsync(uri).ConfigureAwait(false);
-                    var settings = new XmlReaderSettings { IgnoreWhitespace = true, Async = true };
-                    using var reader = XmlReader.Create(stream, settings);
-                    int _n = 0;
-                    while (await reader.ReadAsync().ConfigureAwait(false))
+                    string json = await s_httpClient.GetStringAsync(uri).ConfigureAwait(false);
+                    meteo = JsonConvert.DeserializeObject<OpenMeteoResponse>(json);
+
+#if DEBUG
+                    // Display JSON contents on debug output for evaluation
+                    Debug.WriteLine("========== OPEN-METEO PARAMETERS ==========");
+
+                    if (meteo != null)
                     {
-                        if (reader.NodeType == XmlNodeType.Text)
+                        Debug.WriteLine($"Latitude: {meteo.latitude}");
+                        Debug.WriteLine($"Longitude: {meteo.longitude}");
+                        Debug.WriteLine($"Timezone: {meteo.timezone}");
+                        Debug.WriteLine($"UTC Offset: {meteo.utc_offset_seconds}");
+                        Debug.WriteLine($"Generation Time: {meteo.generationtime_ms} ms");
+
+                        if (meteo.current_weather != null)
                         {
-                            if (_n == 1) _t = reader.Value;
-                            else if (_n == 2) _w = reader.Value;
-                            _n++;
+                            Debug.WriteLine("----- CURRENT WEATHER -----");
+                            Debug.WriteLine($"Temp: {meteo.current_weather.temperature}°C");
+                            Debug.WriteLine($"Wind: {meteo.current_weather.windspeed} km/h");
+                            Debug.WriteLine($"Dir: {meteo.current_weather.winddirection}");
+                            Debug.WriteLine($"WeatherCode: {meteo.current_weather.weathercode}");
+                            Debug.WriteLine($"Time: {meteo.current_weather.time}");
+                        }
+
+                        if (meteo.hourly != null)
+                        {
+                            Debug.WriteLine("----- HOURLY WEATHER -----");
+                            Debug.WriteLine($"Hours: {meteo.hourly.time?.Length ?? 0}");
+                            Debug.WriteLine($"Temperature count: {meteo.hourly.temperature_2m?.Length ?? 0}");
+                            Debug.WriteLine($"Humidity count: {meteo.hourly.relative_humidity_2m?.Length ?? 0}");
+                            Debug.WriteLine($"Wind speed count: {meteo.hourly.wind_speed_10m?.Length ?? 0}");
                         }
                     }
+
+                    Debug.WriteLine("===========================================");
+#endif
                 }
                 catch (Exception ex)
                 {
 #if DEBUG
-                    Debug.WriteLine("[WEATHER API] Error fetching/parsing weather XML: " + ex);
+                    Debug.WriteLine("[OPEN-METEO] Error: " + ex);
 #endif
-                    _t = "0";
-                    _w = string.Empty;
+                    meteo = null;
                 }
 
-                // Ensure _t is not null or empty
-                string _fahrRaw = string.IsNullOrWhiteSpace(_t) ? "0" : _t.Replace("°", "");
+                string finalCity = location.city;
+                string finalRegion = location.region;
+                string finalWeatherText = "Unknown";
+                string celText = "0°C";
+                string fahrText = "0F";
 
-                // Try parsing the Fahrenheit temperature
-                if (!double.TryParse(_fahrRaw, out double fahrValue))
-                    fahrValue = 0; // Fallback if parsing fails
+                // Format values accordingly for display if fetching is successful
+                if (meteo?.current_weather != null)
+                {
+                    double cel = meteo.current_weather.temperature;
+                    double fahr = cel * 9.0 / 5.0 + 32.0;
 
-                // Convert to Celsius
-                double celcValue = (fahrValue - 32.0) * 5.0 / 9.0;
+                    celText = cel.ToString("0.#") + "°C";
+                    fahrText = fahr.ToString("0.#") + "F";
 
-                // Format the output with 1 decimal place
-                string _fahrText = fahrValue.ToString("0.#");
-                string _celcText = celcValue.ToString("0.#");
+                    // Convert weather code to readable string
+                    finalWeatherText = WeatherCodeToText(meteo.current_weather.weathercode);
+                }
 
-#if DEBUG
-                Debug.WriteLine(string.Format("[WEATHER API] {0}, {1}F({2}°C), {3}", location.city, _t, _celcText, _w));
-#endif
+                // Send to widget
+                _WeatherData = new WeatherData()
+                {
+                    city = finalCity,
+                    region = finalRegion,
+                    celsius = celText,
+                    fahrenheit = fahrText,
+                    weatherText = finalWeatherText
+                };
 
-                _WeatherData = new WeatherData() { city = location.city, region = location.region, celsius = _celcText + "°C", fahrenheit = _fahrText + "F", weatherText = _w };
                 _OnWeatherDataReceived?.Invoke(_WeatherData);
 
 #if DEBUG
@@ -185,7 +224,9 @@ namespace DynamicWin.Utils
 
             if (token.IsCancellationRequested || RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen)
             {
+#if DEBUG
                 Debug.WriteLine("[WEATHER API] Task disposal received outside while-loop.");
+#endif
                 throw new OperationCanceledException(token);
             }
         }
@@ -292,7 +333,10 @@ namespace DynamicWin.Utils
                 return string.Empty;
 
             var city = cities[idx2];
-            return $"{city.lat},{city.lng}";
+#if DEBUG
+            Debug.WriteLine("[WEATHER API] {0}, {1}, {2}, {3} + {4}", city.city, city.country, city.population, city.lat, city.lng);
+#endif
+            return $"{(int)city.lat},{(int)city.lng}";
         }
 
         /// <summary>
@@ -305,6 +349,52 @@ namespace DynamicWin.Utils
         {
             return LoadLatLongAsync(idx, idx2).GetAwaiter().GetResult();
         }
+
+        /// <summary>
+        /// Converts a numeric weather code to its corresponding human-readable weather description.
+        /// </summary>
+        /// <remarks>This method is typically used to translate standardized weather codes from external
+        /// data sources into descriptive text for display or logging purposes.</remarks>
+        /// <param name="code">The weather condition code to convert. Valid codes correspond to specific weather types as defined by the
+        /// data source.</param>
+        /// <returns>A string containing the weather description that corresponds to the specified code. Returns "Unknown" if the
+        /// code does not match a known weather type.</returns>
+        public static string WeatherCodeToText(int code)
+        {
+            return code switch
+            {
+                0 => "Clear",
+                1 => "Mainly Clear",
+                2 => "Partly Cloudy",
+                3 => "Cloudy",
+                45 => "Foggy",
+                48 => "Freezing Fog",
+                51 => "Light Drizzle",
+                53 => "Drizzle",
+                55 => "Heavy Drizzle",
+                56 => "Freezing Drizzle",
+                57 => "Freezing Drizzle",
+                61 => "Light Rain",
+                63 => "Rain",
+                65 => "Heavy Rain",
+                66 => "Freezing Rain",
+                67 => "Freezing Rain",
+                71 => "Light Snow",
+                73 => "Snow",
+                75 => "Heavy Snow",
+                77 => "Snow Grains",
+                80 => "Light Rain Showers",
+                81 => "Rain Showers",
+                82 => "Heavy Rain Showers",
+                85 => "Light Snow Showers",
+                86 => "Snow Showers",
+                95 => "Thunderstorm",
+                96 => "Thunderstorm w/ Hail",
+                99 => "Thunderstorm w/ Heavy Hail",
+                _ => "Unknown"
+            };
+        }
+
     }
 
     // Initialise Location structure
