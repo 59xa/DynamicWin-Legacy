@@ -84,7 +84,7 @@ namespace DynamicWin.UI.Widgets.Small
         {
             timeText = new DWText(this, GetTime(), Vec2.zero, UIAlignment.Center);
             timeText.TextSize = 14;
-            timeText.Font = Res.SatoshiBold;
+            timeText.Font = Res.SatoshiRegular;
             AddLocalObject(timeText);
         }
 
