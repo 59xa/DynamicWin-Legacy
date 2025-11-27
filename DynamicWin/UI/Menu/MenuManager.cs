@@ -7,6 +7,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.TaskbarClock;
+using System.Threading;
+using System.Windows;
 
 namespace DynamicWin.UI.Menu
 {
@@ -60,26 +62,46 @@ namespace DynamicWin.UI.Menu
             {
                 BaseMenu lastMenu = activeMenu;
 
-                QueueOpenMenu(newActiveMenu);
+                // Always marshal menu operations to the UI thread
+                Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    QueueOpenMenu(newActiveMenu);
+                }));
+
                 int timeMillis = (int)(time * 1000);
 
                 try
                 {
                     Thread.Sleep(timeMillis);
                 }
-                catch(ThreadInterruptedException e)
+                catch (ThreadInterruptedException e)
                 {
                     if (lastMenu != null)
-                        QueueOpenMenu(lastMenu);
+                    {
+                        Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            QueueOpenMenu(lastMenu);
+                        }));
+                    }
                     return;
                 }
 
                 if (lastMenu != null)
-                    QueueOpenMenu(lastMenu);
+                {
+                    Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        QueueOpenMenu(lastMenu);
+                    }));
+                }
                 else
+                {
                     System.Diagnostics.Debug.WriteLine("Warning: lastMenu is null in OpenOverlay method");
+                }
 
             });
+
+            // mark as background so it won't block shutdown
+            overlayThread.IsBackground = true;
             overlayThread.Start();
         }
 
@@ -102,7 +124,23 @@ namespace DynamicWin.UI.Menu
 
             RendererMain.Instance.blurOverride = 35f;
 
-            if (activeMenu != null) activeMenu.OnDeload();
+            if (activeMenu != null)
+            {
+                try
+                {
+                    // give menu a chance to stop audio/threads/etc
+                    activeMenu.OnDeload();
+                }
+                catch { }
+
+                try
+                {
+                    // fully dispose the previous menu to destroy UIObjects and unsubscribe events
+                    activeMenu.Dispose();
+                }
+                catch { }
+            }
+
             activeMenu = newActiveMenu;
 
             menuAnimatorOut.onAnimationUpdate += (t) =>

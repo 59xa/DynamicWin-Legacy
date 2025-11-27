@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -22,9 +23,32 @@ namespace DynamicWin.WPFBinders
         private WriteableBitmap bitmap;
         private bool ignorePixelScaling;
 
+        // Create GRContext for GPU rendering if available
+        public GRContext? GrContext { get; private set; }
+
         public SKElement()
         {
             designMode = DesignerProperties.GetIsInDesignMode(this);
+
+            // Attempt to use OpenGL if possible. If GL fails, log exception and leave GRContext null to use CPU as fallback
+            try
+            {
+                var glInterface = GRGlInterface.Create();
+                if (glInterface != null)
+                {
+                    GrContext = GRContext.CreateGl(glInterface);
+                    Debug.WriteLine("SKElement: Created GL GRContext successfully.");
+                }
+                else
+                {
+                    Debug.WriteLine("SKElement: GRGlInterface.Create returned null - GL not available.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"SKElement: Failed to create GL GRContext: {ex}");
+                GrContext = null;
+            }
         }
 
         public SKSize CanvasSize { get; private set; }
@@ -62,6 +86,47 @@ namespace DynamicWin.WPFBinders
 
             var info = new SKImageInfo(size.Width, size.Height, SKImageInfo.PlatformColorType, SKAlphaType.Premul);
 
+            // Attempt to create a GPU-backed surface if GPU context exists. Fall back to CPU otherwise
+            if (GrContext != null)
+            {
+                try
+                {
+                    // Create raster surface backed by GPU context
+                    using (var surface = SKSurface.Create(GrContext, true, info))
+                    {
+                        if (IgnorePixelScaling)
+                        {
+                            var canvas = surface.Canvas;
+                            canvas.Scale(scaleX, scaleY);
+                            canvas.Save();
+                        }
+
+                        OnPaintSurface(new SKPaintSurfaceEventArgs(surface, info.WithSize(userVisibleSize), info));
+
+                        // Flush GPU commands
+                        surface.Canvas.Flush();
+                    }
+
+                    // Draw nothing to the drawingContext here because GPU-backed drawing is handled on the GPU
+                    // Something still needs to be presented in WPF; to keep compatibility
+                    // with the previous implementation, draw the last bitmap if present. Skip drawing if no bitmap exists
+                    if (bitmap != null)
+                    {
+                        drawingContext.DrawImage(bitmap, new Rect(0, 0, ActualWidth, ActualHeight));
+                    }
+
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // If any GPU path fails, log and fall back to CPU path below
+                    Debug.WriteLine($"SKElement: GPU rendering failed, falling back to CPU. Exception: {ex}");
+                    // Do not dispose the context here - allow the host to decide. Null it so fallback will be used
+                    GrContext = null;
+                }
+            }
+
+            // CPU fallback (existing behavior)
             // reset the bitmap if the size has changed
             if (bitmap == null || info.Width != bitmap.PixelWidth || info.Height != bitmap.PixelHeight)
             {
@@ -125,5 +190,52 @@ namespace DynamicWin.WPFBinders
                 return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0;
             }
         }
+
+        /// <summary>
+        /// Explicitly set a GRContext (for example a D3D-backed context created by host code). This allows external code to supply a GPU context
+        /// (Direct3D, Vulkan, Metal, etc) instead of relying on the built-in GL initialisation
+        /// </summary>
+        /// <param name="context">The GRContext to use. Pass null to clear and force CPU fallback</param>
+        /// <param name="disposeExisting">If true, dispose any existing context before replacing it</param>
+        public void SetGrContext(GRContext? context, bool disposeExisting = false)
+        {
+            try
+            {
+                if (disposeExisting && GrContext != null)
+                {
+                    GrContext.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"SKElement: Exception disposing existing GRContext: {ex}");
+            }
+
+            GrContext = context;
+            Debug.WriteLine($"SKElement: GRContext explicitly set. GPU available: {GrContext != null}");
+        }
+
+        /// <summary>
+        /// Helper to create a GPU-backed surface using the currently configured GRContext. Returns null if no GRContext is available
+        /// </summary>
+        public SKSurface? CreateGpuSurface(SKImageInfo info, bool isRenderTarget = true)
+        {
+            if (GrContext == null) return null;
+
+            try
+            {
+                return SKSurface.Create(GrContext, isRenderTarget, info);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"SKElement: Failed to create GPU surface: {ex}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Indicates whether GPU-backed rendering is available for this element
+        /// </summary>
+        public bool IsGpuAvailable => GrContext != null;
     }
 }

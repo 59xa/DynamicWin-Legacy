@@ -44,7 +44,6 @@ namespace DynamicWin.Main
 
         private bool isInitialized = false;
         public int canvasWithoutClip;
-        private GRContext Context;
 
         public RendererMain()
         {
@@ -168,9 +167,16 @@ namespace DynamicWin.Main
 
             if (MainIsland.hidden) return;
 
-            foreach (UIObject uiObject in objects)
+            // Take a stable snapshot of the menu object list to avoid InvalidOperationException
+            var uiObjectsSnapshot = objects?.ToArray();
+            if (uiObjectsSnapshot != null)
             {
-                uiObject.UpdateCall(DeltaTime);
+                for (int i = 0; i < uiObjectsSnapshot.Length; i++)
+                {
+                    var uiObject = uiObjectsSnapshot[i];
+                    if (uiObject == null) continue;
+                    uiObject.UpdateCall(DeltaTime);
+                }
             }
         }
 
@@ -196,35 +202,50 @@ namespace DynamicWin.Main
             if (MainIsland.hidden) return;
 
             bool hasContextMenu = false;
-            foreach (UIObject uiObject in objects)
+
+            // Snapshot the active menu's UiObjects to avoid collection modifications while painting
+            var uiObjectsSnapshot = objects?.ToArray();
+            if (uiObjectsSnapshot != null)
             {
-                canvas.RestoreToCount(canvasWithoutClip);
-                canvasWithoutClip = canvas.Save();
-
-                if (uiObject.IsHovering && uiObject.GetContextMenu() != null)
+                foreach (var uiObject in uiObjectsSnapshot)
                 {
-                    hasContextMenu = true;
-                    ContextMenu = uiObject.GetContextMenu();
-                }
+                    if (uiObject == null) continue;
 
-                foreach (UIObject obj in uiObject.LocalObjects)
-                {
-                    if (obj.IsHovering && obj.GetContextMenu() != null)
+                    canvas.RestoreToCount(canvasWithoutClip);
+                    canvasWithoutClip = canvas.Save();
+
+                    // Snapshot the local objects too before enum
+                    var localSnapshot = uiObject.LocalObjects?.ToArray();
+
+                    if (uiObject.IsHovering && uiObject.GetContextMenu() != null)
                     {
                         hasContextMenu = true;
-                        ContextMenu = obj.GetContextMenu();
+                        ContextMenu = uiObject.GetContextMenu();
                     }
+
+                    if (localSnapshot != null)
+                    {
+                        foreach (var obj in localSnapshot)
+                        {
+                            if (obj == null) continue;
+                            if (obj.IsHovering && obj.GetContextMenu() != null)
+                            {
+                                hasContextMenu = true;
+                                ContextMenu = obj.GetContextMenu();
+                            }
+                        }
+                    }
+
+                    if (uiObject.maskInToIsland)
+                    {
+                        Mask(canvas);
+                    }
+
+                    canvas.Scale(scaleOffset.X, scaleOffset.Y, islandObject.Position.X + islandObject.Size.X / 2, islandObject.Position.Y + islandObject.Size.Y / 2);
+                    canvas.Translate(renderOffset.X, renderOffset.Y);
+
+                    uiObject.DrawCall(canvas);
                 }
-
-                if (uiObject.maskInToIsland)
-                {
-                    Mask(canvas);
-                }
-
-                canvas.Scale(scaleOffset.X, scaleOffset.Y, islandObject.Position.X + islandObject.Size.X / 2, islandObject.Position.Y + islandObject.Size.Y / 2);
-                canvas.Translate(renderOffset.X, renderOffset.Y);
-
-                uiObject.DrawCall(canvas);
             }
 
             onDraw?.Invoke(canvas);

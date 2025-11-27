@@ -31,8 +31,26 @@ namespace DynamicWin.UI.Menu
 
         public virtual void OnDeload() { }
 
+        /// <summary>
+        /// Called when menu is being permanently unloaded. Override to clean up menu-specific resources.
+        /// </summary>
+        public virtual void OnDispose() { }
+
         public void Dispose()
         {
+            // run per-menu disposal hook first
+            try { OnDispose(); } catch { }
+
+            // Destroy each uiObject (unsubscribes events recursively)
+            for (int i = uiObjects.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    uiObjects[i].DestroyCall();
+                }
+                catch { }
+            }
+
             uiObjects.Clear();
         }
     }

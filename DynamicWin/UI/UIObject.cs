@@ -1,16 +1,9 @@
 ﻿using DynamicWin.Main;
-using DynamicWin.UI.UIElements;
 using DynamicWin.Utils;
 using SkiaSharp;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace DynamicWin.UI
 {
@@ -30,9 +23,8 @@ namespace DynamicWin.UI
         public Vec2 LocalPosition { get => localPosition; set => localPosition = value; }
         public Vec2 Anchor { get => anchor; set => anchor = value; }
 
-        // TODO: look further into this null pointer issue
-        public Vec2 Size { get => size ?? Vec2.one; set => size = value; } // Temporary fix for null size especially with BottomLeft getter
-        public Col Color { get => new Col(color.r, color.g, color.b, color.a * Alpha); set => color = value; }
+        public Vec2 Size { get => size ?? Vec2.one; set { size = value; MarkGpuDirty(); } } // Temporary fix for null size especially with BottomLeft getter
+        public Col Color { get => new Col(color.r, color.g, color.b, color.a * Alpha); set { color = value; MarkGpuDirty(); } }
 
         private bool isHovering = false;
         private bool isMouseDown = false;
@@ -60,18 +52,20 @@ namespace DynamicWin.UI
         private float pAlpha = 1f;
         private float oAlpha = 1f;
 
-        public float Alpha { get => (float) Math.Min(pAlpha, Math.Min(oAlpha, RendererMain.Instance.alphaOverride)); set => oAlpha = value; }
+        public float Alpha { get => (float) Math.Min(pAlpha, Math.Min(oAlpha, RendererMain.Instance.alphaOverride)); set { oAlpha = value; MarkGpuDirty(); } }
 
         protected void AddLocalObject(UIObject obj)
         {
             obj.parent = this;
             localObjects.Add(obj);
+            MarkGpuDirty();
         }
 
         protected void DestroyLocalObject(UIObject obj)
         {
             obj.DestroyCall();
             localObjects.Remove(obj);
+            MarkGpuDirty();
         }
 
         public UIObject(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter)
@@ -85,6 +79,10 @@ namespace DynamicWin.UI
 
             RendererMain.Instance.ContextMenuOpening += CtxOpen;
             RendererMain.Instance.ContextMenuClosing += CtxClose;
+
+            // GPU cache defaults to auto when renderer is available and GPU is available
+            UseGpuCaching = (RendererMain.Instance != null && RendererMain.Instance.IsGpuAvailable);
+            gpuCacheDirty = true;
         }
 
         void CtxOpen(object sender, RoutedEventArgs e)
@@ -318,30 +316,154 @@ namespace DynamicWin.UI
 
         public virtual void Update(float deltaTime) { }
 
+        // GPU caching fields
+        private SKImage? gpuCache = null;
+        private bool gpuCacheDirty = true;
+        public bool UseGpuCaching { get; set; }
+
+        // Flag to indicate Draw() already rendered full subtree (so DrawCall won't draw children again)
+        private bool lastDrawRenderedSubtree = false;
+
+        private void MarkGpuDirty()
+        {
+            gpuCacheDirty = true;
+            try
+            {
+                gpuCache?.Dispose();
+            }
+            catch { }
+            gpuCache = null;
+        }
+
         public void DrawCall(SKCanvas canvas)
         {
             if (!isEnabled) return;
 
+            // Reset subtree flag
+            lastDrawRenderedSubtree = false;
+
+            // Draw this object (may draw subtree if cached)
             Draw(canvas);
 
-            if (drawLocalObjects)
+            // If Draw rendered subtree already, skip drawing children again
+            if (drawLocalObjects && !lastDrawRenderedSubtree)
             {
                 for (int i = 0; i < localObjects.Count; i++)
                 {
                     var obj = localObjects[i];
+                    if (obj == null) continue;
+
+                    // Children positions are relative to this object's origin; ensure we translate appropriately
                     obj.DrawCall(canvas);
                 }
             }
+
+            // Clear flag after use
+            lastDrawRenderedSubtree = false;
         }
 
-        public virtual void Draw(SKCanvas canvas)
+        /// <summary>
+        /// Draw only this object's visual (no children) at local origin (0,0)
+        /// Used by both CPU and GPU paths
+        /// </summary>
+        protected virtual void DrawSelfContents(SKCanvas canvas)
         {
-            var rect = SKRect.Create(Position.X, Position.Y, Size.X, Size.Y);
+            var rect = SKRect.Create(0, 0, Size.X, Size.Y);
             var roundRect = new SKRoundRect(rect, roundRadius);
 
             var paint = GetPaint();
 
             canvas.DrawRoundRect(roundRect, paint);
+        }
+
+        /// <summary>
+        /// Draw this object and its subtree into the provided canvas, assuming origin is at this object's top-left
+        /// Used when rendering into a GPU surface for caching
+        /// </summary>
+        protected virtual void DrawIntoSurface(SKCanvas canvas)
+        {
+            // Draw self at origin
+            DrawSelfContents(canvas);
+
+            if (!drawLocalObjects) return;
+
+            for (int i = 0; i < localObjects.Count; i++)
+            {
+                var obj = localObjects[i];
+                if (obj == null) continue;
+
+                canvas.Save();
+                canvas.Translate(obj.LocalPosition.X, obj.LocalPosition.Y);
+                obj.DrawIntoSurface(canvas);
+                canvas.Restore();
+            }
+        }
+
+        public virtual void Draw(SKCanvas canvas)
+        {
+            // Render/copy the cached GPU image of the subtree instead of CPU drawing if GPU caching or GRContext exists
+            if (UseGpuCaching && RendererMain.Instance != null && RendererMain.Instance.IsGpuAvailable)
+            {
+                try
+                {
+                    if (gpuCache == null || gpuCacheDirty)
+                    {
+                        // Create GPU surface sized to object
+                        var info = new SKImageInfo((int)Math.Max(1, Size.X), (int)Math.Max(1, Size.Y), SKImageInfo.PlatformColorType, SKAlphaType.Premul);
+
+                        // Use a shared cache to avoid re-creating GPU images for identical content when possible
+                        string cacheKey = $"UIObject_{GetType().FullName}_{GetHashCode()}_{(int)Size.X}x{(int)Size.Y}";
+
+                        gpuCache = GPUTextureCache.GetOrCreate(cacheKey, () =>
+                        {
+                            using (var surface = RendererMain.Instance.CreateGpuSurface(info, true))
+                            {
+                                if (surface == null) return null;
+
+                                var localCanvas = surface.Canvas;
+                                localCanvas.Clear(SKColors.Transparent);
+
+                                // Draw object and children at local origin
+                                DrawIntoSurface(localCanvas);
+                                localCanvas.Flush();
+
+                                var img = surface.Snapshot();
+                                return img;
+                            }
+                        });
+
+                        // Mark dirty and fall back to CPU if cache is null
+                        if (gpuCache == null) gpuCacheDirty = true;
+                        else gpuCacheDirty = false;
+                    }
+
+                    if (gpuCache != null)
+                    {
+                        // Draw the cached image at the object's position
+                        canvas.Save();
+                        canvas.Translate(Position.X, Position.Y);
+                        var paint = new SKPaint { FilterQuality = SKFilterQuality.None };
+                        canvas.DrawImage(gpuCache, 0, 0, paint);
+                        canvas.Restore();
+
+                        // Indicate that the subtree was fully rendered by GPU cache
+                        lastDrawRenderedSubtree = true;
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Any GPU error falls back to CPU drawing
+                    System.Diagnostics.Debug.WriteLine($"UIObject: GPU draw failed, falling back to CPU. Exception: {ex}");
+                    gpuCacheDirty = true;
+                }
+            }
+
+            // Default CPU path: translate to Position and draw only this object's content. Children will be drawn by DrawCall loop
+            canvas.Save();
+            canvas.Translate(Position.X, Position.Y);
+            DrawSelfContents(canvas);
+            canvas.Restore();
         }
 
         public virtual SKPaint GetPaint()
@@ -374,11 +496,39 @@ namespace DynamicWin.UI
 
         public void DestroyCall() 
         {
-            localObjects.ForEach((UIObject obj) =>
+            // Unsubscribe handlers registered in ctor to avoid leaking RendererMain/Dispatcher references
+            try
             {
-                obj.DestroyCall();
-            });
+                if (RendererMain.Instance != null)
+                {
+                    RendererMain.Instance.ContextMenuOpening -= CtxOpen;
+                    RendererMain.Instance.ContextMenuClosing -= CtxClose;
+                }
+            }
+            catch { }
 
+            // Destroy and clear all local children (recursively)
+            for (int i = localObjects.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    var obj = localObjects[i];
+                    obj?.DestroyCall();
+                }
+                catch { }
+            }
+
+            localObjects.Clear();
+
+            // Dispose GPU cache and remove from shared cache
+            try { gpuCache?.Dispose(); } catch { }
+            if (gpuCache != null)
+            {
+                try { GPUTextureCache.Remove($"UIObject_{GetType().FullName}_{GetHashCode()}_{(int)Size.X}x{(int)Size.Y}"); } catch { }
+            }
+            gpuCache = null;
+
+            // Allow derived types to run cleanup logic
             OnDestroy();
         }
 
@@ -404,6 +554,9 @@ namespace DynamicWin.UI
             if (toggleAnim != null && toggleAnim.IsRunning) toggleAnim.Stop();
 
             lastSetActiveCall = isEnabled;
+
+            // Notify derived classes of requested active change so they can start/stop background work immediately
+            OnActiveChanged(isEnabled);
 
             if (isEnabled)
             {
@@ -442,7 +595,17 @@ namespace DynamicWin.UI
 
             AddLocalObject(toggleAnim);
             toggleAnim.Start();
+
+            MarkGpuDirty();
         }
+
+        /// <summary>
+        /// Called when SetActive(...) is requested and the new active-state differs from prior calls
+        /// Override in derived types to react to immediate active-state changes (start/stop background work, etc)
+        /// This function is called as soon as SetActive is invoked (before the animator completes)
+        /// </summary>
+        /// <param name="isEnabled">requested active state</param>
+        protected virtual void OnActiveChanged(bool isEnabled) { }
 
         public virtual SKRoundRect GetRect()
         {
