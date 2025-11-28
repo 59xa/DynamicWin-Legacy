@@ -29,6 +29,9 @@ namespace DynamicWin.Main
         private static RendererMain instance;
         public static RendererMain Instance => instance;
 
+        // Guard so the startup updater sequence runs only once per application lifetime
+        private static bool startupUpdaterSequenceStarted = false;
+
         public Vec2 renderOffset = Vec2.zero;
         public Vec2 scaleOffset = Vec2.one;
         public float blurOverride = 0f;
@@ -67,6 +70,56 @@ namespace DynamicWin.Main
             // Register to MainForm's centrally throttled render callback instead of subscribing directly to CompositionTarget.Rendering.
             MainForm.Instance.onMainFormRender += Frame;
 
+            // Start updater check sequence: wait 5s, show overlay, check for update, then open appropriate menu
+            // Ensure this sequence starts only once per application lifetime
+            if (!startupUpdaterSequenceStarted)
+            {
+                startupUpdaterSequenceStarted = true;
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(5000);
+
+                        // Show overlay on UI thread as a normal menu (not overlay thread) to avoid race conditions
+                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            MenuManager.OpenMenu(new UpdaterOverlay());
+                        }));
+
+                        var updater = new Updater();
+                        AppVersion? update = null;
+
+                        try
+                        {
+                            update = await updater.CheckForUpdate();
+                        }
+                        catch
+                        {
+                            update = null;
+                        }
+
+                        // After check completes, open the appropriate menu on the UI thread.
+                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (update == null)
+                            {
+                                MenuManager.OpenMenu(Res.HomeMenu);
+                            }
+                            else
+                            {
+                                MenuManager.OpenMenu(new UpdaterMenu());
+                            }
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine("Updater sequence error: " + ex.Message);
+                    }
+                });
+            }
+
             isInitialized = true;
         }
 
@@ -81,6 +134,7 @@ namespace DynamicWin.Main
             KeyHandler.onKeyDown -= OnKeyRegistered;
             MainForm.Instance.DragEnter -= MainForm.Instance.MainForm_DragEnter;
             MainForm.Instance.DragLeave -= MainForm.Instance.MainForm_DragLeave;
+
             MainForm.Instance.MouseWheel -= MainForm.Instance.OnScroll;
 
             instance = null;
@@ -154,6 +208,16 @@ namespace DynamicWin.Main
             }
 
             MenuManager.Instance.Update(DeltaTime);
+
+            // Defensive: if the active menu becomes null or has no UI objects, restore the HomeMenu
+            try
+            {
+                if (MenuManager.Instance.ActiveMenu == null || MenuManager.Instance.ActiveMenu.UiObjects == null || MenuManager.Instance.ActiveMenu.UiObjects.Count == 0)
+                {
+                    MenuManager.OpenMenu(Res.HomeMenu);
+                }
+            }
+            catch { }
 
             if (MenuManager.Instance.ActiveMenu != null)
             {

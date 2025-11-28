@@ -162,7 +162,7 @@ namespace DynamicWin.Main
 
             this.Content = parent;
 
-            // Ensure the new renderer is called from the centralized, throttled MainForm loop
+            // Ensure the new renderer is called from the centralised, throttled MainForm loop
             onMainFormRender += customControl.Frame;
         }
 
