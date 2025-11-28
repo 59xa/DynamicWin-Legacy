@@ -34,6 +34,27 @@ namespace DynamicWin.UI.Menu
             activeMenu = Resources.Res.HomeMenu;
         }
 
+        // Locking support
+        private BaseMenu lockedMenu = null;
+
+        public void LockMenu(BaseMenu menu)
+        {
+            lockedMenu = menu;
+        }
+
+        public void UnlockMenu()
+        {
+            lockedMenu = null;
+
+            // If there are queued menus, try to open the next one
+            if (menuLoadQueue.Count > 0)
+            {
+                var next = menuLoadQueue[0];
+                menuLoadQueue.RemoveAt(0);
+                Open(next);
+            }
+        }
+
         public static void OpenMenu(BaseMenu newActiveMenu)
         {
             Instance.Open(newActiveMenu);
@@ -41,32 +62,84 @@ namespace DynamicWin.UI.Menu
 
         private void Open(BaseMenu newActiveMenu)
         {
+            // If locked and the requested menu is not the locked menu, queue it instead of opening immediately
+            if (lockedMenu != null && newActiveMenu != lockedMenu)
+            {
+                menuLoadQueue.Add(newActiveMenu);
+                return;
+            }
+
+            // If trying to open a static menu that may have been disposed, re-create static menus
+            if ((newActiveMenu == Resources.Res.HomeMenu || newActiveMenu == Resources.Res.SettingsMenu)
+                && (Resources.Res.HomeMenu == null || Resources.Res.HomeMenu.UiObjects == null || Resources.Res.HomeMenu.UiObjects.Count == 0))
+            {
+                try { Resources.Res.CreateStaticMenus(); }
+                catch { }
+
+                // Make sure it points to the newly created static menu instance
+                if (newActiveMenu == Resources.Res.HomeMenu) newActiveMenu = Resources.Res.HomeMenu;
+                if (newActiveMenu == Resources.Res.SettingsMenu) newActiveMenu = Resources.Res.SettingsMenu;
+            }
+
             SetActiveMenu(newActiveMenu);
         }
 
-        public static void OpenOverlayMenu(BaseMenu newActiveMenu, float time = 5f)
+        // Added optional parameter to open a specific menu after the overlay timeout
+        public static void OpenOverlayMenu(BaseMenu newActiveMenu, float time = 5f, BaseMenu menuToOpenAfter = null)
         {
-            Instance.OpenOverlay(newActiveMenu, time);
+            Instance.OpenOverlay(newActiveMenu, time, menuToOpenAfter);
         }
 
         static Thread overlayThread;
 
         public static void CloseOverlay()
         {
-            overlayThread.Interrupt();
+            if (overlayThread != null)
+            {
+                try
+                {
+                    if (overlayThread.IsAlive) overlayThread.Interrupt();
+                }
+                catch { }
+                finally
+                {
+                    overlayThread = null;
+                }
+            }
         }
 
-        private void OpenOverlay(BaseMenu newActiveMenu, float time)
+        // Updated to accept menuToOpenAfter. If provided, that menu will be opened after the overlay timeout
+        // Modified so the overlay thread only restores/opens menus if the overlay is still the active menu,
+        // preventing it from overriding menus opened while the overlay was visible.
+        private void OpenOverlay(BaseMenu newActiveMenu, float time, BaseMenu menuToOpenAfter)
         {
+            // If an overlay thread is already running, don't start another one
+            if (overlayThread != null && overlayThread.IsAlive) return;
+
             overlayThread = new Thread(() =>
             {
                 BaseMenu lastMenu = activeMenu;
+                BaseMenu overlayMenu = newActiveMenu;
 
-                // Always marshal menu operations to the UI thread
-                Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                // Lock the menu so other code doesn't override it
+                try
                 {
-                    QueueOpenMenu(newActiveMenu);
-                }));
+                    Application.Current?.Dispatcher.Invoke(new Action(() =>
+                    {
+                        LockMenu(overlayMenu);
+                    }));
+                }
+                catch { }
+
+                // Synchronously open the overlay on the UI thread to avoid races
+                try
+                {
+                    Application.Current?.Dispatcher.Invoke(new Action(() =>
+                    {
+                        QueueOpenMenu(newActiveMenu);
+                    }));
+                }
+                catch { }
 
                 int timeMillis = (int)(time * 1000);
 
@@ -76,26 +149,55 @@ namespace DynamicWin.UI.Menu
                 }
                 catch (ThreadInterruptedException e)
                 {
-                    if (lastMenu != null)
+                    // On interrupt, only restore the previous menu if the overlay is still active
+                    try
                     {
-                        Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        Application.Current?.Dispatcher.Invoke(new Action(() =>
                         {
-                            QueueOpenMenu(lastMenu);
+                            if (activeMenu == overlayMenu && lastMenu != null)
+                            {
+                                QueueOpenMenu(lastMenu);
+                            }
+
+                            // Unlock regardless
+                            UnlockMenu();
                         }));
                     }
+                    catch { }
+                    finally
+                    {
+                        // clear thread reference
+                        overlayThread = null;
+                    }
+
                     return;
                 }
 
-                if (lastMenu != null)
+                // When time elapsed, only open the specified menu if the overlay is still active.
+                try
                 {
-                    Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                    Application.Current?.Dispatcher.Invoke(new Action(() =>
                     {
-                        QueueOpenMenu(lastMenu);
+                        if (activeMenu == overlayMenu)
+                        {
+                            if (menuToOpenAfter != null)
+                            {
+                                QueueOpenMenu(menuToOpenAfter);
+                            }
+                            else if (lastMenu != null)
+                            {
+                                QueueOpenMenu(lastMenu);
+                            }
+                        }
+
+                        // Unlock after finishing
+                        UnlockMenu();
                     }));
                 }
-                else
+                catch { }
+                finally
                 {
-                    System.Diagnostics.Debug.WriteLine("Warning: lastMenu is null in OpenOverlay method");
+                    overlayThread = null;
                 }
 
             });
@@ -105,7 +207,7 @@ namespace DynamicWin.UI.Menu
             overlayThread.Start();
         }
 
-        List<BaseMenu> menuLoadQueue = new List<BaseMenu>();
+        static List<BaseMenu> menuLoadQueue = new List<BaseMenu>();
 
         Animator menuAnimatorOut;
 
@@ -135,8 +237,13 @@ namespace DynamicWin.UI.Menu
 
                 try
                 {
-                    // fully dispose the previous menu to destroy UIObjects and unsubscribe events
-                    activeMenu.Dispose();
+                    // Avoid disposing static menus created in Res to prevent restoring disposed instances later
+                    bool isStaticResMenu = (activeMenu == Resources.Res.HomeMenu || activeMenu == Resources.Res.SettingsMenu);
+                    if (!isStaticResMenu)
+                    {
+                        // fully dispose the previous menu to destroy UIObjects and unsubscribe events
+                        activeMenu.Dispose();
+                    }
                 }
                 catch { }
             }
