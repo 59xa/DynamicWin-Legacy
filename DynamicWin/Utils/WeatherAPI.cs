@@ -287,18 +287,28 @@ namespace DynamicWin.Utils
             var countries = await GetCachedCsvAsync().ConfigureAwait(false);
             var countryNames = countries.Select(c => c.country).Distinct().ToArray();
 
+            var selectedCountry = countryNames[idx];
+
             var cities = countries
                 .Where(c =>
                 {
-                    if (c.country != countryNames[idx])
+                    if (c.country != selectedCountry)
                         return false;
 
                     // Handle empty or malformed population
                     if (string.IsNullOrWhiteSpace(c.population))
                         return false;
 
-                    if (double.TryParse(c.population, out double pop))
-                        return pop > 100000;
+                    // Special case for Sweden per user request
+                    if (string.Equals(c.country, "Sweden", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (double.TryParse(c.population, out double pop))
+                            return pop > 3000;
+                        return false;
+                    }
+
+                    if (double.TryParse(c.population, out double popDefault))
+                        return popDefault > 100000;
 
                     return false;
                 })
