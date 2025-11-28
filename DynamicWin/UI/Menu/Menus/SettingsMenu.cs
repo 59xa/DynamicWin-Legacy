@@ -183,8 +183,8 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var wTitle = new DWText(island, "Small widgets (right click to add/edit)", new Vec2(25, 0), UIAlignment.TopLeft);
-                wTitle.Font = Res.SatoshiRegular;
-                wTitle.Color = Theme.TextSecond;
+                wTitle.Font = Res.SatoshiBold;
+                wTitle.Color = Theme.TextMain;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
                 objects.Add(wTitle);
@@ -195,8 +195,8 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var wTitle = new DWText(island, "Big widgets (right click to add/edit)", new Vec2(25, 15), UIAlignment.TopLeft);
-                wTitle.Font = Res.SatoshiRegular;
-                wTitle.Color = Theme.TextSecond;
+                wTitle.Font = Res.SatoshiBold;
+                wTitle.Color = Theme.TextMain;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
                 objects.Add(wTitle);
