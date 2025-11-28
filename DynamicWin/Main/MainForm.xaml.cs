@@ -22,6 +22,9 @@ namespace DynamicWin.Main
 
         private readonly Forms.NotifyIcon _trayIcon;
 
+        internal Forms.ToolStripMenuItem _settingsTrayItem;
+
+
         private DateTime _lastRenderTime;
         private readonly TimeSpan _targetElapsedTime = TimeSpan.FromMilliseconds(16); // ~60 FPS
 
@@ -90,10 +93,13 @@ namespace DynamicWin.Main
                 AddRenderer();
             });
 
-            _trayIcon.ContextMenuStrip.Items.Add("Settings", null, (x, y) =>
+            _settingsTrayItem = new Forms.ToolStripMenuItem("Settings");
+            _settingsTrayItem.Click += (x, y) =>
             {
                 MenuManager.OpenMenu(new SettingsMenu());
-            });
+            };
+
+            _trayIcon.ContextMenuStrip.Items.Add(_settingsTrayItem);
 
             _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (x, y) =>
             {
@@ -104,6 +110,17 @@ namespace DynamicWin.Main
             _trayIcon.Visible = true;
         }
 
+        public void UpdateTrayButtons()
+        {
+            if (MenuManager.Instance.ActiveMenu is UpdaterMenu)
+            {
+                _settingsTrayItem.Enabled = false;
+            }
+            else
+            {
+                _settingsTrayItem.Enabled = true;
+            }
+        }
 
         public void SetMonitor(int monitorIndex)
         {
@@ -157,11 +174,14 @@ namespace DynamicWin.Main
             if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
 
             var customControl = new RendererMain();
-            
+
             var parent = new Grid();
             parent.Children.Add(customControl);
 
             this.Content = parent;
+
+            // Ensure the new renderer is called from the centralised, throttled MainForm loop
+            onMainFormRender += customControl.Frame;
         }
 
         public void MainForm_DragEnter(object? sender, DragEventArgs e)
@@ -253,7 +273,7 @@ namespace DynamicWin.Main
         {
             isDragging = false;
 
-            if(MenuManager.Instance.ActiveMenu is ConfigureShortcutMenu)
+            if (MenuManager.Instance.ActiveMenu is ConfigureShortcutMenu)
             {
                 if (e.Data.GetDataPresent(DataFormats.FileDrop))
                 {

@@ -44,7 +44,7 @@ namespace DynamicWin.UI.Widgets.Big
             timerText = new DWText(parent, "00:00:00", new Vec2(15, 0f), UIAlignment.MiddleLeft)
             {
                 TextSize = 45,
-                Font = Resources.Res.InterRegular
+                Font = Resources.Res.SatoshiRegular
             };
             timerText.Anchor.X = 0;
             AddLocalObject(timerText);

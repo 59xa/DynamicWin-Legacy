@@ -2,5 +2,10 @@
 /DynamicWin/bin/
 /DynamicWin/obj/
 /DynamicWinSetup
-/DynamicWin/Properties
-/DynamicWin/DynamicWin.csproj.user
+/DynamicWin-Legacy-Updater/bin/Debug/net9.0
+/DynamicWin-Legacy-Updater/obj/Debug/net9.0
+/DynamicWin-Legacy-Updater/obj/Release/net9.0
+/DynamicWin-Legacy-Updater/obj/Release/net9.0/.NETCoreApp,Version=v9.0.AssemblyAttributes.cs
+/DynamicWin-Legacy-Updater/obj
+/Updater/obj/Debug
+/Updater/obj

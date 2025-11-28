@@ -5,120 +5,231 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace DynamicWin.Utils
 {
     internal class HardwareMonitor
     {
-        System.Timers.Timer timer;
+        private Timer timer;
 
         public static string usageString = " ";
 
         public static HardwareMonitor instance;
 
+        private Computer computer;
+        private float lastCpu = 0;
+        private string lastRam = "";
+
+        private readonly object _lock = new object();
+
+        private IHardware? cpuHardware;
+        private IHardware? memoryHardware;
+        private ISensor? cpuLoadSensor;
+        private ISensor? memoryUsedSensor;
+        private ISensor? memoryAvailableSensor;
+
+        private const int IntervalMs = 1500;
+
         public HardwareMonitor()
         {
             instance = this;
 
-            timer = new System.Timers.Timer();
-            timer.Interval = 1000;
-            timer.Elapsed += Timer_Elapsed;
-
             computer = new Computer()
             {
                 IsMemoryEnabled = true,
-                IsCpuEnabled = true // Enable CPU monitoring
+                IsCpuEnabled = true
             };
 
-            timer.Start();
-        }
-
-        Computer computer;
-        float lastCpu = 0;
-        string lastRam = "";
-
-        private static long _iPrevCall;
-        private static bool _isBusy;
-        private void Timer_Elapsed(object? sender, System.Timers.ElapsedEventArgs e)
-        {
-            if (_isBusy)
-            {
-                // Skip this time.
-                Debug.WriteLine($"HardwareMonitor SKIPPED when called again during #{_iPrevCall}");
-                return;
-            }
-
-            _isBusy = true;
-            _iPrevCall++;
-            var iCall = _iPrevCall;
             try
             {
-                Debug.WriteLine($"HardwareMonitor BEFORE #{iCall}");
-
                 computer.Open();
+                InitializeSensors();
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("HardwareMonitor: error opening Computer: " + ex);
+#endif
+            }
 
-                foreach (var hardware in computer.Hardware)
+            timer = new Timer(TimerCallback, null, IntervalMs, IntervalMs);
+        }
+
+        private void InitializeSensors()
+        {
+            try
+            {
+                foreach (var hw in computer.Hardware)
                 {
-                    if (hardware.HardwareType == HardwareType.Cpu)
+                    if (hw == null) continue;
+
+                    if (hw.HardwareType == HardwareType.Cpu && cpuHardware == null)
                     {
-                        if (hardware == null) continue;
-                        hardware.Update();
-                        foreach (var sensor in hardware.Sensors)
+                        cpuHardware = hw;
+
+                        foreach (var s in hw.Sensors)
                         {
-                            if (sensor.SensorType == SensorType.Load && sensor.Name == "CPU Total")
+                            if (s.SensorType == SensorType.Load && s.Name == "CPU Total")
                             {
-                                lastCpu = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
+                                cpuLoadSensor = s;
+                                break;
+                            }
+                        }
+                    }
+                    else if (hw.HardwareType == HardwareType.Memory && memoryHardware == null)
+                    {
+                        memoryHardware = hw;
+                        foreach (var s in hw.Sensors)
+                        {
+                            if (s.Name == "Memory Used")
+                                memoryUsedSensor = s;
+                            else if (s.Name == "Memory Available")
+                                memoryAvailableSensor = s;
+                        }
+                    }
+
+                    if (hw.SubHardware != null && hw.SubHardware.Length > 0)
+                    {
+                        foreach (var sub in hw.SubHardware)
+                        {
+                            if (sub == null) continue;
+
+                            if (sub.HardwareType == HardwareType.Cpu && cpuHardware == null)
+                            {
+                                cpuHardware = sub;
+                                foreach (var s in sub.Sensors)
+                                {
+                                    if (s.SensorType == SensorType.Load && s.Name == "CPU Total")
+                                    {
+                                        cpuLoadSensor = s;
+                                        break;
+                                    }
+                                }
+                            }
+                            else if (sub.HardwareType == HardwareType.Memory && memoryHardware == null)
+                            {
+                                memoryHardware = sub;
+                                foreach (var s in sub.Sensors)
+                                {
+                                    if (s.Name == "Memory Used")
+                                        memoryUsedSensor = s;
+                                    else if (s.Name == "Memory Available")
+                                        memoryAvailableSensor = s;
+                                }
                             }
                         }
                     }
 
-                    if (hardware.HardwareType == HardwareType.Memory)
+                    if (cpuHardware != null && memoryHardware != null && cpuLoadSensor != null && memoryUsedSensor != null && memoryAvailableSensor != null)
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("HardwareMonitor: InitializeSensors exception: " + ex);
+#endif
+            }
+        }
+
+        private void TimerCallback(object? state)
+        {
+            if (!Monitor.TryEnter(_lock))
+            {
+#if DEBUG
+                Debug.WriteLine("HardwareMonitor SKIPPED due to reentrant call");
+#endif
+                return;
+            }
+
+            try
+            {
+#if DEBUG
+                Debug.WriteLine($"HardwareMonitor BEGIN");
+#endif
+                if (cpuHardware == null || memoryHardware == null || cpuLoadSensor == null || memoryUsedSensor == null || memoryAvailableSensor == null)
+                {
+                    InitializeSensors();
+                }
+
+                if (cpuHardware != null)
+                {
+                    try
                     {
-                        if (hardware == null) continue;
-                        hardware.Update();
+                        cpuHardware.Update();
+                        if (cpuLoadSensor != null && cpuLoadSensor.Value.HasValue)
+                        {
+                            lastCpu = Mathf.LimitDecimalPoints((float)cpuLoadSensor.Value.GetValueOrDefault(), 1);
+                        }
+                    }
+                    catch { /* tolerate sensor update failures */ }
+                }
+
+                if (memoryHardware != null)
+                {
+                    try
+                    {
+                        memoryHardware.Update();
 
                         float memUsed = 0;
                         float memFree = 0;
 
-                        foreach (var sensor in hardware.Sensors)
-                        {
-                            if (sensor.Name == "Memory Used")
-                            {
-                                memUsed = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
-                            }
-                            else if (sensor.Name == "Memory Available")
-                            {
-                                memFree = Mathf.LimitDecimalPoints((float)sensor.Value.GetValueOrDefault(), 1);
-                            }
-                            lastRam = memUsed + "GB / " + Mathf.LimitDecimalPoints(memFree + memUsed, 0) + "GB";
-                        }
+                        if (memoryUsedSensor != null && memoryUsedSensor.Value.HasValue)
+                            memUsed = Mathf.LimitDecimalPoints((float)memoryUsedSensor.Value.GetValueOrDefault(), 1);
+
+                        if (memoryAvailableSensor != null && memoryAvailableSensor.Value.HasValue)
+                            memFree = Mathf.LimitDecimalPoints((float)memoryAvailableSensor.Value.GetValueOrDefault(), 1);
+
+                        lastRam = memUsed + "GB / " + Mathf.LimitDecimalPoints(memFree + memUsed, 0) + "GB";
                     }
+                    catch { }
                 }
 
                 usageString = $"CPU: {lastCpu}%    RAM: {lastRam}";
 
-                instance.computer.Close();
-
-                Debug.WriteLine($"HardwareMonitor AFTER #{iCall}");
+#if DEBUG
+                Debug.WriteLine($"HardwareMonitor END");
+#endif
             }
             catch (Exception ex)
             {
+#if DEBUG
                 Debug.WriteLine(ex.ToString());
-                Debug.WriteLine($"HardwareMonitor EXCEPTION #{iCall}");
-                return;
+                Debug.WriteLine($"HardwareMonitor EXCEPTION");
+#endif
             }
             finally
             {
-                _isBusy = false;
+                Monitor.Exit(_lock);
             }
         }
 
         public static void Stop()
         {
-            if( instance.computer != null )
+            try
             {
-                instance.computer.Close();
+                if (instance != null)
+                {
+                    // stop and dispose timer
+                    try
+                    {
+                        instance.timer?.Change(Timeout.Infinite, Timeout.Infinite);
+                        instance.timer?.Dispose();
+                    }
+                    catch { }
+
+                    if (instance.computer != null)
+                    {
+                        try
+                        {
+                            instance.computer.Close();
+                        }
+                        catch { }
+                    }
+                }
             }
+            catch (Exception) { }
         }
     }
 }

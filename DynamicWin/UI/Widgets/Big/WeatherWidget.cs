@@ -13,10 +13,10 @@ using Newtonsoft.Json.Linq;
 *    - Migrates existing settings configured by user from the legacy WeatherWidget configuration.
 *    - Allows user to finally change weather location than locking them with their current IP address geo-location.
 *    
-*   Author:                 Megan Park
+*   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          17 May 2025 09:26 KST (UTC+9)
+*   Last Modified:          20 November 2025
 */
 
 namespace DynamicWin.UI.Widgets.Big
@@ -85,13 +85,13 @@ namespace DynamicWin.UI.Widgets.Big
             var objects = new List<UIObject>();
 
             // Logic for hiding weather location
-            var hideLocationCheckbox = new Checkbox(null, "Hide location", new Vec2(25, 25), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
+            var hideLocationCheckbox = new DWCheckbox(null, "Hide location", new Vec2(25, 25), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
             hideLocationCheckbox.IsChecked = saveData.hideLocation;
 
             hideLocationCheckbox.clickCallback += () => saveData.hideLocation = hideLocationCheckbox.IsChecked;
 
             // Logic for toggling temperature measurement preference
-            var useCelsiusCheckbox = new Checkbox(null, "Use Celsius as temperature measurement", new Vec2(25, 0), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
+            var useCelsiusCheckbox = new DWCheckbox(null, "Use Celsius as temperature measurement", new Vec2(25, 0), new Vec2(25, 25), null, alignment: UIAlignment.TopLeft);
             useCelsiusCheckbox.IsChecked = saveData.useCelsius;
 
             useCelsiusCheckbox.clickCallback += () => saveData.useCelsius = useCelsiusCheckbox.IsChecked;
@@ -169,8 +169,6 @@ namespace DynamicWin.UI.Widgets.Big
                 // Context menu display configuration
                 contextMenu.IsOpen = true;
                 contextMenu.MaxHeight = 500f;
-                contextMenu.VerticalOffset = selectLocationButton.Position.Y - 400;
-                contextMenu.HorizontalOffset = selectLocationButton.Position.X - 1100;
             };
 
             // Add all objects
@@ -235,7 +233,7 @@ namespace DynamicWin.UI.Widgets.Big
             _ForecastText = new DWText(this, "--", new Vec2(32.5f, 37.5f), UIAlignment.TopLeft)
             {
                 TextSize = 13,
-                Font = Res.InterBold,
+                Font = Res.SatoshiBold,
                 Anchor = new Vec2(0, 0.5f),
                 Color = Theme.TextThird
             };
@@ -246,7 +244,7 @@ namespace DynamicWin.UI.Widgets.Big
             _TemperatureText = new DWText(this, "--", new Vec2(15, -27.5f), UIAlignment.BottomLeft)
             {
                 TextSize = 34,
-                Font = Res.InterBold,
+                Font = Res.SatoshiBold,
                 Anchor = new Vec2(0, 0.5f),
                 Color = Theme.TextMain
             };

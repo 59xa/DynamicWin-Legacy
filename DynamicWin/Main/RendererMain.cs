@@ -29,6 +29,9 @@ namespace DynamicWin.Main
         private static RendererMain instance;
         public static RendererMain Instance => instance;
 
+        // Guard so the startup updater sequence runs only once per application lifetime
+        private static bool startupUpdaterSequenceStarted = false;
+
         public Vec2 renderOffset = Vec2.zero;
         public Vec2 scaleOffset = Vec2.one;
         public float blurOverride = 0f;
@@ -44,7 +47,6 @@ namespace DynamicWin.Main
 
         private bool isInitialized = false;
         public int canvasWithoutClip;
-        private GRContext Context;
 
         public RendererMain()
         {
@@ -61,32 +63,106 @@ namespace DynamicWin.Main
             MainForm.Instance.Drop += MainForm.Instance.OnDrop;
             MainForm.Instance.MouseWheel += MainForm.Instance.OnScroll;
 
-            // Get refresh rate
-            int refreshRate = GetRefreshRate();
+            // Get refresh rate via centralized helper
+            int refreshRate = DisplayHelper.GetRefreshRate();
             Debug.WriteLine($"Monitor Refresh Rate: {refreshRate} Hz");
 
-            CompositionTarget.Rendering += OnRendering;
+            // Register to MainForm's centrally throttled render callback instead of subscribing directly to CompositionTarget.Rendering.
+            MainForm.Instance.onMainFormRender += Frame;
+
+            // Start updater check sequence: wait 5s, show overlay, check for update, then open appropriate menu
+            // Ensure this sequence starts only once per application lifetime
+            if (!startupUpdaterSequenceStarted)
+            {
+                startupUpdaterSequenceStarted = true;
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(5000);
+
+                        // Show overlay manually
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                        {
+                            MenuManager.OpenOverlayMenu(new UpdaterOverlay(), 0f); // 0f = no auto-close
+                        });
+
+                        var updater = new Updater();
+                        AppVersion? update = null;
+
+                        try
+                        {
+                            update = await updater.CheckForUpdate();
+                        }
+                        catch { update = null; }
+
+                        // Close overlay & open correct menu
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                        {
+                            // Force overlay unlock
+                            MenuManager.CloseOverlay();
+
+                            // Force queued menus to process immediately
+                            if (MenuManager.Instance != null)
+                            {
+                                MenuManager.Instance.UnlockMenu();
+                            }
+
+                            if (update == null)
+                            {
+                                MenuManager.OpenMenu(Res.HomeMenu);
+                            }
+                            else
+                            {
+#if DEBUG
+                                Debug.WriteLine($"[UPDATER] Update received from remote: {update.version}");
+#endif
+                                MenuManager.OpenMenu(new UpdaterMenu(update));
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+#if DEBUG
+                        Debug.WriteLine("[UPDATER] Updater sequence error: " + ex.Message);
+#endif
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                        {
+                            MenuManager.CloseOverlay();
+                            MenuManager.Instance?.UnlockMenu();
+                            MenuManager.OpenMenu(Res.HomeMenu);
+                        });
+                    }
+                });
+            }
 
             isInitialized = true;
         }
 
         public void Destroy()
         {
-            CompositionTarget.Rendering -= OnRendering;
+            // Unregister from central render callback
+            if (MainForm.Instance != null)
+                MainForm.Instance.onMainFormRender -= Frame;
+
             // if (fallbackTimer != null) fallbackTimer.Stop();
 
             KeyHandler.onKeyDown -= OnKeyRegistered;
             MainForm.Instance.DragEnter -= MainForm.Instance.MainForm_DragEnter;
             MainForm.Instance.DragLeave -= MainForm.Instance.MainForm_DragLeave;
+
             MainForm.Instance.MouseWheel -= MainForm.Instance.OnScroll;
 
             instance = null;
         }
 
-        private void OnRendering(object sender, EventArgs e)
+        // Called from MainForm's throttled rendering loop
+        public void Frame()
         {
             Update();
-            Render();
+            // InvalidateVisual must be called on UI thread; this Frame runs on UI thread because MainForm invokes onMainFormRender from CompositionTarget.Rendering.
+            InvalidateVisual();
         }
 
         private void OnKeyRegistered(Keys key, KeyModifier modifier)
@@ -150,6 +226,24 @@ namespace DynamicWin.Main
 
             MenuManager.Instance.Update(DeltaTime);
 
+            // Defensive: if the active menu becomes null or has no UI objects, restore the HomeMenu
+            try
+            {
+                var active = MenuManager.Instance.ActiveMenu;
+
+                if (active == null ||
+                    active.UiObjects == null ||
+                    active.UiObjects.Count == 0)
+                {
+                    // Allow UpdaterMenu to initialize without being overridden
+                    if (active is UpdaterMenu)
+                        return;
+
+                    MenuManager.OpenMenu(Res.HomeMenu);
+                }
+            }
+            catch { }
+
             if (MenuManager.Instance.ActiveMenu != null)
             {
                 MenuManager.Instance.ActiveMenu.Update();
@@ -162,15 +256,17 @@ namespace DynamicWin.Main
 
             if (MainIsland.hidden) return;
 
-            foreach (UIObject uiObject in objects)
+            // Take a stable snapshot of the menu object list to avoid InvalidOperationException
+            var uiObjectsSnapshot = objects?.ToArray();
+            if (uiObjectsSnapshot != null)
             {
-                uiObject.UpdateCall(DeltaTime);
+                for (int i = 0; i < uiObjectsSnapshot.Length; i++)
+                {
+                    var uiObject = uiObjectsSnapshot[i];
+                    if (uiObject == null) continue;
+                    uiObject.UpdateCall(DeltaTime);
+                }
             }
-        }
-
-        private void Render()
-        {
-            Dispatcher.Invoke(() => InvalidateVisual());
         }
 
         protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
@@ -195,35 +291,50 @@ namespace DynamicWin.Main
             if (MainIsland.hidden) return;
 
             bool hasContextMenu = false;
-            foreach (UIObject uiObject in objects)
+
+            // Snapshot the active menu's UiObjects to avoid collection modifications while painting
+            var uiObjectsSnapshot = objects?.ToArray();
+            if (uiObjectsSnapshot != null)
             {
-                canvas.RestoreToCount(canvasWithoutClip);
-                canvasWithoutClip = canvas.Save();
-
-                if (uiObject.IsHovering && uiObject.GetContextMenu() != null)
+                foreach (var uiObject in uiObjectsSnapshot)
                 {
-                    hasContextMenu = true;
-                    ContextMenu = uiObject.GetContextMenu();
-                }
+                    if (uiObject == null) continue;
 
-                foreach (UIObject obj in uiObject.LocalObjects)
-                {
-                    if (obj.IsHovering && obj.GetContextMenu() != null)
+                    canvas.RestoreToCount(canvasWithoutClip);
+                    canvasWithoutClip = canvas.Save();
+
+                    // Snapshot the local objects too before enum
+                    var localSnapshot = uiObject.LocalObjects?.ToArray();
+
+                    if (uiObject.IsHovering && uiObject.GetContextMenu() != null)
                     {
                         hasContextMenu = true;
-                        ContextMenu = obj.GetContextMenu();
+                        ContextMenu = uiObject.GetContextMenu();
                     }
+
+                    if (localSnapshot != null)
+                    {
+                        foreach (var obj in localSnapshot)
+                        {
+                            if (obj == null) continue;
+                            if (obj.IsHovering && obj.GetContextMenu() != null)
+                            {
+                                hasContextMenu = true;
+                                ContextMenu = obj.GetContextMenu();
+                            }
+                        }
+                    }
+
+                    if (uiObject.maskInToIsland)
+                    {
+                        Mask(canvas);
+                    }
+
+                    canvas.Scale(scaleOffset.X, scaleOffset.Y, islandObject.Position.X + islandObject.Size.X / 2, islandObject.Position.Y + islandObject.Size.Y / 2);
+                    canvas.Translate(renderOffset.X, renderOffset.Y);
+
+                    uiObject.DrawCall(canvas);
                 }
-
-                if (uiObject.maskInToIsland)
-                {
-                    Mask(canvas);
-                }
-
-                canvas.Scale(scaleOffset.X, scaleOffset.Y, islandObject.Position.X + islandObject.Size.X / 2, islandObject.Position.Y + islandObject.Size.Y / 2);
-                canvas.Translate(renderOffset.X, renderOffset.Y);
-
-                uiObject.DrawCall(canvas);
             }
 
             onDraw?.Invoke(canvas);
@@ -244,51 +355,6 @@ namespace DynamicWin.Main
             var islandMask = islandObject.GetRect();
             islandMask.Deflate(new SKSize(1, 1));
             return islandMask;
-        }
-
-        // Native PInvoke to get monitor refresh rate
-        private const int ENUM_CURRENT_SETTINGS = -1;
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-        private struct DEVMODE
-        {
-            private const int CCHDEVICENAME = 32;
-            private const int CCHFORMNAME = 32;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICENAME)]
-            public string dmDeviceName;
-            public ushort dmSpecVersion;
-            public ushort dmDriverVersion;
-            public ushort dmSize;
-            public ushort dmDriverExtra;
-            public uint dmFields;
-            public int dmPositionX;
-            public int dmPositionY;
-            public uint dmDisplayOrientation;
-            public uint dmDisplayFixedOutput;
-            public short dmColor;
-            public short dmDuplex;
-            public short dmYResolution;
-            public short dmTTOption;
-            public short dmCollate;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHFORMNAME)]
-            public string dmFormName;
-            public ushort dmLogPixels;
-            public uint dmBitsPerPel;
-            public uint dmPelsWidth;
-            public uint dmPelsHeight;
-            public uint dmDisplayFlags;
-            public uint dmDisplayFrequency;
-        }
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        private static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
-
-        private int GetRefreshRate()
-        {
-            DEVMODE devMode = new DEVMODE();
-            devMode.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
-            if (EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref devMode))
-                return (int)devMode.dmDisplayFrequency;
-            return 60;
         }
     }
 }

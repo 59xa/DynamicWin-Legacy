@@ -1,14 +1,8 @@
 ﻿using DynamicWin.Main;
-using DynamicWin.Resources;
-using DynamicWin.UI.UIElements;
 using DynamicWin.Utils;
 using SkiaSharp;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Controls;
+using System.Windows.Threading;
 
 namespace DynamicWin.UI.Widgets
 {
@@ -29,12 +23,6 @@ namespace DynamicWin.UI.Widgets
             objs.ForEach(obj => AddLocalObject(obj));
 
             roundRadius = 15f;
-
-            /*widgetName = new DWText(this, GetWidgetName(), Vec2.zero, UIAlignment.Center)
-            {
-                Font = Res.InterBold,
-                textSize = 20
-            };*/
         }
 
         public Vec2 GetWidgetSize() { return new Vec2(GetWidgetWidth(), GetWidgetHeight()); }
@@ -86,44 +74,24 @@ namespace DynamicWin.UI.Widgets
                 var paint = GetPaint();
                 paint.ImageFilter = SKImageFilter.CreateDropShadowOnly(0, 0, hoverProgress * 10, hoverProgress * 10, Theme.WidgetBackground.Override(a: hoverProgress / 10).Value());
 
-                int ogC = canvas.Save();
+                // Save the canvas state for the hover transform and clip
+                int saveCount = canvas.Save();
 
                 var p = Position + Size / 2;
                 canvas.Scale(1 + hoverProgress / 60, 1 + hoverProgress / 60, p.X, p.Y);
 
-                int sc = canvas.Save();
+                // Use a clip to exclude the widget rect and draw shadow into difference region
+                int clipSave = canvas.Save();
                 canvas.ClipRoundRect(GetRect(), SKClipOperation.Difference, antialias: true);
                 canvas.DrawRoundRect(GetRect(), paint);
-                canvas.RestoreToCount(sc);
+                canvas.RestoreToCount(clipSave);
+
+                // Restore the hover transform state
+                canvas.RestoreToCount(saveCount);
             }
 
-
-            /*if (!isEditMode || isSmallWidget)
-            {
-                drawLocalObjects = true; */
+            // Draw the widget visuals and children
             DrawWidget(canvas);
-            /*            }
-                        else
-                        {
-                            widgetName.blurAmount = GetBlur();
-                            widgetName.DrawCall(canvas);
-                            drawLocalObjects = false;
-                        }*/
-
-
-            /*if (!IsSmallWidget)
-            {
-                var bPaint = GetPaint();
-                bPaint.ImageFilter = SKImageFilter.CreateBlur(100, 100);
-                bPaint.BlendMode = SKBlendMode.SrcOver;
-                bPaint.Color = Col.White.Override(a: 0.4f).Value();
-
-                int canvasSave = canvas.Save();
-                canvas.ClipRoundRect(GetRect(), antialias: true);
-                canvas.DrawCircle(RendererMain.CursorPosition.X + 12.5f, RendererMain.CursorPosition.Y + 20, 35, bPaint);
-
-                canvas.RestoreToCount(canvasSave);
-            }*/
 
             if (isEditMode)
             {
@@ -140,18 +108,105 @@ namespace DynamicWin.UI.Widgets
 
                 int noClip = canvas.Save();
 
-                //if(!RendererMain.Instance.MainIsland.IsHovering)
-                //    canvas.ClipRect(clipRect, SKClipOperation.Difference);
-
                 paint.Color = SKColors.DimGray;
                 canvas.DrawRoundRect(broundRect, paint);
 
                 canvas.RestoreToCount(noClip);
             }
-
-            //canvas.RestoreToCount(ogC);
         }
 
         public virtual void DrawWidget(SKCanvas canvas) { }
+
+        // Background task support when widget changes active state
+        // Widgets can override RunBackgroundAsync to perform off-UI-thread work while inactive
+        CancellationTokenSource? _backgroundCts;
+        Task? _backgroundTask;
+
+        protected override void OnActiveChanged(bool isEnabled)
+        {
+            base.OnActiveChanged(isEnabled);
+
+            if (!isEnabled)
+            {
+                // Start background work when requested to become inactive
+                if (_backgroundCts != null) return;
+                _backgroundCts = new CancellationTokenSource();
+                var token = _backgroundCts.Token;
+                _backgroundTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await RunBackgroundAsync(token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { /* expected on cancellation - swallow */ }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[WidgetBase] Background exception: " + ex);
+                    }
+                    finally
+                    {
+                        _backgroundCts = null;
+                        _backgroundTask = null;
+                    }
+                }, token);
+            }
+            else
+            {
+                // Stop background work when becoming active (do not block UI)
+                if (_backgroundCts != null)
+                {
+                    try
+                    {
+                        _backgroundCts.Cancel();
+                    }
+                    catch { }
+
+                    // Observe faults without blocking UI thread
+                    _backgroundTask?.ContinueWith(t =>
+                    {
+                        if (t.Exception != null)
+                            System.Diagnostics.Debug.WriteLine("[WidgetBase] Background fault: " + t.Exception);
+                    }, TaskContinuationOptions.OnlyOnFaulted);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Override to run background work when widget becomes inactive
+        /// IMPORTANT: Do not touch UI objects directly from this method. Marshal to UI thread via BeginInvokeUI(...) OR update thread-safe fields and read them on UI thread
+        /// Default implementation is a simple no-op loop
+        /// </summary>
+        protected virtual async Task RunBackgroundAsync(CancellationToken token)
+        {
+            // Default: nothing heavy, but keep an awaitable loop so derived classes can override without re-implementing the loop
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(1000, token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { /* swallow */ }
+        }
+
+        /// <summary>
+        /// Helper for background threads to marshal non-blocking UI updates
+        /// Prefer this over Dispatcher.Invoke to avoid deadlocks/hitches
+        /// </summary>
+        protected void BeginInvokeUI(Action action)
+        {
+            try
+            {
+                var disp = System.Windows.Application.Current?.Dispatcher;
+                if (disp != null && !disp.CheckAccess())
+                    disp.BeginInvoke(action, DispatcherPriority.Normal);
+                else
+                    action();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[WidgetBase] BeginInvokeUI failed: " + ex);
+            }
+        }
     }
 }

@@ -98,7 +98,7 @@ namespace DynamicWin.UI.Widgets.Big
             noMediaPlaying = new DWText(this, "No Media Playing", new Vec2(0, 30))
             {
                 Color = Theme.TextSecond,
-                Font = Resources.Res.InterBold,
+                Font = Resources.Res.SatoshiBold,
                 TextSize = 16
             };
             noMediaPlaying.SilentSetActive(false);
@@ -107,7 +107,7 @@ namespace DynamicWin.UI.Widgets.Big
             title = new DWText(this, "Title", new Vec2(0, 22.5f))
             {
                 Color = Theme.TextSecond,
-                Font = Resources.Res.InterBold,
+                Font = Resources.Res.SatoshiBold,
                 TextSize = 15
             };
             title.SilentSetActive(false);
@@ -116,7 +116,7 @@ namespace DynamicWin.UI.Widgets.Big
             artist = new DWText(this, "Artist", new Vec2(0, 42.5f))
             {
                 Color = Theme.TextThird,
-                Font = Resources.Res.InterRegular,
+                Font = Resources.Res.SatoshiRegular,
                 TextSize = 13
             };
             artist.SilentSetActive(false);

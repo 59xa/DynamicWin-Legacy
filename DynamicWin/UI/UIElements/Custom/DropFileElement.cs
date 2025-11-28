@@ -14,7 +14,7 @@ namespace DynamicWin.UI.UIElements.Custom
         {
             roundRadius = 25;
 
-            AddLocalObject(new DWText(null, displayText, Vec2.zero, UIAlignment.Center) { Font = Resources.Res.InterBold, TextSize = tSize });
+            AddLocalObject(new DWText(null, displayText, Vec2.zero, UIAlignment.Center) { Font = Resources.Res.SatoshiBold, TextSize = tSize });
         }
 
         Col currentCol = Theme.Secondary;
