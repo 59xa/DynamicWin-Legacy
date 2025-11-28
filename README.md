@@ -15,6 +15,9 @@
 > [!NOTE]
 > This repository holds the legacy code and releases for DynamicWin developed by [FlorianButz](https://github.com/FlorianButz), and is maintained by [59xa](https://github.com/59xa). Please do not report issues and missing features in this repository regarding version 2.0 as this repository only accepts version 1.0 issues. For version 2.0 releases, click [here](https://github.com/FlorianButz/DynamicWin).
 
+> [!WARNING]
+> This is a legacy application that is being maintained by one developer. Do not expect most features to be fixed whatsoever. However, this does not mean groundbreaking issues and feature requests will be turned down immediately. Open an issue ticket for a new feature or an existing issue, they will be added/fixed eventually. 
+
 ### What is it?
 A [Dynamic Island](https://support.apple.com/de-de/guide/iphone/iph28f50d10d/ios) inspired Windows App that brings in a bunch of features like widgets or a file tray that works like a clipboard.
 Similar to dynamic notches that you can find on macOS like [NotchNook](https://lo.cafe/notchnook), this application brings the concept on Windows devices to life.
@@ -32,7 +35,7 @@ git pull https://github.com/59xa/DynamicWin.git
 - While [version 2.0](https://github.com/FlorianButz/DynamicWin) of this software has been made public, the legacy codebase will continue to exist and maintained by me until FlorianButz decides to pull the legacy support.
 - This repository is no longer connected to the original repository's fork network. Please report your issues regarding V2  [here](https://github.com/FlorianButz/DynamicWin).
 - V1 (this repository) will co-exist with V2, and will not serve as a replacement but an alternative for users to use.
-- Your support truly means a lot to us to keep maintaining DynamicWin Legacy. Keep an eye out whenever a new release comes out.
+- Your support truly means a lot to keep maintaining DynamicWin Legacy. Keep an eye out whenever a new release comes out.
 - Feel free to contribute to this project as you wish. Open any issues on the issues page if you encounter any bugs.
 <br>
 
@@ -110,8 +113,12 @@ This is an example of a color:
 The hex code is structured this way: `#rrggbb`. If you want to change the alpha of the color, it is **always** at the start of the code. `#aarrggbb`.
 
 # Known Issues
-The performance might not be the best. More optimisations in the codebase will happen as time passes starting with **`v1.4.0b`**. <br><br>
+The performance might not be the best. Slowly expect codebase optimisations starting with **`v1.4.0b`**. <br><br>
 
-The app might suddenly disappear and upon trying to reopen it a message box will tell you that only one instance of the app can run at the same time. To fix this, open task manager and find the process "DynamicWin". Kill it and start the app again. <br><br>
+The app might suddenly disappear and upon trying to reopen it a message box will tell you that only one instance of the app can run at the same time. To fix this, open task manager and find the process `DynamicWin`. Kill it and start the app again. <br><br>
 
 Too fast interactions might confuse the animation system and will result in an empty menu. To fix this, usually moving the mouse away from the island and then over it again will fix it.
+
+# Modding DynamicWin (making Extensions)
+- While extension support and compatibility is not a focus for the maintainer, users are still able to make their own extensions as needed.
+- Read [MODDING.md](MODDING.md) for more information on how to get started.
