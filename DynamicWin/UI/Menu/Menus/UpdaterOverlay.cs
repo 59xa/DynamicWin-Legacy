@@ -9,6 +9,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
+using static DynamicWin.UI.UIElements.IslandObject;
 
 /*
  *
@@ -70,7 +71,9 @@ namespace DynamicWin.UI.Menu.Menus
 
         public override Col IslandBorderColor()
         {
-            return new Col(0.5f, 0.5f, 0.5f);
+            IslandMode mode = Settings.IslandMode; // Reads either Island or Notch as value
+            if (mode == IslandMode.Island) return new Col(0.5f, 0.5f, 0.5f);
+            else return new Col(0, 0, 0, 0); // Render transparent if island mode is Notch
         }
     }
 }

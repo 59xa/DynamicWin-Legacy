@@ -82,11 +82,11 @@ namespace DynamicWin.Main
                     {
                         await Task.Delay(5000);
 
-                        // Show overlay on UI thread as a normal menu (not overlay thread) to avoid race conditions
-                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        // Show overlay manually
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                         {
-                            MenuManager.OpenMenu(new UpdaterOverlay());
-                        }));
+                            MenuManager.OpenOverlayMenu(new UpdaterOverlay(), 0f); // 0f = no auto-close
+                        });
 
                         var updater = new Updater();
                         AppVersion? update = null;
@@ -95,27 +95,44 @@ namespace DynamicWin.Main
                         {
                             update = await updater.CheckForUpdate();
                         }
-                        catch
-                        {
-                            update = null;
-                        }
+                        catch { update = null; }
 
-                        // After check completes, open the appropriate menu on the UI thread.
-                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        // Close overlay & open correct menu
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                         {
+                            // Force overlay unlock
+                            MenuManager.CloseOverlay();
+
+                            // Force queued menus to process immediately
+                            if (MenuManager.Instance != null)
+                            {
+                                MenuManager.Instance.UnlockMenu();
+                            }
+
                             if (update == null)
                             {
                                 MenuManager.OpenMenu(Res.HomeMenu);
                             }
                             else
                             {
-                                MenuManager.OpenMenu(new UpdaterMenu());
+#if DEBUG
+                                Debug.WriteLine($"[UPDATER] Update received from remote: {update.version}");
+#endif
+                                MenuManager.OpenMenu(new UpdaterMenu(update));
                             }
-                        }));
+                        });
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("Updater sequence error: " + ex.Message);
+#if DEBUG
+                        Debug.WriteLine("[UPDATER] Updater sequence error: " + ex.Message);
+#endif
+                        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                        {
+                            MenuManager.CloseOverlay();
+                            MenuManager.Instance?.UnlockMenu();
+                            MenuManager.OpenMenu(Res.HomeMenu);
+                        });
                     }
                 });
             }
@@ -212,8 +229,16 @@ namespace DynamicWin.Main
             // Defensive: if the active menu becomes null or has no UI objects, restore the HomeMenu
             try
             {
-                if (MenuManager.Instance.ActiveMenu == null || MenuManager.Instance.ActiveMenu.UiObjects == null || MenuManager.Instance.ActiveMenu.UiObjects.Count == 0)
+                var active = MenuManager.Instance.ActiveMenu;
+
+                if (active == null ||
+                    active.UiObjects == null ||
+                    active.UiObjects.Count == 0)
                 {
+                    // Allow UpdaterMenu to initialize without being overridden
+                    if (active is UpdaterMenu)
+                        return;
+
                     MenuManager.OpenMenu(Res.HomeMenu);
                 }
             }
