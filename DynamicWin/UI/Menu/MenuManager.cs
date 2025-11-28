@@ -23,6 +23,11 @@ namespace DynamicWin.UI.Menu
         public Action<BaseMenu, BaseMenu> onMenuChange;
         public Action<BaseMenu> onMenuChangeEnd;
 
+        private BaseMenu overlayMenu = null;
+        private BaseMenu overlayNextMenu = null;
+
+        private CancellationTokenSource overlayCts = null;
+
         public MenuManager()
         {
             instance = this;
@@ -62,6 +67,13 @@ namespace DynamicWin.UI.Menu
 
         private void Open(BaseMenu newActiveMenu)
         {
+            // If an animation is currently running, queue the request so it won't be lost
+            if (menuAnimatorOut != null && menuAnimatorOut.IsRunning)
+            {
+                menuLoadQueue.Add(newActiveMenu);
+                return;
+            }
+
             // If locked and the requested menu is not the locked menu, queue it instead of opening immediately
             if (lockedMenu != null && newActiveMenu != lockedMenu)
             {
@@ -85,124 +97,137 @@ namespace DynamicWin.UI.Menu
         }
 
         // Added optional parameter to open a specific menu after the overlay timeout
-        public static void OpenOverlayMenu(BaseMenu newActiveMenu, float time = 5f, BaseMenu menuToOpenAfter = null)
+        public static void OpenOverlayMenu(BaseMenu overlayMenu, float duration = 5f, BaseMenu menuToOpenAfter = null)
         {
-            Instance.OpenOverlay(newActiveMenu, time, menuToOpenAfter);
+            if (Instance == null) return;
+
+            // If overlay already exists, replace it
+            Instance.SetOverlay(overlayMenu, duration, menuToOpenAfter);
         }
 
-        static Thread overlayThread;
-
-        public static void CloseOverlay()
+        // Instance method to handle overlay logic
+        private void SetOverlay(BaseMenu overlayMenu, float duration, BaseMenu menuToOpenAfter)
         {
-            if (overlayThread != null)
+            // Cancel any existing overlay
+            if (overlayCts != null)
+            {
+                try { overlayCts.Cancel(); } catch { }
+                overlayCts.Dispose();
+                overlayCts = null;
+            }
+
+            overlayCts = new CancellationTokenSource();
+
+            // Lock menu immediately
+            LockMenu(overlayMenu);
+
+            // Open overlay instantly
+            QueueOpenMenu(overlayMenu);
+
+            if (duration <= 0f) return; // manual close only
+
+            // Schedule unlock and next menu after duration asynchronously (non-blocking)
+            _ = Task.Run(async () =>
             {
                 try
                 {
-                    if (overlayThread.IsAlive) overlayThread.Interrupt();
+                    await Task.Delay((int)(duration * 1000), overlayCts.Token);
+
+                    Application.Current?.Dispatcher.Invoke(() =>
+                    {
+                        // Only unlock if overlay is still active
+                        if (ActiveMenu == overlayMenu)
+                        {
+                            UnlockMenu();
+
+                            if (menuToOpenAfter != null)
+                                QueueOpenMenu(menuToOpenAfter);
+                        }
+                    });
                 }
-                catch { }
+                catch (TaskCanceledException) { /* overlay cancelled */ }
                 finally
                 {
-                    overlayThread = null;
+                    overlayCts.Dispose();
+                    overlayCts = null;
                 }
+            });
+        }
+
+        static Thread overlayThread;
+        // cooperative cancellation flag to avoid Thread.Interrupt
+        static volatile bool overlayCancelled = false;
+
+        public static void CloseOverlay()
+        {
+            if (Instance == null) return;
+
+            if (Instance.overlayCts != null)
+            {
+                try { Instance.overlayCts.Cancel(); } catch { }
+                Instance.overlayCts.Dispose();
+                Instance.overlayCts = null;
             }
+
+            // Unlock immediately so queued menus open
+            Instance.UnlockMenu();
         }
 
         // Updated to accept menuToOpenAfter. If provided, that menu will be opened after the overlay timeout
         // Modified so the overlay thread only restores/opens menus if the overlay is still the active menu,
         // preventing it from overriding menus opened while the overlay was visible.
-        private void OpenOverlay(BaseMenu newActiveMenu, float time, BaseMenu menuToOpenAfter)
+        public void OpenOverlay(BaseMenu newActiveMenu, float time, BaseMenu menuToOpenAfter)
         {
-            // If an overlay thread is already running, don't start another one
+            // If an overlay is already running, ignore
             if (overlayThread != null && overlayThread.IsAlive) return;
+
+            overlayCancelled = false;
+            overlayMenu = newActiveMenu;
+            overlayNextMenu = menuToOpenAfter;
 
             overlayThread = new Thread(() =>
             {
-                BaseMenu lastMenu = activeMenu;
-                BaseMenu overlayMenu = newActiveMenu;
+                // Lock the overlay menu
+                Application.Current?.Dispatcher.Invoke(() => LockMenu(overlayMenu));
 
-                // Lock the menu so other code doesn't override it
-                try
-                {
-                    Application.Current?.Dispatcher.Invoke(new Action(() =>
-                    {
-                        LockMenu(overlayMenu);
-                    }));
-                }
-                catch { }
-
-                // Synchronously open the overlay on the UI thread to avoid races
-                try
-                {
-                    Application.Current?.Dispatcher.Invoke(new Action(() =>
-                    {
-                        QueueOpenMenu(newActiveMenu);
-                    }));
-                }
-                catch { }
+                // Open overlay menu on UI thread
+                Application.Current?.Dispatcher.Invoke(() => QueueOpenMenu(overlayMenu));
 
                 int timeMillis = (int)(time * 1000);
+                int waited = 0;
+                const int step = 100;
 
-                try
+                while (waited < timeMillis)
                 {
-                    Thread.Sleep(timeMillis);
+                    if (overlayCancelled) break;
+
+                    int sleep = Math.Min(step, timeMillis - waited);
+                    try { Thread.Sleep(sleep); } catch { }
+
+                    waited += sleep;
                 }
-                catch (ThreadInterruptedException e)
-                {
-                    // On interrupt, only restore the previous menu if the overlay is still active
-                    try
-                    {
-                        Application.Current?.Dispatcher.Invoke(new Action(() =>
-                        {
-                            if (activeMenu == overlayMenu && lastMenu != null)
-                            {
-                                QueueOpenMenu(lastMenu);
-                            }
 
-                            // Unlock regardless
-                            UnlockMenu();
-                        }));
-                    }
-                    catch { }
-                    finally
+                // Overlay finished or cancelled
+                Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    // Only unlock if overlay is still active
+                    if (ActiveMenu == overlayMenu)
                     {
-                        // clear thread reference
-                        overlayThread = null;
+                        // Open the intended next menu
+                        if (overlayNextMenu != null)
+                            QueueOpenMenu(overlayNextMenu);
                     }
 
-                    return;
-                }
+                    UnlockMenu();
 
-                // When time elapsed, only open the specified menu if the overlay is still active.
-                try
-                {
-                    Application.Current?.Dispatcher.Invoke(new Action(() =>
-                    {
-                        if (activeMenu == overlayMenu)
-                        {
-                            if (menuToOpenAfter != null)
-                            {
-                                QueueOpenMenu(menuToOpenAfter);
-                            }
-                            else if (lastMenu != null)
-                            {
-                                QueueOpenMenu(lastMenu);
-                            }
-                        }
-
-                        // Unlock after finishing
-                        UnlockMenu();
-                    }));
-                }
-                catch { }
-                finally
-                {
+                    // Clear references
+                    overlayCancelled = false;
                     overlayThread = null;
-                }
-
+                    overlayMenu = null;
+                    overlayNextMenu = null;
+                }));
             });
 
-            // mark as background so it won't block shutdown
             overlayThread.IsBackground = true;
             overlayThread.Start();
         }
