@@ -21,7 +21,7 @@ namespace DynamicWin.UI.Menu.Menus.SettingsMenuObjects
 
             roundRadius = 45;
 
-            color = Theme.WidgetBackground.Override(a: 0.15f);
+            color = Theme.Primary.Override();
         }
 
         public override void Draw(SKCanvas canvas)
