@@ -82,6 +82,12 @@ namespace DynamicWin.Main
                     {
                         await Task.Delay(5000);
 
+                        if (MenuManager.Instance.ActiveMenu is SettingsMenu)
+                        {
+                            // If user is in SettingsMenu, don't interrupt them with updater
+                            return;
+                        }
+
                         // Show overlay manually
                         System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                         {
