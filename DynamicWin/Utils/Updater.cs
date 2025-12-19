@@ -224,5 +224,6 @@ namespace DynamicWin.Utils
     {
         public string version { get; set; }
         public string downloadUri { get; set; }
+        public string releaseStream { get; set; }
     }
 }

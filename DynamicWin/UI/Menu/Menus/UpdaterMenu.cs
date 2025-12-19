@@ -34,6 +34,7 @@ namespace DynamicWin.UI.Menu.Menus
         // The update object received from RendererMain
         internal AppVersion update { get; }
         private string latestVersion;
+        private string releaseStream;
 
         // UI elements
         DWText subUpdaterText;
@@ -64,6 +65,7 @@ namespace DynamicWin.UI.Menu.Menus
             validUpdate = (update != null) && !string.IsNullOrWhiteSpace(update.version) && !string.IsNullOrWhiteSpace(update.downloadUri);
 
             latestVersion = DisplayVersion();
+            releaseStream = DisplayReleaseStream();
 
 #if DEBUG
             Debug.WriteLine($"[UPDATER] Constructor: validUpdate = {validUpdate}, update.version = {update?.version}");
@@ -75,6 +77,14 @@ namespace DynamicWin.UI.Menu.Menus
         {
             if (update != null && !string.IsNullOrWhiteSpace(update.version))
                 return update.version;
+            else
+                return "unknown";
+        }
+
+        private string DisplayReleaseStream()
+        {
+            if (update != null && !string.IsNullOrWhiteSpace(update.releaseStream))
+                return update.releaseStream;
             else
                 return "unknown";
         }
@@ -127,7 +137,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             MainForm.Instance?.UpdateTrayButtons();
 
-            versionText.Text = $"New version: {latestVersion}";
+            versionText.Text = $"New version: {latestVersion} ({releaseStream})";
 
             // Start countdown once (only for valid update)
             if (!countdownStarted && validUpdate)
