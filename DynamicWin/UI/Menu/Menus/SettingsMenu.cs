@@ -252,34 +252,58 @@ namespace DynamicWin.UI.Menu.Menus
                 }
             }
 
-            objects.Add(new DWText(island, "Software version: " + DynamicWinMain.Version, new Vec2(25, 0), UIAlignment.TopLeft)
+            var releaseStreamTitle = new DWText(island, "Release Stream", new Vec2(25, 0), UIAlignment.TopLeft);
+            releaseStreamTitle.Font = Res.SatoshiBold;
+            releaseStreamTitle.TextSize = 15;
+            releaseStreamTitle.Color = Theme.TextMain;
+            releaseStreamTitle.Anchor.X = 0;
+            objects.Add(releaseStreamTitle);
+
+            var releaseStreamDisclaimer = new DWText(island, "Updates will be checked after you restart the application.", new Vec2(25, -15), UIAlignment.TopLeft);
+            releaseStreamDisclaimer.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimer.TextSize = 12;
+            releaseStreamDisclaimer.Color = Theme.TextSecond;
+            releaseStreamDisclaimer.Anchor.X = 0;
+            objects.Add(releaseStreamDisclaimer);
             {
-                Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
+                var releaseStreams = new string[] { "Release", "Canary" };
+                var releaseStream = new DWMultiSelectionButton(island, releaseStreams, new Vec2(25, -15), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
+                releaseStream.SelectedIndex = Settings.ReleaseStream;
+                releaseStream.Anchor.X = 0;
+                releaseStream.onClick += (index) =>
+                {
+                    Settings.ReleaseStream = index;
+                };
+                objects.Add(releaseStream);
+            }
+
+            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream})", new Vec2(25, 0), UIAlignment.TopLeft)
+            {
+                Color = Theme.TextMain,
+                Anchor = new Vec2(0, 0),
                 TextSize = 15,
                 Font = Res.SatoshiBold
-            });
-
-            objects.Add(new DWText(island, "Created by Florian Butz", new Vec2(25, 0), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
-                TextSize = 15
             });
 
             objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, 0), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
-                TextSize = 15,
-                Font = Resources.Res.SatoshiBold
+                TextSize = 13,
+            });
+
+            objects.Add(new DWText(island, "Created by Florian Butz", new Vec2(25, 0), UIAlignment.TopLeft)
+            {
+                Color = Theme.TextThird,
+                Anchor = new Vec2(0, 0.5f),
+                TextSize = 13
             });
 
             objects.Add(new DWText(island, "Licenced under CC BY-SA 4.0", new Vec2(25, 0), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
-                TextSize = 15
+                TextSize = 13
             });
 
             var backBtn = new DWTextButton(island, "Save changes", new Vec2(0, -45), new Vec2(250, 40), () => { SaveAndBack(); }, UIAlignment.BottomCenter)
