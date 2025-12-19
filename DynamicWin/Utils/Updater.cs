@@ -54,45 +54,93 @@ namespace DynamicWin.Utils
         {
             try
             {
-                // Always fetch release first
+#if DEBUG
+                Debug.WriteLine($"[UPDATER]: current version = {DynamicWinMain.Version}");
+                Debug.WriteLine($"[UPDATER]: selected stream = {(Settings.ReleaseStream == 1 ? "canary" : "release")}");
+#endif
+
                 var release = await FetchRemote("version.json");
 
-                if (release != null &&
-                    CompareVersionStrings(release.version, DynamicWinMain.Version) > 0)
+#if DEBUG
+                if (release != null)
+                    Debug.WriteLine($"[UPDATER]: remote release = {release.version}");
+                else
+                    Debug.WriteLine("[UPDATER]: failed to fetch release");
+#endif
+
+                // FORCE REVERT: canary -> release
+                if (Settings.ReleaseStream == 0 &&
+                    DynamicWinMain.ReleaseStream == "canary" &&
+                    release != null)
                 {
 #if DEBUG
-                    Debug.WriteLine("[UPDATER]: release update available -> prioritised");
+                    Debug.WriteLine("[UPDATER]: stream switch detected (canary -> release), forcing revert");
 #endif
                     return release;
+                }
+
+                // Normal forward update: release
+                if (release != null)
+                {
+                    int cmp = CompareVersionStrings(release.version, DynamicWinMain.Version);
+
+#if DEBUG
+                    Debug.WriteLine($"[UPDATER]: release compare -> {cmp}");
+#endif
+
+                    if (cmp > 0)
+                    {
+#if DEBUG
+                        Debug.WriteLine("[UPDATER]: release update available -> prioritised");
+#endif
+                        return release;
+                    }
                 }
 
                 // If user is NOT on canary, stop here
                 if (Settings.ReleaseStream != 1)
                 {
 #if DEBUG
-                    Debug.WriteLine("[UPDATER]: release stream is not canary, stopping");
+                    Debug.WriteLine("[UPDATER]: not on canary stream, stopping");
 #endif
                     return null;
                 }
 
-                // User opted into canary, now check it
                 var canary = await FetchRemote("version-canary.json");
 
-                if (canary != null &&
-                    CompareVersionStrings(canary.version, DynamicWinMain.Version) > 0)
-                {
 #if DEBUG
-                    Debug.WriteLine("[UPDATER]: canary update available");
+                if (canary != null)
+                    Debug.WriteLine($"[UPDATER]: remote canary = {canary.version}");
+                else
+                    Debug.WriteLine("[UPDATER]: failed to fetch canary");
 #endif
-                    return canary;
+
+                if (canary != null)
+                {
+                    int cmp = CompareVersionStrings(canary.version, DynamicWinMain.Version);
+
+#if DEBUG
+                    Debug.WriteLine($"[UPDATER]: canary compare -> {cmp}");
+#endif
+
+                    if (cmp > 0)
+                    {
+#if DEBUG
+                        Debug.WriteLine("[UPDATER]: canary update available");
+#endif
+                        return canary;
+                    }
                 }
 
+#if DEBUG
+                Debug.WriteLine("[UPDATER]: no update available");
+#endif
                 return null;
             }
             catch (Exception ex)
             {
 #if DEBUG
-                Debug.WriteLine("[UPDATER]: exception while checking for update: " + ex.Message);
+                Debug.WriteLine("[UPDATER]: exception while checking for update: " + ex);
 #endif
                 return null;
             }
