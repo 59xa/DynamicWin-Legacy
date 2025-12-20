@@ -72,7 +72,8 @@ namespace DynamicWin.Main
 
             // Start updater check sequence: wait 5s, show overlay, check for update, then open appropriate menu
             // Ensure this sequence starts only once per application lifetime
-            if (!startupUpdaterSequenceStarted)
+            // Only start automatic startup updater sequence if user opted in
+            if (!startupUpdaterSequenceStarted && Settings.AllowAutomaticUpdates)
             {
                 startupUpdaterSequenceStarted = true;
 
