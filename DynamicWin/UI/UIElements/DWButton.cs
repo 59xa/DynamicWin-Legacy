@@ -37,7 +37,7 @@ namespace DynamicWin.UI.UIElements
         {
             initialScale = size;
 
-            roundRadius = 5f;
+            roundRadius = 20f;
             scaleSecondOrder = new SecondOrder(size, 4.5f, 0.45f, 0.15f);
             this.clickCallback = clickCallback;
 

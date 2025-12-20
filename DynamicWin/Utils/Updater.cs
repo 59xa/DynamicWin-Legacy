@@ -3,6 +3,7 @@ using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System;
+using DynamicWin.Main;
 
 /*
  *
@@ -13,7 +14,7 @@ using System;
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    27 November 2025
- *  Last Modified:          28 November 2025
+ *  Last Modified:          19 December 2025
  *
  */
 
@@ -21,6 +22,25 @@ namespace DynamicWin.Utils
 {
     internal class Updater
     {
+        /// <summary>
+        /// Retrieves and deserializes an application version definition from a remote JSON file hosted on GitHub.
+        /// </summary>
+        /// <remarks>This performs an HTTP GET request to the specified file in the updater branch
+        /// inside the repository. The JSON is deserialised in a case-insensitive manner. Network failures
+        /// or invalid JSON will result in a <see langword="null"/> return value.</remarks>
+        /// <param name="file">The name of the JSON file to fetch from the remote repository. Cannot be null or empty.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains an <see cref="AppVersion"/>
+        /// object if the file is successfully retrieved and deserialised; otherwise, <see langword="null"/>.</returns>
+        private async Task<AppVersion?> FetchRemote(string file)
+        {
+            using HttpClient client = new();
+            string json = await client.GetStringAsync(
+                $"https://raw.githubusercontent.com/59xa/DynamicWin-Legacy/refs/heads/updater/{file}");
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            return JsonSerializer.Deserialize<AppVersion>(json, options);
+        }
+
         /// <summary>
         /// Checks for a newer version of DynamicWin-Legacy by retrieving version information from a remote source.
         /// </summary>
@@ -34,111 +54,93 @@ namespace DynamicWin.Utils
         {
             try
             {
-                using HttpClient client = new();
-                string json = await client.GetStringAsync("https://raw.githubusercontent.com/59xa/DynamicWin-Legacy/refs/heads/updater/version.json");
+#if DEBUG
+                Debug.WriteLine($"[UPDATER]: current version = {DynamicWinMain.Version}");
+                Debug.WriteLine($"[UPDATER]: selected stream = {(Settings.ReleaseStream == 1 ? "canary" : "release")}");
+#endif
 
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var remote = JsonSerializer.Deserialize<AppVersion>(json, options);
+                var release = await FetchRemote("version.json");
 
-                // Fallback: if properties are null due to unexpected schema/casing, try to read them manually
-                if (remote == null)
+#if DEBUG
+                if (release != null)
+                    Debug.WriteLine($"[UPDATER]: remote release = {release.version}");
+                else
+                    Debug.WriteLine("[UPDATER]: failed to fetch release");
+#endif
+
+                // FORCE REVERT: canary -> release
+                if (Settings.ReleaseStream == 0 &&
+                    DynamicWinMain.ReleaseStream == "canary" &&
+                    release != null)
                 {
 #if DEBUG
-                    Debug.WriteLine("[UPDATER]: remote payload was null after deserialization");
+                    Debug.WriteLine("[UPDATER]: stream switch detected (canary -> release), forcing revert");
+#endif
+                    return release;
+                }
+
+                // Normal forward update: release
+                if (release != null)
+                {
+                    int cmp = CompareVersionStrings(release.version, DynamicWinMain.Version);
+
+#if DEBUG
+                    Debug.WriteLine($"[UPDATER]: release compare -> {cmp}");
+#endif
+
+                    if (cmp > 0)
+                    {
+#if DEBUG
+                        Debug.WriteLine("[UPDATER]: release update available -> prioritised");
+#endif
+                        return release;
+                    }
+                }
+
+                // If user is NOT on canary, stop here
+                if (Settings.ReleaseStream != 1)
+                {
+#if DEBUG
+                    Debug.WriteLine("[UPDATER]: not on canary stream, stopping");
 #endif
                     return null;
                 }
 
-                if (string.IsNullOrWhiteSpace(remote.version) || string.IsNullOrWhiteSpace(remote.downloadUri))
-                {
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(json);
-                        var root = doc.RootElement;
+                var canary = await FetchRemote("version-canary.json");
 
-                        if (string.IsNullOrWhiteSpace(remote.version))
-                        {
-                            foreach (var prop in root.EnumerateObject())
-                            {
-                                if (string.Equals(prop.Name, "version", StringComparison.OrdinalIgnoreCase) || string.Equals(prop.Name, "ver", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (prop.Value.ValueKind == JsonValueKind.String)
-                                        remote.version = prop.Value.GetString();
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (string.IsNullOrWhiteSpace(remote.downloadUri))
-                        {
-                            foreach (var prop in root.EnumerateObject())
-                            {
-                                if (string.Equals(prop.Name, "downloadUri", StringComparison.OrdinalIgnoreCase) || string.Equals(prop.Name, "download", StringComparison.OrdinalIgnoreCase) || string.Equals(prop.Name, "url", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (prop.Value.ValueKind == JsonValueKind.String)
-                                        remote.downloadUri = prop.Value.GetString();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // ignore, we'll validate below
-                    }
-                }
-
-                // Validate remote payload now
-                if (string.IsNullOrWhiteSpace(remote.version))
-                {
 #if DEBUG
-                    Debug.WriteLine("[UPDATER]: remote.version is null or empty after fallback extraction");
+                if (canary != null)
+                    Debug.WriteLine($"[UPDATER]: remote canary = {canary.version}");
+                else
+                    Debug.WriteLine("[UPDATER]: failed to fetch canary");
 #endif
-                    return null;
-                }
 
-                if (string.IsNullOrWhiteSpace(remote.downloadUri))
+                if (canary != null)
                 {
-#if DEBUG
-                    Debug.WriteLine("[UPDATER]: remote.downloadUri is null or empty after fallback extraction");
-#endif
-                    return null;
-                }
+                    int cmp = CompareVersionStrings(canary.version, DynamicWinMain.Version);
 
-                int cmp;
-                try
-                {
-                    // Compare remote (a) to current (b)
-                    cmp = CompareVersionStrings(remote.version, DynamicWinMain.Version);
-                }
-                catch (Exception ex)
-                {
 #if DEBUG
-                    Debug.WriteLine("[UPDATER]: version comparison failed: " + ex.Message);
+                    Debug.WriteLine($"[UPDATER]: canary compare -> {cmp}");
 #endif
-                    // Fallback: attempt numeric parse only; if fails, give up
-                    try
+
+                    if (cmp > 0)
                     {
-                        Version current = ParseVersion(DynamicWinMain.Version);
-                        Version latest = ParseVersion(remote.version);
-                        cmp = latest.CompareTo(current);
-                    }
-                    catch
-                    {
-                        return null;
+#if DEBUG
+                        Debug.WriteLine("[UPDATER]: canary update available");
+#endif
+                        return canary;
                     }
                 }
 
 #if DEBUG
-                Debug.WriteLine($"[UPDATER]: Comparing remote '{remote.version}' to current '{DynamicWinMain.Version}' -> cmp={cmp}");
+                Debug.WriteLine("[UPDATER]: no update available");
 #endif
-
-                return cmp > 0 ? remote : null;
+                return null;
             }
             catch (Exception ex)
             {
 #if DEBUG
-                Debug.WriteLine("[UPDATER]: exception while checking for update: " + ex.Message);
+                Debug.WriteLine("[UPDATER]: exception while checking for update: " + ex);
 #endif
                 return null;
             }
@@ -270,5 +272,6 @@ namespace DynamicWin.Utils
     {
         public string version { get; set; }
         public string downloadUri { get; set; }
+        public string releaseStream { get; set; }
     }
 }

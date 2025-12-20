@@ -72,7 +72,8 @@ namespace DynamicWin.Main
 
             // Start updater check sequence: wait 5s, show overlay, check for update, then open appropriate menu
             // Ensure this sequence starts only once per application lifetime
-            if (!startupUpdaterSequenceStarted)
+            // Only start automatic startup updater sequence if user opted in
+            if (!startupUpdaterSequenceStarted && Settings.AllowAutomaticUpdates)
             {
                 startupUpdaterSequenceStarted = true;
 
@@ -81,6 +82,12 @@ namespace DynamicWin.Main
                     try
                     {
                         await Task.Delay(5000);
+
+                        if (MenuManager.Instance.ActiveMenu is SettingsMenu)
+                        {
+                            // If user is in SettingsMenu, don't interrupt them with updater
+                            return;
+                        }
 
                         // Show overlay manually
                         System.Windows.Application.Current?.Dispatcher.Invoke(() =>
