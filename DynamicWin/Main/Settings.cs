@@ -23,6 +23,7 @@ namespace DynamicWin.Main
         private static int theme;
         private static int activeScreenIndex;
         private static int releaseStream;
+        private static bool allowAutomaticUpdates = true;
 
         public static IslandObject.IslandMode IslandMode { get => islandMode; set => islandMode = value; }
         public static bool AllowBlur { get => allowBlur; set => allowBlur = value; }
@@ -32,6 +33,7 @@ namespace DynamicWin.Main
         public static int Theme { get => theme; set => theme = value; }
         public static int ScreenIndex { get => activeScreenIndex; set => activeScreenIndex = value; }
         public static int ReleaseStream { get => releaseStream; set => releaseStream = value; }
+        public static bool AllowAutomaticUpdates { get => allowAutomaticUpdates; set => allowAutomaticUpdates = value; }
 
         public static List<string> smallWidgetsLeft;
         public static List<string> smallWidgetsRight;
@@ -51,6 +53,8 @@ namespace DynamicWin.Main
                     AllowAnimation = (bool)SaveManager.Get("settings.allowanimtion");
                     AntiAliasing = (bool)SaveManager.Get("settings.antialiasing");
                     RunOnStartup = (bool)SaveManager.Get("settings.runonstartup");
+
+                    AllowAutomaticUpdates = SaveManager.Contains("settings.AllowAutomaticUpdates") ? (bool)SaveManager.Get("settings.AllowAutomaticUpdates") : true;
 
                     Theme = (int)((Int64)SaveManager.Get("settings.theme"));
                     ScreenIndex = (int)((Int64)SaveManager.Get("settings.screenindex"));
@@ -91,6 +95,9 @@ namespace DynamicWin.Main
                     AllowAnimation = true;
                     AntiAliasing = true;
                     ReleaseStream = 0;
+
+                    // default automatic updates enabled
+                    AllowAutomaticUpdates = true;
 
                     Theme = 0;
 
@@ -134,6 +141,8 @@ namespace DynamicWin.Main
             SaveManager.Add("settings.antialiasing", AntiAliasing);
             SaveManager.Add("settings.runonstartup", RunOnStartup);
             SaveManager.Add("settings.ReleaseStream", ReleaseStream);
+
+            SaveManager.Add("settings.AllowAutomaticUpdates", AllowAutomaticUpdates);
 
             SaveManager.Add("settings.theme", Theme);
             SaveManager.Add("settings.screenindex", ScreenIndex);
