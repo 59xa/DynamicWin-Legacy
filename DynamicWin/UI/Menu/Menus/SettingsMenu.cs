@@ -44,6 +44,7 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.AllowAnimation = allowAnimation.IsChecked;
             Settings.AntiAliasing = antiAliasing.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
+            Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
 
             DynamicWinMain.UpdateStartup();
 
@@ -67,6 +68,7 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox allowAnimation;
         DWCheckbox antiAliasing;
         DWCheckbox runOnStartup;
+        DWCheckbox allowAutomaticUpdates;
 
         UIObject bottomMask;
 
@@ -125,6 +127,10 @@ namespace DynamicWin.UI.Menu.Menus
             runOnStartup.Anchor.X = 0;
             objects.Add(runOnStartup);
 
+            allowAutomaticUpdates = new DWCheckbox(island, "Allow automatic updates", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            allowAutomaticUpdates.IsChecked = Settings.AllowAutomaticUpdates;
+            allowAutomaticUpdates.Anchor.X = 0;
+            objects.Add(allowAutomaticUpdates);
 
             {
                 var selectedMonitorTitle = new DWText(island, "Selected Monitor", new Vec2(25, 0), UIAlignment.TopLeft);
@@ -254,30 +260,72 @@ namespace DynamicWin.UI.Menu.Menus
 
             var releaseStreamTitle = new DWText(island, "Release Stream", new Vec2(25, 0), UIAlignment.TopLeft);
             releaseStreamTitle.Font = Res.SatoshiBold;
-            releaseStreamTitle.TextSize = 15;
             releaseStreamTitle.Color = Theme.TextMain;
             releaseStreamTitle.Anchor.X = 0;
             objects.Add(releaseStreamTitle);
 
-            var releaseStreamDisclaimer = new DWText(island, "Updates will be checked after you restart the application.", new Vec2(25, -15), UIAlignment.TopLeft);
-            releaseStreamDisclaimer.Font = Res.SatoshiRegular;
-            releaseStreamDisclaimer.TextSize = 12;
-            releaseStreamDisclaimer.Color = Theme.TextSecond;
-            releaseStreamDisclaimer.Anchor.X = 0;
-            objects.Add(releaseStreamDisclaimer);
+            var releaseStreamDisclaimerPt1 = new DWText(island, "Updates will be checked after you restart the application", new Vec2(25, -15), UIAlignment.TopLeft);
+            releaseStreamDisclaimerPt1.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimerPt1.TextSize = 12;
+            releaseStreamDisclaimerPt1.Color = Theme.TextSecond;
+            releaseStreamDisclaimerPt1.Anchor.X = 0;
+            objects.Add(releaseStreamDisclaimerPt1);
+
+            var releaseStreamDisclaimerPt2 = new DWText(island, "or by pressing the 'Check for updates now' button.", new Vec2(25, -30), UIAlignment.TopLeft);
+            releaseStreamDisclaimerPt2.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimerPt2.TextSize = 12;
+            releaseStreamDisclaimerPt2.Color = Theme.TextSecond;
+            releaseStreamDisclaimerPt2.Anchor.X = 0;
+            objects.Add(releaseStreamDisclaimerPt2);
             {
                 var releaseStreams = new string[] { "Release", "Canary" };
-                var releaseStream = new DWMultiSelectionButton(island, releaseStreams, new Vec2(25, -15), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
+                var releaseStream = new DWMultiSelectionButton(island, releaseStreams, new Vec2(25, -25), new Vec2(IslandSize().X - 50, 30), UIAlignment.TopLeft);
                 releaseStream.SelectedIndex = Settings.ReleaseStream;
                 releaseStream.Anchor.X = 0;
                 releaseStream.onClick += (index) =>
                 {
                     Settings.ReleaseStream = index;
+                    Settings.Save();
                 };
                 objects.Add(releaseStream);
             }
 
-            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream})", new Vec2(25, 0), UIAlignment.TopLeft)
+            // Trigger update logic immediately upon pressing the update button
+            var checkForUpdateBtn = new DWTextButton(island, "Check for updates now", new Vec2(25, -25), new Vec2(IslandSize().X - 360, 30), () =>
+            {
+                SaveManager.Add("settings.ReleaseStream", Settings.ReleaseStream);
+
+                // Show overlay immediately on UI thread
+                MenuManager.OpenOverlayMenu(new UpdaterOverlay(), 0f);
+
+                // Perform check in background
+                _ = Task.Run(async () =>
+                {
+                    var updater = new Updater();
+                    AppVersion? update = null;
+                    try { update = await updater.CheckForUpdate(); } catch { update = null; }
+
+                    // Back to UI thread to update menus
+                    System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                    {
+                        MenuManager.CloseOverlay();
+                        MenuManager.Instance?.UnlockMenu();
+
+                        if (update == null)
+                        {
+                            MenuManager.OpenMenu(Res.HomeMenu);
+                        }
+                        else
+                        {
+                            MenuManager.OpenMenu(new UpdaterMenu(update));
+                        }
+                    });
+                });
+            }, UIAlignment.TopLeft);
+            checkForUpdateBtn.Anchor.X = 0;
+            objects.Add(checkForUpdateBtn);
+
+            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream})", new Vec2(25, -15), UIAlignment.TopLeft)
             {
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),
@@ -285,21 +333,21 @@ namespace DynamicWin.UI.Menu.Menus
                 Font = Res.SatoshiBold
             });
 
-            objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, 0), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, -25), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
                 TextSize = 13,
             });
 
-            objects.Add(new DWText(island, "Created by Florian Butz", new Vec2(25, 0), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, "Created by Florian Butz", new Vec2(25, -25), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
                 TextSize = 13
             });
 
-            objects.Add(new DWText(island, "Licenced under CC BY-SA 4.0", new Vec2(25, 0), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, "Licenced under CC BY-SA 4.0", new Vec2(25, -25), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
                 Anchor = new Vec2(0, 0.5f),
@@ -355,7 +403,7 @@ namespace DynamicWin.UI.Menu.Menus
                 uiObject.LocalPosition.Y = yPos + ySmoothScroll;
                 yPos += uiObject.Size.Y + spacing;
 
-                if (yPos > IslandSize().Y - 45) yScrollLim += uiObject.Size.Y + spacing;
+                if (yPos > IslandSize().Y - 50) yScrollLim += uiObject.Size.Y + spacing;
             }
 
             yScrollOffset = Mathf.Lerp(yScrollOffset,
