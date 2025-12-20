@@ -17,7 +17,7 @@ namespace DynamicWin
         public static MMDevice defaultMicrophone;
 
         public static string Version => "v1.4.1b";
-        public static string ReleaseStream => "canary";
+        public static string ReleaseStream => "release";
 
         [STAThread]
         public static void Main()
