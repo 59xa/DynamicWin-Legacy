@@ -318,7 +318,8 @@ namespace DynamicWin.UI.Menu.Menus
                 alpha = 0.7f,
                 roundRadius = 50,
                 shadowStrength = 10f,
-                shadowColor = new Col(0, 0, 0)
+                shadowColor = Theme.IslandBackground,
+                Color = Theme.IslandBackground
             };
 
             objects.Add(bottomMask);
