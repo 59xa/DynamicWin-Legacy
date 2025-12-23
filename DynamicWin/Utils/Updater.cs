@@ -14,7 +14,7 @@ using DynamicWin.Main;
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    27 November 2025
- *  Last Modified:          19 December 2025
+ *  Last Modified:          22 December 2025
  *
  */
 
@@ -177,22 +177,49 @@ namespace DynamicWin.Utils
         {
             string updater = Path.Combine(AppContext.BaseDirectory, "Updater.exe");
 
-            // Use ArgumentList to avoid ALL quoting issues
+            string baseDir = AppContext.BaseDirectory ?? string.Empty;
+            baseDir = baseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            bool needsElevation = IsInProgramFiles(baseDir);
+
             var psi = new ProcessStartInfo
             {
                 FileName = updater,
-                UseShellExecute = false // IMPORTANT — required for ArgumentList
+                UseShellExecute = true
             };
 
-            // Add arguments as raw strings
-            psi.ArgumentList.Add(zipPath);
-            psi.ArgumentList.Add(AppContext.BaseDirectory);
+            if (needsElevation)
+            {
+                psi.Verb = "runas"; // trigger UAC only when required
+            }
 
-            // Start updater
-            Process.Start(psi);
+            psi.Arguments = $"\"{zipPath}\" \"{baseDir}\"";
 
-            // Kill app
-            Environment.Exit(0);
+#if DEBUG
+            Debug.WriteLine($"[UPDATER]: install dir = {baseDir}");
+            Debug.WriteLine($"[UPDATER]: elevation required = {needsElevation}");
+#endif
+
+            try
+            {
+                var proc = Process.Start(psi);
+                if (proc != null)
+                {
+                    Environment.Exit(0);
+                }
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("[UPDATER]: updater launch cancelled or failed: " + ex.Message);
+#endif
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("[UPDATER]: exception while launching updater: " + ex);
+#endif
+            }
         }
 
         /// <summary>
@@ -329,6 +356,34 @@ namespace DynamicWin.Utils
             return va.PreNumber.CompareTo(vb.PreNumber);
         }
 
+        /// <summary>
+        /// Determines whether specified path is located within Program Files or Program Files (x86) directory.
+        /// </summary>
+        /// <remarks>Performs a case-insensitive comparison and normalises the input path
+        /// before evaluation. Does not verify whether the path actually exists on disk.</remarks>
+        /// <param name="path">The file system path to evaluate. Can be either a relative or absolute path.</param>
+        /// <returns>true if the specified path is within Program Files or Program Files (x86) directory; otherwise, false.</returns>
+        private static bool IsInProgramFiles(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            string fullPath = Path.GetFullPath(path)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .ToUpperInvariant();
+
+            string pf = Path.GetFullPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles))
+                .TrimEnd(Path.DirectorySeparatorChar)
+                .ToUpperInvariant();
+
+            string pf86 = Path.GetFullPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86))
+                .TrimEnd(Path.DirectorySeparatorChar)
+                .ToUpperInvariant();
+
+            return fullPath.StartsWith(pf) || fullPath.StartsWith(pf86);
+        }
 
     }
 
