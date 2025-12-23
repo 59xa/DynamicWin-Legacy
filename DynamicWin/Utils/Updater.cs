@@ -250,21 +250,80 @@ namespace DynamicWin.Utils
         }
 
         // New helpers to support prerelease comparison
-        private record VersionInfo(Version Numeric, string? Pre);
+        private enum PreType
+        {
+            Alpha = 0,
+            Beta = 1,
+            RC = 2,
+            Unknown = -1
+        }
 
+        private record VersionInfo(
+            Version Numeric,
+            PreType Type,
+            int PreNumber
+        );
+
+        /// <summary>
+        /// Parses a version string that may include a pre-release identifier into a VersionInfo object.
+        /// </summary>
+        /// <remarks>The method supports version strings with or without a leading 'v' (e.g., 'v1.2.3').
+        /// Recognised pre-release identifiers are 'a' (alpha), 'b' (beta), and 'rc' (release candidate), optionally
+        /// followed by a number (e.g., '1.2.3rc2'). If the pre-release part is missing or unrecognised, the pre-release
+        /// type is set to Unknown and the number is set to 0.</remarks>
+        /// <param name="raw">The raw version string to parse. May include an optional leading 'v' and a pre-release suffix such as 'a',
+        /// 'b', or 'rc' followed by a number.</param>
+        /// <returns>A VersionInfo object representing the parsed version and pre-release information. If the pre-release part is
+        /// not recognised, the pre-release type is set to Unknown.</returns>
         private static VersionInfo ParseVersionWithPre(string raw)
         {
             raw = (raw ?? string.Empty).Trim().ToLower();
-            if (raw.StartsWith("v")) raw = raw.Substring(1);
+            if (raw.StartsWith("v"))
+                raw = raw.Substring(1);
 
             int i = 0;
-            while (i < raw.Length && (char.IsDigit(raw[i]) || raw[i] == '.')) i++;
+            while (i < raw.Length && (char.IsDigit(raw[i]) || raw[i] == '.'))
+                i++;
 
-            string numeric = raw.Substring(0, i);
-            string pre = i < raw.Length ? raw.Substring(i) : string.Empty;
+            string numericPart = raw.Substring(0, i);
+            string prePart = i < raw.Length ? raw.Substring(i) : string.Empty;
 
-            return new VersionInfo(new Version(numeric), pre);
+            var numeric = new Version(numericPart);
+
+            if (string.IsNullOrEmpty(prePart))
+                return new VersionInfo(numeric, PreType.Unknown, 0);
+
+            PreType type;
+            int numStart;
+
+            if (prePart.StartsWith("a"))
+            {
+                type = PreType.Alpha;
+                numStart = 1;
+            }
+            else if (prePart.StartsWith("b"))
+            {
+                type = PreType.Beta;
+                numStart = 1;
+            }
+            else if (prePart.StartsWith("rc"))
+            {
+                type = PreType.RC;
+                numStart = 2;
+            }
+            else
+            {
+                type = PreType.Unknown;
+                numStart = prePart.Length;
+            }
+
+            int number = 0;
+            if (numStart < prePart.Length)
+                int.TryParse(prePart.Substring(numStart), out number);
+
+            return new VersionInfo(numeric, type, number);
         }
+
 
         /// <summary>
         /// Compare version strings that may include prerelease suffixes.
@@ -280,17 +339,21 @@ namespace DynamicWin.Utils
             var vb = ParseVersionWithPre(b);
 
             int numCmp = va.Numeric.CompareTo(vb.Numeric);
-            if (numCmp != 0) return numCmp;
+            if (numCmp != 0)
+                return numCmp;
 
-            bool aIsRelease = string.IsNullOrEmpty(va.Pre);
-            bool bIsRelease = string.IsNullOrEmpty(vb.Pre);
+            bool aIsRelease = va.Type == PreType.Unknown;
+            bool bIsRelease = vb.Type == PreType.Unknown;
 
             if (aIsRelease && bIsRelease) return 0;
-            if (aIsRelease) return 1; // release is newer than prerelease
+            if (aIsRelease) return 1;   // release beats prerelease
             if (bIsRelease) return -1;
 
-            // both prerelease -> compare lexicographically
-            return string.Compare(va.Pre, vb.Pre, StringComparison.OrdinalIgnoreCase);
+            int typeCmp = va.Type.CompareTo(vb.Type);
+            if (typeCmp != 0)
+                return typeCmp;
+
+            return va.PreNumber.CompareTo(vb.PreNumber);
         }
 
         /// <summary>
