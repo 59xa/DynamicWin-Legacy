@@ -237,6 +237,17 @@ namespace DynamicWin.Utils
             int PreNumber
         );
 
+        /// <summary>
+        /// Parses a version string that may include a pre-release identifier into a VersionInfo object.
+        /// </summary>
+        /// <remarks>The method supports version strings with or without a leading 'v' (e.g., 'v1.2.3').
+        /// Recognised pre-release identifiers are 'a' (alpha), 'b' (beta), and 'rc' (release candidate), optionally
+        /// followed by a number (e.g., '1.2.3rc2'). If the pre-release part is missing or unrecognised, the pre-release
+        /// type is set to Unknown and the number is set to 0.</remarks>
+        /// <param name="raw">The raw version string to parse. May include an optional leading 'v' and a pre-release suffix such as 'a',
+        /// 'b', or 'rc' followed by a number.</param>
+        /// <returns>A VersionInfo object representing the parsed version and pre-release information. If the pre-release part is
+        /// not recognised, the pre-release type is set to Unknown.</returns>
         private static VersionInfo ParseVersionWithPre(string raw)
         {
             raw = (raw ?? string.Empty).Trim().ToLower();
