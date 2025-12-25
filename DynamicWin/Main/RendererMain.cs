@@ -183,7 +183,7 @@ namespace DynamicWin.Main
             {
                 if (MenuManager.Instance.ActiveMenu is HomeMenu)
                 {
-                    MenuManager.OpenOverlayMenu(new VolumeAdjustMenu(), 100f);
+                    MenuManager.OpenOverlayMenu(new VolumeAdjustMenu(), 2.75f, Res.HomeMenu);
                 }
                 else if (VolumeAdjustMenu.timerUntilClose != null)
                 {
@@ -222,7 +222,7 @@ namespace DynamicWin.Main
                 initialScreenBrightness = BrightnessAdjustMenu.GetBrightness();
                 if (MenuManager.Instance.ActiveMenu is HomeMenu)
                 {
-                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu(), 100f);
+                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu(), 2.75f, Res.HomeMenu);
                 }
                 else if (BrightnessAdjustMenu.timerUntilClose != null)
                 {
