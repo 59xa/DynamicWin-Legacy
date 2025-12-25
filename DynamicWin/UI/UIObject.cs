@@ -23,7 +23,19 @@ namespace DynamicWin.UI
         public Vec2 LocalPosition { get => localPosition; set => localPosition = value; }
         public Vec2 Anchor { get => anchor; set => anchor = value; }
 
-        public Vec2 Size { get => size ?? Vec2.one; set { size = value; MarkGpuDirty(); } } // Temporary fix for null size especially with BottomLeft getter
+        public Vec2 Size
+        {
+            get => size;
+            set
+            {
+                size = new Vec2(
+                    Math.Max(1f, value.X),
+                    Math.Max(1f, value.Y)
+                );
+                MarkGpuDirty();
+            }
+        }
+
         public Col Color { get => new Col(color.r, color.g, color.b, color.a * Alpha); set { color = value; MarkGpuDirty(); } }
 
         private bool isHovering = false;
@@ -607,9 +619,17 @@ namespace DynamicWin.UI
         /// <param name="isEnabled">requested active state</param>
         protected virtual void OnActiveChanged(bool isEnabled) { }
 
+        public virtual SKRect GetRawRect()
+        {
+            float w = Math.Max(1f, Size.X);
+            float h = Math.Max(1f, Size.Y);
+
+            return SKRect.Create(Position.X, Position.Y, w, h);
+        }
+
         public virtual SKRoundRect GetRect()
         {
-            SKRect rect = SKRect.Create(Position.X, Position.Y, Size.X, Size.Y);
+            var rect = GetRawRect();
             return new SKRoundRect(rect, roundRadius);
         }
 
