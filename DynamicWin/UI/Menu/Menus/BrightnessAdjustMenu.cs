@@ -58,8 +58,6 @@ namespace DynamicWin.UI.Menu.Menus
         {
             base.Update();
 
-            if (timerUntilClose > 2.75f) MenuManager.CloseOverlay();
-
             islandScale = Mathf.Lerp(islandScale, 1f, 5f * RendererMain.Instance.DeltaTime);
 
             timerUntilClose += RendererMain.Instance.DeltaTime;
