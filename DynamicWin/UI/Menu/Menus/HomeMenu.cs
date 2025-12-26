@@ -94,7 +94,8 @@ namespace DynamicWin.UI.Menu.Menus
                 size.Y = Math.Max(size.Y, sizeTogetherBiggest + topSpacing);
             }
 
-            if (!isWidgetMode) size.Y = 250;
+            // When not in widget mode (showing tray) use fixed height
+            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Tray) size.Y = 250;
 
             return size;
         }
@@ -108,8 +109,14 @@ namespace DynamicWin.UI.Menu.Menus
 
         DWTextImageButton widgetButton;
         DWTextImageButton trayButton;
+        DWTextImageButton mediaButton;
 
         Tray tray;
+        UIElements.Custom.Media media;
+
+        // Enum to track which big menu is active
+        public enum BigMenuMode { Widgets, Tray, Media }
+        public BigMenuMode currentBigMenuMode = BigMenuMode.Widgets;
 
         public override List<UIObject> InitializeMenu(IslandObject island)
         {
@@ -152,6 +159,8 @@ namespace DynamicWin.UI.Menu.Menus
 
             widgetButton = new DWTextImageButton(topContainer, Resources.Res.Widgets, "Widgets", new Vec2(75 / 2 + 5, 0), new Vec2(75, 20), () =>
             {
+                // Switch to widgets view
+                currentBigMenuMode = BigMenuMode.Widgets;
                 isWidgetMode = true;
             },
             UIAlignment.MiddleLeft);
@@ -167,6 +176,8 @@ namespace DynamicWin.UI.Menu.Menus
 
             trayButton = new DWTextImageButton(topContainer, Resources.Res.Tray, "Tray", new Vec2(112.5f, 0), new Vec2(57.5f, 20), () =>
             {
+                // Switch to tray view
+                currentBigMenuMode = BigMenuMode.Tray;
                 isWidgetMode = false;
             },
             UIAlignment.MiddleLeft);
@@ -180,11 +191,30 @@ namespace DynamicWin.UI.Menu.Menus
 
             bigMenuItems.Add(trayButton);
 
+            mediaButton = new DWTextImageButton(topContainer, Resources.Res.PlayPause, "Media", new Vec2(158.5f + 20, 0), new Vec2(65, 20), () =>
+            {
+                // Switch to media view
+                currentBigMenuMode = BigMenuMode.Media;
+                isWidgetMode = false;
+            },
+            UIAlignment.MiddleLeft);
+            mediaButton.Text.alignment = UIAlignment.MiddleLeft;
+            mediaButton.Text.Anchor.X = 0;
+            mediaButton.Text.Position = new Vec2(28.5f, 0);
+            mediaButton.normalColor = Col.Transparent;
+            mediaButton.hoverColor = Col.Transparent;
+            mediaButton.clickColor = Theme.Primary.Override(a: 0.35f);
+            mediaButton.roundRadius = 25;
+
+            bigMenuItems.Add(mediaButton);
+
             var settingsButton = new DWImageButton(topContainer, Resources.Res.Settings, new Vec2(-20f, 0), new Vec2(20, 20), () =>
             {
                 MenuManager.OpenMenu(new SettingsMenu());
 
+#if DEBUG
                 System.Diagnostics.Debug.WriteLine("[HOME MENU] User opened Settings menu.");
+#endif
                 RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen = true;
 
                 var _w = new WeatherAPI();
@@ -204,6 +234,14 @@ namespace DynamicWin.UI.Menu.Menus
             };
             tray.SilentSetActive(false);
             bigMenuItems.Add(tray);
+
+            // Instantiate media UIObject so media.SetActive(...) won't NRE
+            media = new UIElements.Custom.Media(island, new Vec2(0, -topSpacing * 1.5f), Vec2.zero, UIAlignment.BottomCenter)
+            {
+                Anchor = new Vec2(0.5f, 1f)
+            };
+            media.SilentSetActive(false);
+            bigMenuItems.Add(media);
 
             // Get all widgets
 
@@ -318,13 +356,13 @@ namespace DynamicWin.UI.Menu.Menus
 
         public override void Update()
         {
-            tray.Size = new Vec2(topContainer.Size.X, IslandSizeBig().Y - bCD - topSpacing - topContainer.Size.Y / 2);
+            tray.Size = new Vec2(topContainer.Size.X, IslandSizeBig().Y - bCD - topSpacing - topContainer.Size.Y);
 
-            if(cycle % 32 == 0)
-            {
-                var count = Tray.FileCount;
-                trayButton.Text.Text = "Tray      " + (count > 0 ? count : "");
-            }
+            //if(cycle % 32 == 0)
+            //{
+            //    var count = Tray.FileCount;
+            //    trayButton.Text.Text = $"Tray {(count > 0 ? $"({count})" : "")}";
+            //}
 
             // Enable / Disable small widgets
 
@@ -332,22 +370,25 @@ namespace DynamicWin.UI.Menu.Menus
             smallCenterWidgets.ForEach(x => x.SetActive(!RendererMain.Instance.MainIsland.IsHovering));
             smallRightWidgets.ForEach(x => x.SetActive(!RendererMain.Instance.MainIsland.IsHovering));
 
-            // Enable / Disable big widgets / Tray
+            // Enable / Disable big widgets / Tray / Media based on current mode
 
-            tray.SetActive(RendererMain.Instance.MainIsland.IsHovering && !isWidgetMode);
-            bigWidgets.ForEach(x => x.SetActive(RendererMain.Instance.MainIsland.IsHovering && isWidgetMode));
+            tray.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Tray);
+            media.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Media);
+            bigWidgets.ForEach(x => x.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Widgets));
             bigMenuItems.ForEach(x =>
             {
-                if(!(x is Tray))
+                if(!(x is Tray) || !(x is UIElements.Custom.Media))
                 {
                     x.SetActive(RendererMain.Instance.MainIsland.IsHovering);
                 }
             });
 
-            widgetButton.normalColor = Col.Lerp(widgetButton.normalColor, isWidgetMode ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            trayButton.normalColor = Col.Lerp(trayButton.normalColor, (!isWidgetMode) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            widgetButton.hoverColor = Col.Lerp(widgetButton.hoverColor, isWidgetMode ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            trayButton.hoverColor = Col.Lerp(trayButton.hoverColor, (!isWidgetMode) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            widgetButton.normalColor = Col.Lerp(widgetButton.normalColor, (currentBigMenuMode == BigMenuMode.Widgets) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            trayButton.normalColor = Col.Lerp(trayButton.normalColor, (currentBigMenuMode == BigMenuMode.Tray) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            mediaButton.normalColor = Col.Lerp(mediaButton.normalColor, (currentBigMenuMode == BigMenuMode.Media) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            widgetButton.hoverColor = Col.Lerp(widgetButton.hoverColor, (currentBigMenuMode == BigMenuMode.Widgets) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            trayButton.hoverColor = Col.Lerp(trayButton.hoverColor, (currentBigMenuMode == BigMenuMode.Tray) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            mediaButton.hoverColor = Col.Lerp(mediaButton.normalColor, (currentBigMenuMode == BigMenuMode.Media) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
 
             RendererMain.Instance.MainIsland.LocalPosition.X = Mathf.Lerp(RendererMain.Instance.MainIsland.LocalPosition.X,
                 songLocalPosXAddition, 2f * RendererMain.Instance.DeltaTime);
