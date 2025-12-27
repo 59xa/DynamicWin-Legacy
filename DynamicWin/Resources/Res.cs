@@ -30,6 +30,7 @@ namespace DynamicWin.Resources
         public static SKBitmap PlayPause;
         public static SKBitmap Play;
         public static SKBitmap Stop;
+        public static SKBitmap Pause;
 
         public static SKBitmap Settings;
         public static SKBitmap Tray;
@@ -100,6 +101,7 @@ namespace DynamicWin.Resources
             PlayPause = LoadImg("playback\\PlayPause.png");
             Play = LoadImg("playback\\Play.png");
             Stop = LoadImg("playback\\Stop.png");
+            Pause = LoadImg("playback\\Pause.png");
 
             Settings = LoadImg("home\\Settings.png");
             Tray = LoadImg("home\\Tray.png");
