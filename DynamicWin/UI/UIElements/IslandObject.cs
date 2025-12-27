@@ -104,7 +104,7 @@ namespace DynamicWin.UI.UIElements
             rect.Inflate(2.5f / 2, 2.5f / 2);
             paint2.Color = borderCol.Override(a: borderCol.a * 0.35f).Value();
             paint2.IsStroke = true;
-            paint2.StrokeWidth = 2.5f;
+            paint2.StrokeWidth = 1f;
 
             canvas.DrawRoundRect(rect, paint2);
 
