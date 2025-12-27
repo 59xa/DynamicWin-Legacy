@@ -11,7 +11,7 @@ using Newtonsoft.Json;
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    18 May 2025
- *  Last Modified:          27 November 2025
+ *  Last Modified:          27 December 2025
  *
  */
 
@@ -40,6 +40,7 @@ namespace DynamicWin.UI.Widgets.Small
         {
             public bool displayDotWhenIdle;
             public bool enableColourTransition;
+            public bool useThumbnailBackground;
         }
 
         /// <summary>
@@ -60,7 +61,8 @@ namespace DynamicWin.UI.Widgets.Small
                 saveData = new SmallVisualiserSave()
                 {
                     displayDotWhenIdle = true,
-                    enableColourTransition = false
+                    enableColourTransition = false,
+                    useThumbnailBackground = true
                 };
             }
         }
@@ -90,6 +92,8 @@ namespace DynamicWin.UI.Widgets.Small
 
             var displayDotWhenIdle = new DWCheckbox(null, "Display visualiser dots when idle", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
             var enableColourTransition = new DWCheckbox(null, "Enable visualiser colour transitioning", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
+            var useThumbnailBackground = new DWCheckbox(null, "Use media thumbnail as background", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
+            var thumbnailDisclaimer = new DWText(null, "By enabling this option, colour transitioning will be bypassed.", new Vec2(25, 0), UIAlignment.TopLeft);
 
             displayDotWhenIdle.clickCallback += () =>
             {
@@ -101,14 +105,24 @@ namespace DynamicWin.UI.Widgets.Small
                 saveData.enableColourTransition = enableColourTransition.IsChecked;
             };
 
+            useThumbnailBackground.clickCallback += () =>
+            {
+                saveData.useThumbnailBackground = useThumbnailBackground.IsChecked;
+            };
+
             displayDotWhenIdle.IsChecked = saveData.displayDotWhenIdle;
             enableColourTransition.IsChecked = saveData.enableColourTransition;
+            useThumbnailBackground.IsChecked = saveData.useThumbnailBackground;
 
             displayDotWhenIdle.Anchor.X = 0;
             enableColourTransition.Anchor.X = 0;
+            thumbnailDisclaimer.Anchor.X = 0;
+            useThumbnailBackground.Anchor.X = 0;
 
             objects.Add(displayDotWhenIdle);
             objects.Add(enableColourTransition);
+            objects.Add(thumbnailDisclaimer);
+            objects.Add(useThumbnailBackground);
 
             return objects;
         }
@@ -122,6 +136,7 @@ namespace DynamicWin.UI.Widgets.Small
         {
             audioVisualiser = new AudioVisualiser(this, new Vec2(0, 0), new Vec2(GetWidgetSize().X, GetWidgetSize().Y - 2), UIAlignment.Center);
             audioVisualiser.EnableColourTransition = RegisterSmallVisualiserWidgetSettings.saveData.enableColourTransition;
+            audioVisualiser.UseThumbnailBackground = RegisterSmallVisualiserWidgetSettings.saveData.useThumbnailBackground;
             audioVisualiser.EnableDotWhenLow = RegisterSmallVisualiserWidgetSettings.saveData.displayDotWhenIdle;
             audioVisualiser.BlurAmount = 0.3f;
             AddLocalObject(audioVisualiser);
