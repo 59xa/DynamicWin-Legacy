@@ -20,7 +20,7 @@ using System.Collections.Generic;
 *   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          27 November 2025
+*   Last Modified:          27 December 2025
 *   
 *   TO MAINTAINERS:
 *    - When fetching weather data, the API might hallucinate, and retrieve forecast data from a different city.
@@ -217,9 +217,26 @@ namespace DynamicWin.Utils
                 // Wait for 2 minutes or until cancelled
                 try
                 {
-                    await Task.Delay(120000, token).ConfigureAwait(false);
+                    int totalMs = 120000;
+                    int waited = 0;
+                    const int step = 1000; // check every second
+
+                    while (waited < totalMs && !token.IsCancellationRequested)
+                    {
+                        int delay = Math.Min(step, totalMs - waited);
+                        await Task.Delay(delay).ConfigureAwait(false);
+                        waited += delay;
+                    }
+
+                    if (token.IsCancellationRequested) break;
                 }
-                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] Delay loop exception: " + ex);
+#endif
+                    break;
+                }
             }
 
             if (token.IsCancellationRequested || RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen)
