@@ -9,6 +9,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
+/* DEPRECATED */
+
 namespace DynamicWin.UI.Widgets.Big
 {
     class RegisterMediaWidget : IRegisterableWidget
@@ -92,8 +94,11 @@ namespace DynamicWin.UI.Widgets.Big
 
             // Use generalised colour for audio visualiser
             audioVisualiserBig = new AudioVisualiser(this, new Vec2(0, 0), GetWidgetSize(), alignment: UIAlignment.Center,
-                Primary: mediaCol.Override(a: 0.35f), Secondary: mediaCol.Override(a: 0.025f) * 0.1f);
+                Primary: mediaCol.Override(a: 1f), Secondary: mediaCol.Override(a: 1f) * 0.1f);
+
+            audioVisualiserBig.BlurAmount = 20f;
             audioVisualiserBig.SilentSetActive(false);
+            AddLocalObject(audioVisualiserBig);
 
             noMediaPlaying = new DWText(this, "No Media Playing", new Vec2(0, 30))
             {
@@ -157,20 +162,17 @@ namespace DynamicWin.UI.Widgets.Big
             next.normalColor = Theme.IconColor * audioVisualiser.GetActionCol().Override(a: 0.2f);
             playPause.normalColor = Theme.IconColor * audioVisualiser.GetActionCol().Override(a: 0.2f);
 
-            if (!isMediaAvailable)
-                smoothedAmp = (float)Math.Max(Mathf.Lerp(smoothedAmp, audioVisualiser.AverageAmplitude, smoothing * deltaTime), audioVisualiser.AverageAmplitude);
-            else
-                smoothedAmp = (float)Math.Max(Mathf.Lerp(smoothedAmp, audioVisualiser.AverageAmplitude, smoothing * deltaTime), audioVisualiser.AverageAmplitude);
+            smoothedAmp = (float)Math.Max(Mathf.Lerp(smoothedAmp, audioVisualiser.AverageAmplitude, smoothing * deltaTime), audioVisualiser.AverageAmplitude);
 
             if (smoothedAmp < 0.005f) smoothedAmp = 0f;
 
-            noMediaPlaying.SetActive(smoothedAmp.Equals(0f) && !isMediaAvailable);
+            bool showSmallVisualiser = !isMediaAvailable && !smoothedAmp.Equals(0f);
+
+            noMediaPlaying.SetActive(!showSmallVisualiser && !isMediaAvailable);
             title.SetActive(isMediaAvailable);
             artist.SetActive(isMediaAvailable);
             audioVisualiserBig.SetActive(isMediaAvailable);
-            audioVisualiser.SetActive(!isMediaAvailable);
-
-            audioVisualiserBig.UpdateCall(deltaTime);
+            audioVisualiser.SetActive(showSmallVisualiser);
         }
 
         private void InitMediaPlayer()
@@ -231,16 +233,8 @@ namespace DynamicWin.UI.Widgets.Big
 
             canvas.ClipRoundRect(GetRect());
 
-            audioVisualiserBig.Alpha = 0.75f;
-            audioVisualiserBig.BlurAmount = 10f;
-            audioVisualiserBig.EnableColourTransition = true;
-            audioVisualiserBig.EnableDotWhenLow = false;
-            audioVisualiserBig.BarSpacing = 1f;
-            audioVisualiserBig.DrawCall(canvas);
-
             canvas.RestoreToCount(saveCanvas);
 
-            // draw a subtle dashed border to indicate active media
             if (isMediaAvailable)
             {
                 var r = GetRect();
