@@ -181,12 +181,18 @@ namespace DynamicWin.UI.Widgets
             // Default: nothing heavy, but keep an awaitable loop so derived classes can override without re-implementing the loop
             try
             {
+                // Use a short non-cancelable delay to avoid throwing TaskCanceledException when the token is cancelled
+                // Checking the token between delays keeps shutdown responsive without generating exceptions
                 while (!token.IsCancellationRequested)
                 {
-                    await Task.Delay(1000, token).ConfigureAwait(false);
+                    await Task.Delay(200).ConfigureAwait(false);
                 }
             }
-            catch (OperationCanceledException) { /* swallow */ }
+            catch (Exception ex) when (!(ex is OperationCanceledException))
+            {
+                // Log unexpected exceptions but avoid noisy cancellation exceptions
+                System.Diagnostics.Debug.WriteLine("[WIDGET BASE] RunBackgroundAsync exception: " + ex);
+            }
         }
 
         /// <summary>
