@@ -3,9 +3,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using System.Windows.Forms;
-using System.Windows.Media.Imaging;
-using Windows.Media.Playback;
 using WindowsMediaController;
 using static WindowsMediaController.MediaManager;
 using System.Threading;
@@ -49,13 +46,13 @@ namespace DynamicWin.Utils
 
     /*
     *   Overview:
-    *    - Allows the fetching of currently playing media, returning its artist name, media title, and its corresponding image.
+    *    - Allows the fetching of currently playing media, returning its artist name, media title, and its corresponding image bytes.
     *    - Handles metadata mapping through Media class which returns the three mentioned information.
     *    
     *   Author:                 59xa
     *   GitHub:                 https://github.com/59xa
     *   Implementation Date:    19 May 2025
-    *   Last Modified:          26 December 2025
+    *   Last Modified:          27 December 2025
     */
 
     public class MediaInfo
@@ -64,12 +61,70 @@ namespace DynamicWin.Utils
         private static MediaManager _m;
         private static bool _started = false;
         private static readonly SemaphoreSlim _fetchLock = new SemaphoreSlim(1, 1);
+        private static readonly SemaphoreSlim _startLock = new SemaphoreSlim(1, 1);
         private static DateTime _lastFetch = DateTime.MinValue;
         private static readonly TimeSpan _cacheDuration = TimeSpan.FromSeconds(1); // Cache for 1s to reduce work
 
         public static MediaInfo Instance => _i ??= new MediaInfo();
 
         public static Media? Current { get; private set; }
+
+        /// <summary>
+        /// Ensures the MediaManager instance exists and has been started. Returns true when ready.
+        /// This method is safe to call concurrently and will return false on failure.
+        /// </summary>
+        private static async Task<bool> EnsureManagerStartedAsync()
+        {
+            if (_m == null)
+            {
+                try
+                {
+                    _m = new MediaManager();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("MediaManager constructor failed: " + ex.Message);
+                    _m = null;
+                    _started = false;
+                    _lastFetch = DateTime.UtcNow;
+                    return false;
+                }
+            }
+
+            if (_started) return true;
+
+            await _startLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_started) return true;
+
+                try
+                {
+                    await _m.StartAsync().ConfigureAwait(false);
+                    _started = true;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("MediaManager failed to start: " + ex.Message);
+                    // On failure, avoid retrying too aggressively
+                    _lastFetch = DateTime.UtcNow;
+                    Current = null;
+                    _started = false;
+                    try
+                    {
+                        if (_m is IDisposable d) d.Dispose();
+                    }
+                    catch { }
+                    _m = null;
+                    return false;
+                }
+            }
+            finally
+            {
+                _startLock.Release();
+            }
+        }
 
         public static async Task<Media?> FetchCurrentMediaAsync()
         {
@@ -78,34 +133,19 @@ namespace DynamicWin.Utils
                 return Current;
 
             // Ensure manager exists and is started only once
-            if (_m == null)
-                _m = new MediaManager();
-
-            if (!_started)
+            if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
             {
-                try
-                {
-                    await _m.StartAsync();
-                    _started = true;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine("MediaManager failed to start: " + ex.Message);
-                    // On failure, avoid retrying too aggressively
-                    _lastFetch = DateTime.UtcNow;
-                    Current = null;
-                    return null;
-                }
+                return null;
             }
 
-            await _fetchLock.WaitAsync();
+            await _fetchLock.WaitAsync().ConfigureAwait(false);
             try
             {
                 // Re-check cache after acquiring lock
                 if (Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
                     return Current;
 
-                var _s = _m.GetFocusedSession();
+                var _s = _m?.GetFocusedSession();
                 if (_s == null)
                 {
                     Current = null;
@@ -122,7 +162,7 @@ namespace DynamicWin.Utils
                     return null;
                 }
 
-                var _p = await control.TryGetMediaPropertiesAsync();
+                var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
                 if (_p == null)
                 {
                     Current = null;
@@ -130,32 +170,31 @@ namespace DynamicWin.Utils
                     return null;
                 }
 
-                BitmapImage? _i = null;
+                byte[]? thumbBytes = null;
                 if (_p.Thumbnail != null)
                 {
                     try
                     {
-                        using var stream = await _p.Thumbnail.OpenReadAsync();
-                        _i = new BitmapImage();
-                        _i.BeginInit();
-                        _i.StreamSource = stream.AsStreamForRead();
-                        _i.CacheOption = BitmapCacheOption.OnLoad;
-                        _i.EndInit();
+                        using var streamRef = await _p.Thumbnail.OpenReadAsync().AsTask().ConfigureAwait(false);
+                        using var stream = streamRef.AsStreamForRead();
+                        using var ms = new MemoryStream();
+                        await stream.CopyToAsync(ms).ConfigureAwait(false);
+                        thumbBytes = ms.ToArray();
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("Failed to load thumbnail: " + ex.Message);
-                        _i = null;
+                        Debug.WriteLine("Failed to read thumbnail bytes: " + ex.Message);
+                        thumbBytes = null;
                     }
                 }
 
-                var result = new Media { Title = _p.Title, Artist = _p.Artist, Thumbnail = _i };
+                var result = new Media { Title = _p.Title, Artist = _p.Artist, ThumbnailData = thumbBytes };
 
                 Current = result;
                 _lastFetch = DateTime.UtcNow;
 
 #if DEBUG
-                Debug.WriteLine("[MEDIA CONTROLLER] TITLE: {0}, ARTIST: {1}, IMAGE: {2}", _p.Title, _p.Artist, _p.Thumbnail);
+                Debug.WriteLine("[MEDIA CONTROLLER] TITLE: {0}, ARTIST: {1}, THUMBNAIL_BYTES: {2}", _p.Title, _p.Artist, thumbBytes?.Length ?? 0);
 #endif
                 return result;
             }
@@ -170,6 +209,6 @@ namespace DynamicWin.Utils
     {
         public string? Title { get; set; }
         public string? Artist { get; set; }
-        public BitmapImage? Thumbnail { get; set; }
+        public byte[]? ThumbnailData { get; set; }
     }
 }
