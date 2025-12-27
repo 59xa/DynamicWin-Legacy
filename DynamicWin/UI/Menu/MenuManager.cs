@@ -131,24 +131,35 @@ namespace DynamicWin.UI.Menu
             {
                 try
                 {
-                    await Task.Delay((int)(duration * 1000), overlayCts.Token);
+                    int totalMs = (int)(duration * 1000);
+                    int waited = 0;
+                    const int step = 100;
 
-                    Application.Current?.Dispatcher.Invoke(() =>
+                    while (waited < totalMs && !(overlayCts?.IsCancellationRequested ?? true))
                     {
-                        // Only unlock if overlay is still active
-                        if (ActiveMenu == overlayMenu)
-                        {
-                            UnlockMenu();
+                        int delay = Math.Min(step, totalMs - waited);
+                        await Task.Delay(delay).ConfigureAwait(false);
+                        waited += delay;
+                    }
 
-                            if (menuToOpenAfter != null)
-                                QueueOpenMenu(menuToOpenAfter);
-                        }
-                    });
+                    if (!(overlayCts?.IsCancellationRequested ?? true))
+                    {
+                        Application.Current?.Dispatcher.Invoke(() =>
+                        {
+                            // Only unlock if overlay is still active
+                            if (ActiveMenu == overlayMenu)
+                            {
+                                UnlockMenu();
+
+                                if (menuToOpenAfter != null)
+                                    QueueOpenMenu(menuToOpenAfter);
+                            }
+                        });
+                    }
                 }
-                catch (TaskCanceledException) { /* overlay cancelled */ }
                 finally
                 {
-                    overlayCts.Dispose();
+                    try { overlayCts?.Dispose(); } catch { }
                     overlayCts = null;
                 }
             });
