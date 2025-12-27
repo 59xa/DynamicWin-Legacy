@@ -97,6 +97,25 @@ namespace DynamicWin.UI.Menu.Menus
             // When not in widget mode (showing tray) use fixed height
             if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Tray) size.Y = 250;
 
+            // When Media view is active, ensure the island is large enough to contain the media panel
+            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Media)
+            {
+                // Keep in sync with the size used when rendering the media UIObject in Update()
+                float desiredMediaWidth = 420f;
+                float desiredMediaHeight = 100;
+
+                // Horizontal padding to give the media panel some inset from island edges
+                float horizontalPadding = 60f;
+
+                // Top container height (approximate) used by the top buttons
+                float topContainerHeight = 30f;
+
+                size.X = Math.Max(size.X, desiredMediaWidth + horizontalPadding);
+
+                // Add bCD (bottom container offset) + topContainerHeight + topSpacing to ensure vertical space
+                size.Y = Math.Max(size.Y, desiredMediaHeight + bCD + topContainerHeight + topSpacing);
+            }
+
             return size;
         }
 
@@ -238,7 +257,7 @@ namespace DynamicWin.UI.Menu.Menus
             // Instantiate media UIObject so media.SetActive(...) won't NRE
             media = new UIElements.Custom.Media(island, new Vec2(0, -topSpacing * 1.5f), Vec2.zero, UIAlignment.BottomCenter)
             {
-                Anchor = new Vec2(0.5f, 1f)
+                Anchor = new Vec2(0.5f, 0.8f)
             };
             media.SilentSetActive(false);
             bigMenuItems.Add(media);
@@ -466,6 +485,26 @@ namespace DynamicWin.UI.Menu.Menus
                 bigContainerSize -= bCD;
                 bigWidgetsContainer.Size = bigContainerSize;
 
+                // Ensure media UIObject has a valid size when activated so its Draw/Update layout isn't zero-sized
+                if (media != null)
+                {
+                    if (currentBigMenuMode == BigMenuMode.Media)
+                    {
+                        // Give media panel its own dedicated size (independent from widgets layout)
+                        float mediaWidth = 430f;
+                        float mediaHeight = 140f;
+                        media.Size = new Vec2(mediaWidth, mediaHeight);
+
+                        // Centre horizontally and keep it anchored near the bottom like before
+                        media.LocalPosition.X = 0f;
+                    }
+                    else
+                    {
+                        // For non-media modes keep the previous behavior so other views still work
+                        media.Size = bigContainerSize;
+                    }
+                }
+
                 { // Big Widgets
 
                     List<WidgetBase> widgetsInOneLine = new List<WidgetBase>();
@@ -514,7 +553,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             float offset = fullWidth / 2 - container.Size.X / 2 + bigWidgetsSpacing / 2;
 
-            for (int i = 0; i < widgets.Count; i++)
+            for (int i = 0; i< widgets.Count; i++)
             {
                 widgets[i].LocalPosition.X -= offset;
             }
