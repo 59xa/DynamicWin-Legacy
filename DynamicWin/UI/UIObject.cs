@@ -25,13 +25,32 @@ namespace DynamicWin.UI
 
         public Vec2 Size
         {
-            get => size;
+            get
+            {
+                // Ensure size is never null
+                if (size == null)
+                {
+                    // Try to use Vec2.one, fallback to new Vec2 if null
+                    size = Vec2.one ?? new Vec2(1f, 1f);
+                }
+
+                return size;
+            }
             set
             {
-                size = new Vec2(
-                    Math.Max(1f, value.X),
-                    Math.Max(1f, value.Y)
-                );
+                // 59xa: what even
+                if (value == null)
+                {
+                    size = Vec2.one ?? new Vec2(1f, 1f);
+                }
+                else
+                {
+                    size = new Vec2(
+                        Math.Max(1f, value.X),
+                        Math.Max(1f, value.Y)
+                    );
+                }
+
                 MarkGpuDirty();
             }
         }
@@ -609,6 +628,19 @@ namespace DynamicWin.UI
             toggleAnim.Start();
 
             MarkGpuDirty();
+
+            // Also mark parent/ancestor GPU caches dirty so cached images do not include stale child visuals
+            try
+            {
+                var p = this.parent;
+                while (p != null)
+                {
+                    p.MarkGpuDirty();
+                    p = p.parent;
+                }
+            }
+            catch { }
+            
         }
 
         /// <summary>
@@ -651,6 +683,46 @@ namespace DynamicWin.UI
 
         public virtual ContextMenu? CreateContextMenu() { return null; }
         public virtual ContextMenu? GetContextMenu() { return contextMenu; }
+
+        // Build an approximate superellipse (squircle) path by sampling points
+        public SKPath BuildSuperellipsePath(SKRect rect, float n = 4f, int stepsPerQuarter = 24)
+        {
+            // Superellipse param: (|x/a|)^n + (|y/b|)^n = 1
+            float a = rect.Width / 2f;
+            float b = rect.Height / 2f;
+            float cx = rect.MidX;
+            float cy = rect.MidY;
+
+            SKPath path = new SKPath();
+
+            bool first = true;
+            int totalSteps = stepsPerQuarter * 4;
+            for (int i = 0; i <= totalSteps; i++)
+            {
+                float theta = (float)i / totalSteps * 2f * (float)Math.PI;
+                float cos = (float)Math.Cos(theta);
+                float sin = (float)Math.Sin(theta);
+
+                float x = (float)(Math.Sign(cos) * Math.Pow(Math.Abs(cos), 2.0 / n) * a);
+                float y = (float)(Math.Sign(sin) * Math.Pow(Math.Abs(sin), 2.0 / n) * b);
+
+                float px = cx + x;
+                float py = cy + y;
+
+                if (first)
+                {
+                    path.MoveTo(px, py);
+                    first = false;
+                }
+                else
+                {
+                    path.LineTo(px, py);
+                }
+            }
+
+            path.Close();
+            return path;
+        }
     }
 
     public enum UIAlignment
