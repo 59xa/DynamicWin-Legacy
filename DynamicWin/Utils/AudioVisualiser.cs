@@ -4,17 +4,23 @@ using NAudio.Wave;
 using SkiaSharp;
 using System.Numerics;
 using System.Linq;
+using System.Threading.Tasks;
+using System;
 
 /*
  * 
  *   Overview:
  *    - Implement a new audio visualiser that aims to look closely similar to iOS audio visualisers.
- *    
+ *    - Refactored for performance and improved responsiveness.
+ *    - Reuse buffers and precompute bit-reversal indices and window.
+ *    - Simplified noise-gate and normalisation so bars react more naturally.
+ *    - Added optional blurred media thumbnail background fetched via MediaController/MediaInfo.
+ *
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    18 May 2025
- *   Last Modified:          27 November 2025
- *   
+ *   Last Modified:          27 December 2025
+ *
  */
 
 namespace DynamicWin.Utils
@@ -32,49 +38,64 @@ namespace DynamicWin.Utils
         // Per-bar gain (sensitivity)
         private float[] barGain;
 
-        private float runningPeak = 0f;
-        private float peakDecay = 1.5f;
-
         // Band balance multipliers to keep spectrum visually balanced (static, no historical normalisation)
         private float[] bandBalance = new float[] { 1.0f, 1.0f, 1.0f, 1.0f, 0.9f, 1.1f };
 
         // Hardcoded frequency ranges per bar (Hz)
         private readonly float[][] freqRanges = new float[][]
         {
-            new float[]{ 0f,   60f   },  // Bar 1 – deep bass
-            new float[]{ 60f,   250f  },  // Bar 2 – bass body (kick / low tom)
-            new float[]{ 250f,  500f  },  // Bar 3 – low mids (snare fundamental)
-            new float[]{ 500f,  2000f },  // Bar 4 – mids (vocals/body)
-            new float[]{ 2000f, 6000f },  // Bar 5 – upper mids (presence)
-            new float[]{ 6000f, 20000f }   // Bar 6 – brilliance/air/hi-hats
+            new float[]{ 0f,   60f   },
+            new float[]{ 60f,   250f  },
+            new float[]{ 250f,  500f  },
+            new float[]{ 500f,  2000f },
+            new float[]{ 2000f, 6000f },
+            new float[]{ 6000f, 20000f }
         };
 
         private WasapiLoopbackCapture capture;
         private readonly object fftLock = new object();
 
+        // Re-use buffers and precomputed indices for performance
+        private Complex[] fftBuffer;
+        private float[] window;
+        private int[] bitRevIndices;
+
         // Values to ensure smoothness and reactiveness on the visualiser
-        // Use attack/release rates (higher = quicker). These are used as rate constants in the
-        // exponential smoothing function: alpha = 1 - exp(-rate * deltaTime)
-        // Attack low for smooth rise, release high for quick decay
-        public float attackRate = 20f;   // How quickly bars rise (lower = smoother)
-        public float releaseRate = 100f;  // How quickly bars fall (higher = quicker decay)
-        // Cap on change per second to avoid frame-to-frame jitter while remaining reactive
-        public float maxChangePerSecond = 12f;
-        private float maxDecay = 0.90f;
+        public float attackRate = 60f;   // Quicker rise for livelier feel
+        public float releaseRate = 30f;  // Moderate decay
+        public float maxChangePerSecond = 18f;
 
         // Noise gating parameters (per-band slow noise estimate + gate multiplier)
         private float[] bandNoiseEstimate;
-        // Use separate rise/fall rates for the noise-floor estimate to avoid the estimate getting stuck high
-        public float noiseEstimateRiseRate = 0.6f; // How fast noise floor increases when signal rises
-        public float noiseEstimateFallRate = 3.0f; // How fast noise floor falls when signal drops (faster decay)
-        public float gateMultiplier = 1.15f;    // Threshold = noiseEstimate * gateMultiplier
-        public float minGateThreshold = 1e-5f;  // Absolute minimum gate (lowered)
+        // Slower rise, faster fall so the noise estimate doesn't grow and kill bands
+        public float noiseEstimateRiseRate = 0.35f; // Slower rise
+        public float noiseEstimateFallRate = 6.0f; // Faster fall
+        public float gateMultiplier = 1.05f;    // Slightly above noise floor
+        public float minGateThreshold = 1e-9f;  // Very small minimum gate
+
+        // Per-band adaptive peak normaliser (kept for dynamic scale fallback)
+        private float[] bandPeakEstimate;
+        public float peakRiseRate = 12f;  // Moderate rise to capture peaks
+        public float peakFallRate = 6.0f; // Faster fall so peaks don't hold too long
+
+        // Output boost to make visuals pop
+        public float outputBoost = 1.6f;
+
+        // Thumbnail background caching
+        private volatile byte[]? cachedThumbnailBytes;
+        private SKImage? cachedThumbnailImage;
+        private DateTime lastThumbnailRequest = DateTime.MinValue;
+        private readonly object thumbLock = new object();
+        public bool UseThumbnailBackground { get; set; } = false;
+        // How often to request a new thumbnail (seconds)
+        public float ThumbnailFetchInterval { get; set; } = 1.0f;
+        // Amount of blur to apply to thumbnail background
+        public float ThumbnailBlurAmount { get; set; } = 5f;
 
         public Col Primary;
         public Col Secondary;
 
         // Initialise getters and setters
-
         private float averageAmplitude = 0f;
         public float AverageAmplitude { get => averageAmplitude; }
 
@@ -103,11 +124,26 @@ namespace DynamicWin.Utils
             // Initialize per-bar gain
             barGain = new float[barCount];
             bandNoiseEstimate = new float[barCount];
+            bandPeakEstimate = new float[barCount];
+
+            // Pre-allocate reusable buffers
+            fftBuffer = new Complex[fftLength];
+            window = new float[fftLength];
+            bitRevIndices = new int[fftLength];
+
+            // Pre-compute Hann window and bit-reversal indices
+            for (int i = 0; i < fftLength; i++)
+            {
+                window[i] = 0.5f * (1 - MathF.Cos(2 * MathF.PI * i / (fftLength - 1)));
+                bitRevIndices[i] = BitReverse(i, (int)Math.Log2(fftLength));
+            }
+
             for (int i = 0; i < barCount; i++)
             {
                 barHeight[i] = 0f;
                 barGain[i] = 1f;   // default: unity gain
-                bandNoiseEstimate[i] = 1e-6f; // start with very small floor to avoid permanent gating
+                bandNoiseEstimate[i] = 1e-9f; // start with very small floor to avoid permanent gating
+                bandPeakEstimate[i] = 1e-7f;  // small initial peak to avoid division by zero
             }
 
             // Capture default device audio
@@ -135,6 +171,14 @@ namespace DynamicWin.Utils
                 }
             }
             catch (ThreadInterruptedException) { }
+
+            // Dispose cached thumbnail image
+            lock (thumbLock)
+            {
+                cachedThumbnailImage?.Dispose();
+                cachedThumbnailImage = null;
+                cachedThumbnailBytes = null;
+            }
         }
 
         /// <summary>
@@ -145,14 +189,45 @@ namespace DynamicWin.Utils
         {
             base.Update(deltaTime);
 
-            // Locks the object to ensure thread safety
+            // If our thumbnail background option is enabled, request thumbnail periodically (async)
+            if (UseThumbnailBackground)
+            {
+                var now = DateTime.UtcNow;
+                if ((now - lastThumbnailRequest).TotalSeconds >= ThumbnailFetchInterval)
+                {
+                    lastThumbnailRequest = now;
+                    // Fire-and-forget async fetch; MediaInfo caches results internally
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var media = await MediaInfo.FetchCurrentMediaAsync().ConfigureAwait(false);
+                            if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
+                            {
+                                lock (thumbLock)
+                                {
+                                    // Simple change detection by reference/length
+                                    if (cachedThumbnailBytes == null || cachedThumbnailBytes.Length != media.ThumbnailData.Length || !cachedThumbnailBytes.SequenceEqual(media.ThumbnailData))
+                                    {
+                                        cachedThumbnailBytes = media.ThumbnailData;
+                                        // Dispose old image on UI thread later when drawing
+                                        cachedThumbnailImage?.Dispose();
+                                        cachedThumbnailImage = null;
+                                    }
+                                }
+                            }
+                        }
+                        catch { /* ignore fetch errors */ }
+                    });
+                }
+            }
+
+            // Locks the object to ensure thread safety for FFT-derived arrays
             lock (fftLock)
             {
-                // Initialise min-to-max frequencies to display
                 float[] targetHeights = new float[barCount];
-                float sampleRate = capture?.WaveFormat.SampleRate ?? 44100f; // Capture sample rate, else, default to 44100
+                float sampleRate = capture?.WaveFormat.SampleRate ?? 44100f;
 
-                // For-loop to visualise each frequency per bar using hardcoded ranges
                 for (int i = 0; i < barCount; i++)
                 {
                     float lowFreq = 20f;
@@ -164,84 +239,76 @@ namespace DynamicWin.Utils
                         highFreq = freqRanges[i][1];
                     }
 
-                    int lowIndex = (int)(lowFreq / sampleRate * fftLength);
+                    int lowIndex = Math.Max(0, (int)(lowFreq / sampleRate * fftLength));
                     int highIndex = Math.Min((int)(highFreq / sampleRate * fftLength), fftMagnitudes.Length - 1);
 
-                    // Values to calculate average magnitude within frequency range
-                    float avg = 0f;
+                    // Compute RMS (power) over the band for better perceptual response
+                    float sumSquares = 0f;
                     int count = 0;
                     for (int j = lowIndex; j <= highIndex; j++)
                     {
                         if (j >= 0 && j < fftMagnitudes.Length)
                         {
-                            avg += fftMagnitudes[j];
+                            float m = fftMagnitudes[j];
+                            sumSquares += m * m;
                             count++;
                         }
                     }
-                    avg = (count > 0) ? avg / count : 0f;
 
-                    // Noise gate: maintain a per-band noise-floor estimate and apply gate
-                    // Update noise-floor estimate in linear magnitude domain (more stable)
+                    float rms = (count > 0) ? MathF.Sqrt(sumSquares / count) : 0f;
+
+                    // Update noise-floor estimate (linear domain)
                     float riseAlpha = 1f - MathF.Exp(-noiseEstimateRiseRate * deltaTime);
                     float fallAlpha = 1f - MathF.Exp(-noiseEstimateFallRate * deltaTime);
-                    if (avg > bandNoiseEstimate[i])
-                    {
-                        bandNoiseEstimate[i] = bandNoiseEstimate[i] + (avg - bandNoiseEstimate[i]) * riseAlpha;
-                    }
+                    if (rms > bandNoiseEstimate[i])
+                        bandNoiseEstimate[i] += (rms - bandNoiseEstimate[i]) * riseAlpha;
                     else
-                    {
-                        bandNoiseEstimate[i] = bandNoiseEstimate[i] + (avg - bandNoiseEstimate[i]) * fallAlpha;
-                    }
+                        bandNoiseEstimate[i] += (rms - bandNoiseEstimate[i]) * fallAlpha;
 
                     float gateThreshold = Math.Max(minGateThreshold, bandNoiseEstimate[i] * gateMultiplier);
 
-                    float normalized = 0f;
-                    if (avg <= gateThreshold)
-                    {
-                        // Below threshold: consider silent
-                        normalized = 0f;
-                    }
+                    // Subtract noise-floor
+                    float val = Math.Max(0f, rms - gateThreshold);
+
+                    // Update per-band peak estimate (fallback scale)
+                    float peakRiseA = 1f - MathF.Exp(-peakRiseRate * deltaTime);
+                    float peakFallA = 1f - MathF.Exp(-peakFallRate * deltaTime);
+                    if (val > bandPeakEstimate[i])
+                        bandPeakEstimate[i] += (val - bandPeakEstimate[i]) * peakRiseA;
                     else
                     {
-                        // Convert linear amplitude to dB (dBFS-like). Add eps to avoid log(0).
-                        const float eps2 = 1e-9f;
-                        float mag = Math.Max(avg, eps2);
-                        float db = 20f * MathF.Log10(mag);
-
-                        // Map db -> normalized 0..1 using fixed floor/ceiling
-                        const float minDb = -80f;   // Silence floor
-                        const float maxDb = -6f;    // Loud but not clipping ceiling
-                        normalized = (db - minDb) / (maxDb - minDb);
-                        normalized = Math.Clamp(normalized, 0f, 1f);
-
-                        // Softly re-normalise the remaining dynamic range above the gate using linear domain
-                        // This keeps the perceptual mapping but avoids hard cutoff artifacts
-                        float above = (avg - gateThreshold) / (Math.Max(gateThreshold, 1e-6f));
-                        above = MathF.Min(above, 1f);
-                        normalized = Math.Max(normalized, above);
+                        // Faster multiplicative decay to avoid long-held large peaks
+                        bandPeakEstimate[i] *= MathF.Exp(-peakFallRate * deltaTime);
+                        // ensure it never goes below a tiny floor
+                        if (bandPeakEstimate[i] < 1e-9f) bandPeakEstimate[i] = 1e-9f;
                     }
 
-                    // Optional running peak normaliser to avoid sudden all-bars full at sustained loudness
-                    // Update runningPeak (simple max with decay)
-                    runningPeak = Math.Max(runningPeak, normalized);
-                    float peakDecayThisFrame = 1f - MathF.Exp(-peakDecay * deltaTime); // Decay alpha
-                    runningPeak = runningPeak * (1f - peakDecayThisFrame); // Decay towards 0
-
-                    // Use peak to compress the dynamic: divide by (peak * factor + epsilon) to avoid saturation
-                    float peakFactor = Math.Max(runningPeak, 0.0001f);
-                    float compressed = normalized / (0.9f * peakFactor + 0.1f); // Blend so not too aggressive
-                    compressed = Math.Clamp(compressed, 0f, 1f);
-
-                    // Now apply per-band compensation/gain/balance
-                    float balance = (i < bandBalance.Length) ? bandBalance[i] : 1f;
+                    // Perceptual mapping: dB mapping plus dynamic-scale fallback to preserve band differences
+                    const float eps2 = 1e-12f;
                     float gain = (barGain != null && i < barGain.Length) ? barGain[i] : 1f;
+                    float balance = (i < bandBalance.Length) ? bandBalance[i] : 1f;
+                    float valLin = val * gain * balance * outputBoost;
+                    float db = 20f * MathF.Log10(Math.Max(valLin, eps2));
 
-                    // Small frequency compensation (reverse sign from your old formula so highs are not overly boosted)
-                    float compensation = 1.0f - i * 0.05f; // gentle tilt; tweak to taste
+                    const float minDb = -64f;
+                    const float maxDb = -6f;
+                    float normalizedDb = (db - minDb) / (maxDb - minDb);
+                    normalizedDb = Math.Clamp(normalizedDb, 0f, 1f);
 
-                    float finalValue = compressed * gain * balance * compensation;
+                    // Dynamic fallback: val relative to recent peak
+                    float dynamicScale = val / Math.Max(bandPeakEstimate[i], eps2);
+                    dynamicScale = Math.Clamp(dynamicScale, 0f, 1f);
 
-                    // Tiny gate to prevent flicker
+                    // Combine: prefer dB mapping but allow dynamicScale to boost bands that are underrepresented
+                    float normalized = MathF.Max(normalizedDb, dynamicScale);
+
+                    // Gentle gamma to make small signals more visible
+                    normalized = MathF.Pow(normalized, 0.75f);
+
+                    // Slight compensation for lower bars so highs don't dominate visually
+                    float compensation = 1.0f - i * 0.05f;
+                    float finalValue = normalized * compensation;
+
                     if (finalValue < 0.00001f) finalValue = 0f;
 
                     targetHeights[i] = Math.Clamp(finalValue, 0f, 1f);
@@ -253,18 +320,14 @@ namespace DynamicWin.Utils
                 // Ensure smoothness when adjusting bar height according to values
                 for (int i = 0; i < barCount; i++)
                 {
-                    // Exponential attack/release smoothing
                     float current = barHeight[i];
                     float target = targetHeights[i];
 
-                    // Determine alpha using attack/release rates
                     float rate = (target > current) ? attackRate : releaseRate;
                     float alpha = 1f - (float)Math.Exp(-rate * deltaTime);
 
-                    // Apply smoothing
                     float newValue = current + (target - current) * alpha;
 
-                    // Rate limit change per frame to avoid jitter while keeping responsiveness
                     float maxStep = maxChangePerSecond * deltaTime;
                     float delta = newValue - current;
                     if (delta > maxStep) delta = maxStep;
@@ -278,100 +341,77 @@ namespace DynamicWin.Utils
         /// <summary>
         /// Handler to check if any data can be fetched from device
         /// </summary>
-        /// <param name="sender">Value of where the event is coming from</param>
-        /// <param name="e">Value provided by the event</param>
         private void OnDataAvailable(object? sender, WaveInEventArgs e)
         {
-            // Convert byte array to float array
-            var buffer = new float[e.BytesRecorded / 4];
-            Buffer.BlockCopy(e.Buffer, 0, buffer, 0, e.BytesRecorded);
+            int samplesAvailable = e.BytesRecorded / 4;
+            int copyLen = Math.Min(samplesAvailable, fftLength);
 
-            var samples = new Complex[fftLength];
-
-            // For-loop to fill array with audio data
-            for (int i = 0; i < fftLength && i < buffer.Length; i++)
+            // Fill fftBuffer with windowed samples, reuse preallocated Complex buffer
+            for (int i = 0; i < fftLength; i++)
             {
-                float window = 0.5f * (1 - MathF.Cos(2 * MathF.PI * i / (fftLength - 1)));
-                samples[i] = new Complex(buffer[i] * window, 0);
+                float s = 0f;
+                if (i < copyLen)
+                    s = BitConverter.ToSingle(e.Buffer, i * 4);
+
+                fftBuffer[i] = new Complex(s * window[i], 0);
             }
 
-            // Convert time-domain audio to frequency-domain
-            FFT(samples);
+            // In-place FFT
+            FFT(fftBuffer);
 
             float magnitudeScale = 2.0f / fftLength;
-            const float eps = 1e-9f;
+            const float eps = 1e-12f;
 
-            // Ensure thread-safety
             lock (fftLock)
             {
-                // Only store first half (DC..Nyquist)
                 int len = fftMagnitudes.Length;
                 for (int i = 0; i < len; i++)
                 {
-                    // Magnitude of complex bin scaled to amplitude
-                    float mag = (float)samples[i].Magnitude * magnitudeScale;
-
-                    // Optional tiny smoothing to avoid exact zeros
+                    float mag = (float)fftBuffer[i].Magnitude * magnitudeScale;
                     if (mag < eps) mag = 0f;
-
                     fftMagnitudes[i] = mag;
                 }
             }
         }
 
         /// <summary>
-        /// Performs Fast Fourier Transform on each sample
+        /// Performs Fast Fourier Transform on each sample (in-place). Uses precomputed bit-reversal indices.
         /// </summary>
-        /// <param name="buffer">Buffer value</param>
         private void FFT(Complex[] buffer)
         {
             int n = buffer.Length;
-            int m = (int)Math.Log2(n);
 
-            // Bit-reversal permutation stage
             for (int i = 0; i < n; i++)
             {
-                int j = BitReverse(i, m);
+                int j = bitRevIndices[i];
                 if (j > i)
-                {
-                    // Swap elements to put in bit-reversed order
                     (buffer[i], buffer[j]) = (buffer[j], buffer[i]);
-                }
             }
 
-            // Cooley-Turkey algorithm computation
+            int m = (int)Math.Log2(n);
+
             for (int s = 1; s <= m; s++)
             {
                 int mval = 1 << s;
-                int mval2 = mval >> 1;
-
-                // Twiddle factor implementation
-                Complex wm = Complex.FromPolarCoordinates(1, -2 * Math.PI / mval);
+                int half = mval >> 1;
+                double theta = -2.0 * Math.PI / mval;
+                Complex wm = new Complex(Math.Cos(theta), Math.Sin(theta));
 
                 for (int k = 0; k < n; k += mval)
                 {
                     Complex w = Complex.One;
-                    for (int j = 0; j < mval2; j++)
+                    for (int j = 0; j < half; j++)
                     {
-                        // Handle twiddle multiplication
-                        Complex t = w * buffer[k + j + mval2];
+                        Complex t = w * buffer[k + j + half];
                         Complex u = buffer[k + j];
-
-                        // Compute the new values
                         buffer[k + j] = u + t;
-                        buffer[k + j + mval2] = u - t;
-                        w *= wm; // Update before next iteration
+                        buffer[k + j + half] = u - t;
+                        w *= wm;
                     }
                 }
             }
         }
 
-        /// <summary>
-        /// Helper function to reverse bits of an integer
-        /// </summary>
-        /// <param name="n">The value to reverse</param>
-        /// <param name="bits">The amount of bits needed to reverse the value</param>
-        /// <returns></returns>
         private int BitReverse(int n, int bits)
         {
             int reversed = 0;
@@ -385,105 +425,147 @@ namespace DynamicWin.Utils
 
         public override void Draw(SKCanvas canvas)
         {
-            if (capture == null) return; // Do not draw anything if there is no audio to capture
+            if (capture == null) return;
 
-            // Values to fetch dimensions and position
             float width = Size.X;
             float height = Size.Y;
             float centerY = Position.Y + height / 2;
 
-            // Calculate bar spacing and dimensions
-            float spacing = BarSpacing;
-            float totalSpacing = spacing * (barCount - 1);
-            float barWidth = (width - totalSpacing) / barCount;
-            float visualBoost = 1.5f;
-            float dotHeight = barWidth;
+            // If thumbnail background is enabled and we have bytes, ensure SKImage is created (on UI thread)
+            if (UseThumbnailBackground)
+            {
+                lock (thumbLock)
+                {
+                    if (cachedThumbnailBytes != null && cachedThumbnailImage == null)
+                    {
+                        try
+                        {
+                            using var ms = new SKMemoryStream(cachedThumbnailBytes);
+                            using var codec = SKCodec.Create(ms);
+                            if (codec != null)
+                            {
+                                var info = codec.Info;
+                                using var bitmap = SKBitmap.Decode(codec);
+                                if (bitmap != null)
+                                {
+                                    cachedThumbnailImage = SKImage.FromBitmap(bitmap);
+                                }
+                            }
+                            else
+                            {
+                                // Fallback decode
+                                using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
+                                if (bmp != null) cachedThumbnailImage = SKImage.FromBitmap(bmp);
+                            }
+                        }
+                        catch { /* Ignore decoding errors, swallow */ }
+                    }
+                }
 
-            // Draw each frequency bar
+                // If thumbnail is available we'll sample it per-bar; do not draw a solid pill background
+                // to avoid showing a different coloured rounded background behind the bars.
+            }
+
+            float spacing2 = BarSpacing;
+            float totalSpacing2 = spacing2 * (barCount - 1);
+            float barWidth2 = (width - totalSpacing2) / barCount;
+            float visualBoost = 1.5f;
+            float dotHeight = barWidth2;
+
             for (int i = 0; i < barCount; i++)
             {
-                // Determine bar height
                 float rawHeight = barHeight[i] * visualBoost;
                 bool isDot = enableDotWhenLow && rawHeight < 0.05f;
                 float bH = isDot ? dotHeight : rawHeight * height * 0.8f;
 
-                // Calculate placement
-                float x = Position.X + i * (barWidth + spacing);
+                float x = Position.X + i * (barWidth2 + spacing2);
                 float barTopY = centerY - bH / 2;
 
-                // Define shape per bar
-                var rect = SKRect.Create(x, barTopY, barWidth, bH);
-                var roundRect = new SKRoundRect(rect, barWidth / 2, barWidth / 2);
+                var rect = SKRect.Create(x, barTopY, barWidth2, bH);
+                var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
 
-                float lerpAmount = isDot ? 0.2f : barHeight[i];
-                Col pCol = EnableColourTransition
-                    ? Col.Lerp(Secondary, Primary, lerpAmount)
-                    : Primary;
-
-                SKColor baseColor = GetColor(pCol).Value();
-
-                // Ensure alpha never goes below a visible threshold
-                byte alpha = (byte)Math.Max(100, (int)baseColor.Alpha);
-
-                SKColor startColor = baseColor.WithAlpha(alpha);
-                SKColor endColor = new SKColor(
-                    (byte)(baseColor.Red * 0.7),
-                    (byte)(baseColor.Green * 0.7),
-                    (byte)(baseColor.Blue * 0.7),
-                    alpha
-                );
-
-                // Create gradient placement
-                using var paint = new SKPaint
+                if (UseThumbnailBackground && cachedThumbnailImage != null)
                 {
-                    IsAntialias = true,
-                    Shader = SKShader.CreateLinearGradient(
-                        new SKPoint(rect.Left, rect.Bottom),
-                        new SKPoint(rect.Left, rect.Top),
-                        new[] { startColor, endColor },
-                        new float[] { 0, 1 },
-                        SKShaderTileMode.Clamp
-                    ),
-                };
+                    // Draw the thumbnail clipped to the bar shape (replaces the colour fill)
+                    lock (thumbLock)
+                    {
+                        canvas.Save();
+                        canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
 
-                // If blur is active, blur the visualiser
-                if (Settings.AllowBlur)
-                {
-                    paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurAmount);
+                        using var imgPaint = new SKPaint { IsAntialias = true };
+                        imgPaint.FilterQuality = SKFilterQuality.High;
+                        // Apply blur per-bar so each bar appears blurred independently
+                        imgPaint.ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount);
+
+                        // Use the same cover scaling used for the overall background so bars sample the same region
+                        var img = cachedThumbnailImage;
+                        var imgW = img.Width;
+                        var imgH = img.Height;
+                        float scale = Math.Max(width / imgW, height / imgH);
+                        float iw = imgW * scale;
+                        float ih = imgH * scale;
+                        float ix = Position.X + (width - iw) / 2f;
+                        float iy = Position.Y + (height - ih) / 2f;
+                        var dest = SKRect.Create(ix, iy, iw, ih);
+
+                        canvas.DrawImage(img, dest, imgPaint);
+                        canvas.Restore();
+                    }
+
+                    // Optionally draw a subtle dark overlay to improve contrast
+                    using var overlay = new SKPaint { Color = new SKColor(255, 255, 255, 40) };
+                    canvas.DrawRoundRect(roundRect, overlay);
                 }
+                else
+                {
+                    float lerpAmount = isDot ? 0.2f : barHeight[i];
+                    Col pCol = EnableColourTransition
+                        ? Col.Lerp(Secondary, Primary, lerpAmount)
+                        : Primary;
 
-                canvas.DrawRoundRect(roundRect, paint);
+                    SKColor baseColor = GetColor(pCol).Value();
+
+                    // Ensure alpha never goes below a visible threshold
+                    byte alpha = (byte)Math.Max(100, (int)baseColor.Alpha);
+
+                    SKColor startColor = baseColor.WithAlpha(alpha);
+                    SKColor endColor = new SKColor(
+                        (byte)(baseColor.Red * 0.7),
+                        (byte)(baseColor.Green * 0.7),
+                        (byte)(baseColor.Blue * 0.7),
+                        alpha
+                    );
+
+                    // Create gradient placement
+                    using var paintBar = new SKPaint
+                    {
+                        IsAntialias = true,
+                        Shader = SKShader.CreateLinearGradient(
+                            new SKPoint(rect.Left, rect.Bottom),
+                            new SKPoint(rect.Left, rect.Top),
+                            new[] { startColor, endColor },
+                            new float[] { 0, 1 },
+                            SKShaderTileMode.Clamp
+                        ),
+                    };
+
+                    // If blur is active, blur the visualiser
+                    if (Settings.AllowBlur)
+                        paintBar.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurAmount);
+
+                    canvas.DrawRoundRect(roundRect, paintBar);
+                }
             }
         }
 
-        /// <summary>
-        /// Returns a colour between Secondary and Primary depending on audio amplitude
-        /// </summary>
-        /// <returns>Either Secondary or Primary colour schemes</returns>
         public Col GetActionCol()
         {
             return Col.Lerp(Secondary, Primary, averageAmplitude * 2);
         }
 
-        /// <summary>
-        /// Opposite of GetActionCol()
-        /// </summary>
-        /// <returns>Either Secondary or Primary colour schemes but inversed</returns>
         public Col GetInverseActionCol()
         {
             return Col.Lerp(Primary, Secondary, averageAmplitude * 2);
-        }
-
-        /// <summary>
-        /// Linear interpolation method
-        /// </summary>
-        /// <param name="a">First value</param>
-        /// <param name="b">Second value</param>
-        /// <param name="t">Third value</param>
-        /// <returns>A float value that smoothly blends between the given values</returns>
-        private float Lerp(float a, float b, float t)
-        {
-            return a + (b - a) * t;
         }
 
         public void ResetVisuals()
@@ -492,13 +574,22 @@ namespace DynamicWin.Utils
             // Reset gain to defaults
             barGain = new float[barCount];
             bandNoiseEstimate = new float[barCount];
+            bandPeakEstimate = new float[barCount];
             for (int i = 0; i < barCount; i++)
             {
                 barGain[i] = 1f;
-                bandNoiseEstimate[i] = 1e-6f;
+                bandNoiseEstimate[i] = 1e-9f;
+                bandPeakEstimate[i] = 1e-7f;
             }
             Primary = Theme.Primary;
             Secondary = Theme.Secondary.Override(a: 0.5f);
+
+            lock (thumbLock)
+            {
+                cachedThumbnailImage?.Dispose();
+                cachedThumbnailImage = null;
+                cachedThumbnailBytes = null;
+            }
         }
 
         public void SetBarGain(float[] gains)
