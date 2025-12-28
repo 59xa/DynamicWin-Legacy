@@ -20,7 +20,7 @@ using DynamicWin.UI.Menu.Menus;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          27 December 2025
+ *   Last Modified:          28 December 2025
  *
  */
 
@@ -58,7 +58,6 @@ namespace DynamicWin.UI.UIElements.Custom
         private DWImageButton? btnPrev;
         private DWImageButton? btnPlay;
         private DWImageButton? btnNext;
-        private DWProgressBar? progressBar;
 
         // Timeline state
         private TimeSpan? timelinePosition;
@@ -122,16 +121,6 @@ namespace DynamicWin.UI.UIElements.Custom
                 imageScale = 0.7f
             };
             AddLocalObject(btnNext);
-
-            // TODO: need to make this functional
-            progressBar = new DWProgressBar(this, new Vec2(0, -10), new Vec2(25, 6), UIAlignment.BottomCenter)
-            {
-                roundRadius = 6f,
-                contentColor = Theme.Primary.Override(a: 0.9f)
-            };
-            // Show progress bar
-            progressBar.SilentSetActive(false);
-            AddLocalObject(progressBar);
         }
 
         private bool GetEffectivePlayingState()
@@ -310,29 +299,6 @@ namespace DynamicWin.UI.UIElements.Custom
                 if (btnPlay != null) btnPlay.LocalPosition = new Vec2(startXLocal + (btnSize + btnSpacing), btnY); // Play in middle
                 if (btnNext != null) btnNext.LocalPosition = new Vec2(startXLocal + 2 * (btnSize + btnSpacing), btnY);
 
-                // Draw progress bar manually in Draw(); avoid activating child progressBar to prevent duplicate rendering
-                if (progressBar != null)
-                {
-                    float barY = btnY + btnSize + 8f;
-                    // Make the progress bar fill the remaining horizontal space of the widget
-                    // (start at left padding and extend to right padding)
-                    float barLeftLocal = padding; // Local X relative to rect.Left
-                    float barWidth = Math.Max(80f, rect.Width - padding * 2f);
-                    progressBar.Size = new Vec2(barWidth, 6f);
-                    progressBar.LocalPosition = new Vec2(barLeftLocal, barY);
-
-                    // Do not change child active state as manual draw uses timelinePosition/timelineDuration directly
-                    // Update child's value for completeness (not used for rendering)
-                    if (timelineDuration.HasValue && timelinePosition.HasValue && timelineDuration.Value.TotalSeconds > 0)
-                    {
-                        progressBar.value = (float)Math.Max(0.0, Math.Min(1.0, timelinePosition.Value.TotalSeconds / timelineDuration.Value.TotalSeconds));
-                    }
-                    else
-                    {
-                        progressBar.value = 0f;
-                    }
-                }
-
                 // Update play/pause icon based on detected playback state (consider optimistic)
                 if (btnPlay != null)
                 {
@@ -497,7 +463,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 pendingMedia = null;
 
                 // Hide controls
-                if (progressBar != null) progressBar.SilentSetActive(false);
+                //if (progressBar != null) progressBar.SilentSetActive(false);
             }
         }
 
@@ -526,23 +492,6 @@ namespace DynamicWin.UI.UIElements.Custom
 
             // Guard: don't draw if rect is degenerate
             if (rect.Width <= 0 || rect.Height <= 0) return;
-
-            // Draw background matching other widgets unless fully transparent
-            var bgCol = GetColor(Theme.IslandBackground);
-            if (bgCol.a > 0.001f)
-            {
-                using (var bgPaint = GetPaint())
-                {
-                    bgPaint.IsStroke = false;
-                    bgPaint.IsAntialias = true;
-                    // Use widget background colour so visuals match other widgets
-                    bgPaint.Color = bgCol.Value();
-                    // Ensure no image filter remains that could produce visible artefacts when alpha is low
-                    bgPaint.ImageFilter = null;
-                    bgPaint.BlendMode = SKBlendMode.SrcOver;
-                    canvas.DrawRoundRect(rr, bgPaint);
-                }
-            }
 
             // Limit thumbnail size so it never dominates the widget or leaks visually
             float maxThumb = Math.Min(90f, rect.Width * 0.35f); // Cap to 90px and a fraction of width
@@ -727,67 +676,6 @@ namespace DynamicWin.UI.UIElements.Custom
             {
                 var displayArtist = DWText.Truncate(artist, 60);
                 canvas.DrawText(displayArtist, textX, textY + titlePaint.TextSize + artistPaint.TextSize + 6f, artistPaint);
-            }
-
-            // Draw progress bar and times manually so it's always visible
-            try
-            {
-                // Position the progress bar to span the full width inside padding
-                float titleHeight = 14f;
-                float artistHeight = 12f;
-                float buttonsYOffset = 16f + titleHeight + artistHeight + 24f;
-                float btnSize = 28f;
-                float btnSpacing = 8f;
-                float buttonsTotal = btnSize * 3f + btnSpacing * 2f;
-                float btnY = buttonsYOffset;
-
-                float barY = btnY + btnSize + 8f;
-                float barWidth = Math.Max(80f, rect.Width * 2f);
-
-                // Clamp fill to [0,1] and smooth value
-                float targetFill = 0f;
-                if (timelineDuration.HasValue && timelinePosition.HasValue && timelineDuration.Value.TotalSeconds > 0)
-                {
-                    targetFill = (float)Math.Max(0.0, Math.Min(1.0, timelinePosition.Value.TotalSeconds / timelineDuration.Value.TotalSeconds));
-                }
-
-                // Smooth displayed fill
-                displayFill = Mathf.Lerp(displayFill, targetFill, 8f * RendererMain.Instance.DeltaTime);
-
-                var barRect = SKRect.Create(rect.Left, rect.Top + barY, barWidth, 6f);
-
-                // Background track
-                using (var p = GetPaint())
-                {
-                    p.IsAntialias = true;
-                    p.IsStroke = false;
-                    p.Color = GetColor(new Col(0.05f, 0.05f, 0.05f, 0.9f)).Value(); // Dark subtle track
-                    canvas.DrawRoundRect(new SKRoundRect(barRect, 3f), p);
-                }
-
-                // Fill
-                var fillRect = SKRect.Create(barRect.Left, barRect.Top, barRect.Width * displayFill, barRect.Height);
-                using (var p2 = GetPaint())
-                {
-                    p2.IsAntialias = true;
-                    p2.IsStroke = false;
-                    p2.Color = GetColor(Theme.Primary).Value();
-                    canvas.DrawRoundRect(new SKRoundRect(fillRect, 3f), p2);
-                }
-
-                // Subtle overlay to mimic inset
-                using (var p3 = GetPaint())
-                {
-                    p3.IsAntialias = true;
-                    p3.IsStroke = true;
-                    p3.StrokeWidth = 1f;
-                    p3.Color = GetColor(new Col(0f, 0f, 0f, 0.12f)).Value();
-                    canvas.DrawRoundRect(new SKRoundRect(barRect, 3f), p3);
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine("Draw progress error: " + ex.Message);
             }
         }
     }
