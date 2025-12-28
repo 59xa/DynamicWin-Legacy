@@ -113,7 +113,7 @@ namespace DynamicWin.UI.Menu.Menus
                 size.X = Math.Max(size.X, desiredMediaWidth + horizontalPadding);
 
                 // Add bCD (bottom container offset) + topContainerHeight + topSpacing to ensure vertical space
-                size.Y = Math.Max(size.Y, desiredMediaHeight + bCD + topContainerHeight + topSpacing);
+                size.Y = desiredMediaHeight + bCD + topContainerHeight + topSpacing;
             }
 
             return size;
