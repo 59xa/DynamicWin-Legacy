@@ -223,17 +223,20 @@ namespace DynamicWin.UI.Widgets.Big
         bool isMediaAvailable = false;
         Col mediaCol = Theme.Primary;
 
+        // Override Draw to apply clipping to the entire widget (including child objects)
+        public override void Draw(SKCanvas canvas)
+        {
+            int save = canvas.Save();
+            canvas.ClipRoundRect(GetRect());
+            base.Draw(canvas);
+            canvas.RestoreToCount(save);
+        }
+
         public override void DrawWidget(SKCanvas canvas)
         {
             var paint = GetPaint();
             paint.Color = GetColor(Theme.WidgetBackground).Value();
             canvas.DrawRoundRect(GetRect(), paint);
-
-            int saveCanvas = canvas.Save();
-
-            canvas.ClipRoundRect(GetRect());
-
-            canvas.RestoreToCount(saveCanvas);
 
             if (isMediaAvailable)
             {
