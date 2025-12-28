@@ -4,6 +4,7 @@ using DynamicWin.Utils;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -73,8 +74,10 @@ namespace DynamicWin.UI.Menu.Menus
 
             islandSizeMulti = Mathf.Lerp(islandSizeMulti, 1f, 5f * delta);
 
-            if (RendererMain.Instance.MainIsland.IsHovering && sinCycle >= 1)
+            if (RendererMain.Instance.MainIsland.IsHovering)
+            {
                 MenuManager.CloseOverlay();
+            }
         }
 
         public override Vec2 IslandSize()
