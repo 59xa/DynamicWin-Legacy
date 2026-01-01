@@ -6,6 +6,7 @@ using System.Numerics;
 using System.Linq;
 using System.Threading.Tasks;
 using System;
+using System.Diagnostics;
 
 /*
  * 
@@ -19,7 +20,7 @@ using System;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    18 May 2025
- *   Last Modified:          27 December 2025
+ *   Last Modified:          01 January 2026
  *
  */
 
@@ -153,6 +154,52 @@ namespace DynamicWin.Utils
                 capture.DataAvailable += OnDataAvailable;
                 capture.StartRecording();
             }
+
+            // Subscribe to central thumbnail service if using thumbnail background
+            MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
+            MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
+        }
+
+        private void OnThumbnailChanged(Media? m)
+        {
+            try
+            {
+                lock (thumbLock)
+                {
+                    cachedThumbnailBytes = m?.ThumbnailData;
+                    cachedThumbnailImage?.Dispose();
+                    cachedThumbnailImage = null;
+                }
+            }
+            catch { }
+        }
+
+        private void OnThumbnailChangedEvent(object? sender, MediaChangedEventArgs e)
+        {
+            try
+            {
+                lock (thumbLock)
+                {
+                    cachedThumbnailBytes = e.ThumbnailBytes;
+                    // Dispose existing image - will be recreated on UI thread in Draw
+                    cachedThumbnailImage?.Dispose();
+                    cachedThumbnailImage = null;
+
+                    // If service provides decoded bitmap, we can use it; otherwise we'll decode bytes on UI thread
+                    var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                    if (bmp != null)
+                    {
+                        try
+                        {
+                            // Create SKImage from bitmap clone to own it safely
+                            var img = SKImage.FromBitmap(bmp);
+                            cachedThumbnailImage = img;
+                        }
+                        catch { cachedThumbnailImage = null; }
+                    }
+                }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -161,6 +208,11 @@ namespace DynamicWin.Utils
         public override void OnDestroy()
         {
             base.OnDestroy();
+
+            // Unsubscribe
+            try { MediaThumbnailService.Instance.Unsubscribe(OnThumbnailChanged); } catch { }
+            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChangedEvent; } catch { }
+
             try
             {
                 if (capture != null)
@@ -431,39 +483,60 @@ namespace DynamicWin.Utils
             float height = Size.Y;
             float centerY = Position.Y + height / 2;
 
-            // If thumbnail background is enabled and we have bytes, ensure SKImage is created (on UI thread)
-            if (UseThumbnailBackground)
+            // Prepare image to use for thumbnail background. If we create a temporary SKImage it must be disposed;
+            // do NOT dispose cachedThumbnailImage because it's owned by this object.
+            SKImage? imgToUse = null;
+            bool createdTempImage = false;
+
+            try
             {
-                lock (thumbLock)
+                var serviceBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                if (serviceBmp != null)
                 {
-                    if (cachedThumbnailBytes != null && cachedThumbnailImage == null)
+                    try
                     {
-                        try
+                        imgToUse = SKImage.FromBitmap(serviceBmp);
+                        createdTempImage = true;
+                    }
+                    catch { imgToUse = null; createdTempImage = false; }
+                }
+                else
+                {
+                    lock (thumbLock)
+                    {
+                        if (cachedThumbnailBytes != null && cachedThumbnailImage == null)
                         {
-                            using var ms = new SKMemoryStream(cachedThumbnailBytes);
-                            using var codec = SKCodec.Create(ms);
-                            if (codec != null)
+                            try
                             {
-                                var info = codec.Info;
-                                using var bitmap = SKBitmap.Decode(codec);
-                                if (bitmap != null)
+                                using var ms = new SKMemoryStream(cachedThumbnailBytes);
+                                using var codec = SKCodec.Create(ms);
+                                if (codec != null)
                                 {
-                                    cachedThumbnailImage = SKImage.FromBitmap(bitmap);
+                                    using var bitmap = SKBitmap.Decode(codec);
+                                    if (bitmap != null) cachedThumbnailImage = SKImage.FromBitmap(bitmap);
+                                }
+                                else
+                                {
+                                    using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
+                                    if (bmp != null) cachedThumbnailImage = SKImage.FromBitmap(bmp);
                                 }
                             }
-                            else
-                            {
-                                // Fallback decode
-                                using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
-                                if (bmp != null) cachedThumbnailImage = SKImage.FromBitmap(bmp);
-                            }
+                            catch { /* ignore decode errors */ }
                         }
-                        catch { /* Ignore decoding errors, swallow */ }
+
+                        if (cachedThumbnailImage != null)
+                        {
+                            imgToUse = cachedThumbnailImage;
+                            createdTempImage = false;
+                        }
                     }
                 }
-
-                // If thumbnail is available we'll sample it per-bar; do not draw a solid pill background
-                // to avoid showing a different coloured rounded background behind the bars.
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Thumbnail prepare failed: " + ex.Message);
+                imgToUse = null;
+                createdTempImage = false;
             }
 
             float spacing2 = BarSpacing;
@@ -484,37 +557,89 @@ namespace DynamicWin.Utils
                 var rect = SKRect.Create(x, barTopY, barWidth2, bH);
                 var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
 
-                if (UseThumbnailBackground && cachedThumbnailImage != null)
+                if (UseThumbnailBackground && imgToUse != null)
                 {
-                    // Draw the thumbnail clipped to the bar shape (replaces the colour fill)
-                    lock (thumbLock)
+                    bool drawn = false;
+
+                    // Try drawing and if a null/dispose race occurs, attempt a quick rebuild and retry once
+                    try
                     {
-                        canvas.Save();
-                        canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
+                        DrawThumbnailBar(canvas, roundRect, imgToUse, width, height);
+                        drawn = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine("Draw thumbnail attempt 1 failed: " + ex.Message);
+                        // Try to rebuild image and retry once
+                        try
+                        {
+                            // Dispose temp if we created one
+                            if (createdTempImage)
+                            {
+                                try { imgToUse?.Dispose(); } catch { }
+                                imgToUse = null;
+                                createdTempImage = false;
+                            }
 
-                        using var imgPaint = new SKPaint { IsAntialias = true };
-                        imgPaint.FilterQuality = SKFilterQuality.High;
-                        // Apply blur per-bar so each bar appears blurred independently
-                        imgPaint.ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount);
+                            var svcBmp2 = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                            if (svcBmp2 != null)
+                            {
+                                try
+                                {
+                                    imgToUse = SKImage.FromBitmap(svcBmp2);
+                                    createdTempImage = true;
+                                }
+                                catch { imgToUse = null; createdTempImage = false; }
+                            }
+                            else
+                            {
+                                lock (thumbLock)
+                                {
+                                    if (cachedThumbnailBytes != null)
+                                    {
+                                        try
+                                        {
+                                            using var ms2 = new SKMemoryStream(cachedThumbnailBytes);
+                                            using var codec2 = SKCodec.Create(ms2);
+                                            if (codec2 != null)
+                                            {
+                                                using var bitmap2 = SKBitmap.Decode(codec2);
+                                                if (bitmap2 != null) cachedThumbnailImage = SKImage.FromBitmap(bitmap2);
+                                            }
+                                            else
+                                            {
+                                                using var bmp2 = SKBitmap.Decode(cachedThumbnailBytes);
+                                                if (bmp2 != null) cachedThumbnailImage = SKImage.FromBitmap(bmp2);
+                                            }
+                                        }
+                                        catch { }
 
-                        // Use the same cover scaling used for the overall background so bars sample the same region
-                        var img = cachedThumbnailImage;
-                        var imgW = img.Width;
-                        var imgH = img.Height;
-                        float scale = Math.Max(width / imgW, height / imgH);
-                        float iw = imgW * scale;
-                        float ih = imgH * scale;
-                        float ix = Position.X + (width - iw) / 2f;
-                        float iy = Position.Y + (height - ih) / 2f;
-                        var dest = SKRect.Create(ix, iy, iw, ih);
+                                        if (cachedThumbnailImage != null)
+                                        {
+                                            imgToUse = cachedThumbnailImage;
+                                            createdTempImage = false;
+                                        }
+                                    }
+                                }
+                            }
 
-                        canvas.DrawImage(img, dest, imgPaint);
-                        canvas.Restore();
+                            if (imgToUse != null)
+                            {
+                                DrawThumbnailBar(canvas, roundRect, imgToUse, width, height);
+                                drawn = true;
+                            }
+                        }
+                        catch (Exception ex2)
+                        {
+                            Debug.WriteLine("Draw thumbnail retry failed: " + ex2.Message);
+                        }
                     }
 
-                    // Optionally draw a subtle dark overlay to improve contrast
-                    using var overlay = new SKPaint { Color = new SKColor(255, 255, 255, 40) };
-                    canvas.DrawRoundRect(roundRect, overlay);
+                    if (drawn)
+                    {
+                        using var overlay = new SKPaint { Color = new SKColor(255, 255, 255, 40) };
+                        canvas.DrawRoundRect(roundRect, overlay);
+                    }
                 }
                 else
                 {
@@ -556,6 +681,31 @@ namespace DynamicWin.Utils
                     canvas.DrawRoundRect(roundRect, paintBar);
                 }
             }
+
+            // Dispose temporary image created from service BMP only
+            try { if (createdTempImage) imgToUse?.Dispose(); } catch { }
+        }
+
+        private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage img, float totalWidth, float totalHeight)
+        {
+            canvas.Save();
+            canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
+
+            using var imgPaint = new SKPaint { IsAntialias = true };
+            imgPaint.FilterQuality = SKFilterQuality.High;
+            imgPaint.ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount);
+
+            var imgW = img.Width;
+            var imgH = img.Height;
+            float scale = Math.Max(totalWidth / imgW, totalHeight / imgH);
+            float iw = imgW * scale;
+            float ih = imgH * scale;
+            float ix = Position.X + (totalWidth - iw) / 2f;
+            float iy = Position.Y + (totalHeight - ih) / 2f;
+            var dest = SKRect.Create(ix, iy, iw, ih);
+
+            canvas.DrawImage(img, dest, imgPaint);
+            canvas.Restore();
         }
 
         public Col GetActionCol()
