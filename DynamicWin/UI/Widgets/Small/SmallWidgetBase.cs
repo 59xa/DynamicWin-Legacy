@@ -17,7 +17,7 @@ namespace DynamicWin.UI.Widgets.Small
             isSmallWidget = true;
         }
 
-        protected override float GetWidgetHeight() { return 15; }
+        protected override float GetWidgetHeight() { return 22; }
         protected override float GetWidgetWidth() { return 35; }
     }
 }
