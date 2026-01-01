@@ -166,9 +166,19 @@ namespace DynamicWin.Utils
             {
                 lock (thumbLock)
                 {
-                    cachedThumbnailBytes = m?.ThumbnailData;
-                    cachedThumbnailImage?.Dispose();
-                    cachedThumbnailImage = null;
+                    // If m is null, clear cached bytes/image so no stale artwork remains
+                    if (m == null)
+                    {
+                        cachedThumbnailBytes = null;
+                        cachedThumbnailImage?.Dispose();
+                        cachedThumbnailImage = null;
+                    }
+                    else
+                    {
+                        cachedThumbnailBytes = m?.ThumbnailData;
+                        cachedThumbnailImage?.Dispose();
+                        cachedThumbnailImage = null;
+                    }
                 }
             }
             catch { }
@@ -180,6 +190,15 @@ namespace DynamicWin.Utils
             {
                 lock (thumbLock)
                 {
+                    // If there is no media and no bytes, clear cache to avoid showing stale images
+                    if (e.Media == null && (e.ThumbnailBytes == null || e.ThumbnailBytes.Length == 0))
+                    {
+                        cachedThumbnailBytes = null;
+                        cachedThumbnailImage?.Dispose();
+                        cachedThumbnailImage = null;
+                        return;
+                    }
+
                     cachedThumbnailBytes = e.ThumbnailBytes;
                     // Dispose existing image - will be recreated on UI thread in Draw
                     cachedThumbnailImage?.Dispose();
@@ -263,6 +282,19 @@ namespace DynamicWin.Utils
                                     {
                                         cachedThumbnailBytes = media.ThumbnailData;
                                         // Dispose old image on UI thread later when drawing
+                                        cachedThumbnailImage?.Dispose();
+                                        cachedThumbnailImage = null;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // If there's really no media, clear cached bytes/image
+                                if (media == null)
+                                {
+                                    lock (thumbLock)
+                                    {
+                                        cachedThumbnailBytes = null;
                                         cachedThumbnailImage?.Dispose();
                                         cachedThumbnailImage = null;
                                     }
