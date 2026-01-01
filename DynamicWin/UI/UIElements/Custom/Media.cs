@@ -226,6 +226,22 @@ namespace DynamicWin.UI.UIElements.Custom
                                     }
                                 }
                             }
+                            else
+                            {
+                                // If there really is no media (no bytes and no metadata), ensure we wipe any cached thumbnails
+                                if (meta == null)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                                        if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                        currentMediaKey = null;
+                                        pendingMediaKey = null;
+                                        currentMedia = null;
+                                    }
+                                }
+                            }
                         }
                         catch { }
                     });
@@ -373,6 +389,25 @@ namespace DynamicWin.UI.UIElements.Custom
                 var media = e.Media;
                 var bytes = e.ThumbnailBytes;
 
+                // If there's really no media (no metadata and no bytes), wipe cached thumbnails
+                if (media == null && (bytes == null || bytes.Length == 0))
+                {
+                    lock (mediaLock)
+                    {
+                        currentMedia = null;
+                        currentMediaKey = null;
+
+                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                        if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+
+                        pendingMedia = null;
+                        pendingMediaKey = null;
+                    }
+
+                    return;
+                }
+
                 SKBitmap? newBmp = null;
                 if (bytes != null && bytes.Length > 0)
                 {
@@ -430,6 +465,16 @@ namespace DynamicWin.UI.UIElements.Custom
                             {
                                 currentMedia = media;
                                 currentMediaKey = key;
+
+                                // If no media, wipe thumbnail cache so UI doesn't show stale artwork
+                                if (media == null)
+                                {
+                                    if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                                    if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                    if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                                    pendingMediaKey = null;
+                                    pendingMedia = null;
+                                }
                             }
                         }
                     }
@@ -515,6 +560,17 @@ namespace DynamicWin.UI.UIElements.Custom
                                     {
                                         currentMedia = media;
                                         currentMediaKey = key;
+
+                                        // If no media present, wipe cached thumbnails so UI can't show stale artwork
+                                        if (media == null)
+                                        {
+                                            if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                                            if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                            if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+
+                                            pendingMediaKey = null;
+                                            pendingMedia = null;
+                                        }
                                     }
                                 }
                             }
