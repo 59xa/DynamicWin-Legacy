@@ -366,7 +366,7 @@ namespace DynamicWin.UI.Menu.Menus
         public float smallWidgetsSpacing = 10;
         public float middleWidgetsSpacing = 35;
 
-        float sCD = 35;
+        float sCD = 25; // Small widget padding (horizontal)
         float bCD = 50;
 
         public bool isWidgetMode = true;
