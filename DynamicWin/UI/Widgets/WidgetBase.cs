@@ -148,7 +148,7 @@ namespace DynamicWin.UI.Widgets
                         _backgroundCts = null;
                         _backgroundTask = null;
                     }
-                }, token);
+                });
             }
             else
             {
