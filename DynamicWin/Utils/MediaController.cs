@@ -12,11 +12,12 @@ namespace DynamicWin.Utils
     /*
     *   Overview:
     *    - Allow user to interact with media controls inside a widget that implements it.
+    *    - Provide separate APIs for metadata and thumbnail bytes to avoid fetching thumbnails when not required.
     *    
     *   Author:                 Florian Butz
     *   GitHub:                 https://github.com/FlorianButz
     *   Implementation Date:    3 August 2024
-    *   Last Modified:          3 August 2024
+    *   Last Modified:          31 December 2025
     */
 
     public class MediaController
@@ -46,13 +47,15 @@ namespace DynamicWin.Utils
 
     /*
     *   Overview:
-    *    - Allows the fetching of currently playing media, returning its artist name, media title, and its corresponding image bytes.
-    *    - Handles metadata mapping through Media class which returns the three mentioned information.
+    *    - Allows the fetching of currently playing media metadata (title/artist) separately from thumbnail bytes.
+    *    - Provides FetchCurrentMediaAsync that returns metadata-only (ThumbnailData = null) and
+    *      FetchCurrentThumbnailBytesAsync for fetching thumbnail bytes alone.
+    *    - This separation reduces work for consumers that only need text metadata.
     *    
     *   Author:                 59xa
     *   GitHub:                 https://github.com/59xa
     *   Implementation Date:    19 May 2025
-    *   Last Modified:          27 December 2025
+    *   Last Modified:          01 January 2026
     */
 
     public class MediaInfo
@@ -126,6 +129,10 @@ namespace DynamicWin.Utils
             }
         }
 
+        /// <summary>
+        /// Fetch metadata (Title, Artist) for the currently focused session. This method intentionally does NOT
+        /// fetch or return the thumbnail bytes to keep it lightweight for callers that only need text metadata.
+        /// </summary>
         public static async Task<Media?> FetchCurrentMediaAsync()
         {
             // Return cached result if recent
@@ -170,37 +177,68 @@ namespace DynamicWin.Utils
                     return null;
                 }
 
-                byte[]? thumbBytes = null;
-                if (_p.Thumbnail != null)
-                {
-                    try
-                    {
-                        using var streamRef = await _p.Thumbnail.OpenReadAsync().AsTask().ConfigureAwait(false);
-                        using var stream = streamRef.AsStreamForRead();
-                        using var ms = new MemoryStream();
-                        await stream.CopyToAsync(ms).ConfigureAwait(false);
-                        thumbBytes = ms.ToArray();
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine("Failed to read thumbnail bytes: " + ex.Message);
-                        thumbBytes = null;
-                    }
-                }
-
-                var result = new Media { Title = _p.Title, Artist = _p.Artist, ThumbnailData = thumbBytes };
+                // Note: intentionally do not read thumbnail stream here - keep metadata-only
+                var result = new Media { Title = _p.Title, Artist = _p.Artist, ThumbnailData = null };
 
                 Current = result;
                 _lastFetch = DateTime.UtcNow;
 
 #if DEBUG
-                Debug.WriteLine("[MEDIA CONTROLLER] TITLE: {0}, ARTIST: {1}, THUMBNAIL_BYTES: {2}", _p.Title, _p.Artist, thumbBytes?.Length ?? 0);
+                Debug.WriteLine("[MEDIA CONTROLLER] TITLE: {0}, ARTIST: {1}", _p.Title, _p.Artist);
 #endif
                 return result;
             }
             finally
             {
                 _fetchLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Fetches only the thumbnail bytes for the currently focused session. This is a cheap separate call so
+        /// consumers can subscribe to thumbnails without forcing every metadata fetch to read binary streams.
+        /// Returns null when there is no thumbnail available or on failure.
+        /// </summary>
+        public static async Task<byte[]?> FetchCurrentThumbnailBytesAsync()
+        {
+            // Ensure manager exists and is started only once
+            if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
+            {
+                return null;
+            }
+
+            // Do not use the same _fetchLock as metadata - allow thumbnail fetches to proceed concurrently
+            try
+            {
+                var _s = _m?.GetFocusedSession();
+                if (_s == null) return null;
+
+                var control = _s.ControlSession;
+                if (control == null) return null;
+
+                var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
+                if (_p == null) return null;
+
+                if (_p.Thumbnail == null) return null;
+
+                try
+                {
+                    using var streamRef = await _p.Thumbnail.OpenReadAsync().AsTask().ConfigureAwait(false);
+                    using var stream = streamRef.AsStreamForRead();
+                    using var ms = new MemoryStream();
+                    await stream.CopyToAsync(ms).ConfigureAwait(false);
+                    return ms.ToArray();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("Failed to read thumbnail bytes: " + ex.Message);
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("FetchCurrentThumbnailBytesAsync error: " + ex.Message);
+                return null;
             }
         }
     }
