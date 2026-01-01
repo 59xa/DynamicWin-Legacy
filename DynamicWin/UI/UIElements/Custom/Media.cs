@@ -30,7 +30,7 @@ namespace DynamicWin.UI.UIElements.Custom
     {
         private CancellationTokenSource? cts;
         private DynamicWin.Utils.Media? currentMedia;
-        private SKBitmap? thumbnailBitmap; // Currently cached decoded bitmap
+        private SKBitmap? thumbnailBitmap; // Currently cached decoded bitmap (owned by this object)
         private SKBitmap? pendingBitmap; // Newly decoded bitmap waiting to animate in
         private DynamicWin.Utils.Media? pendingMedia; // Pending metadata object
         private readonly object mediaLock = new object();
@@ -40,18 +40,9 @@ namespace DynamicWin.UI.UIElements.Custom
         private string? currentMediaKey;
         private string? pendingMediaKey;
 
-        // Animation state
-        enum AnimState { Idle, BlurIn, Flip, BlurOut }
-        private AnimState animState = AnimState.Idle;
-        private float animTimer = 0f;
-        private float blurAmount = 0f;
+        // Animation state handled by MediaAnimator
+        private readonly MediaAnimator animator = new MediaAnimator();
         private SKBitmap? previousBitmap = null; // Bitmap that is being replaced
-
-        // Animation durations (seconds)
-        private const float blurDur = 0.18f;
-        private const float flipDur = 0.36f;
-        private const float blurOutDur = 0.18f;
-        private const float maxBlur = 8f;
 
         // Playback controls and progress
         private MediaController controller;
@@ -90,7 +81,6 @@ namespace DynamicWin.UI.UIElements.Custom
             AddLocalObject(btnPrev);
 
             // Hook play/pause button to also toggle optimistic UI state
-            // 59xa: kinda broken rn ngl
             btnPlay = new DWImageButton(this, Resources.Res.Play, new Vec2(0, 0), new Vec2(32, 32), () => {
                 // Optimistic toggle
                 optimisticState = !GetEffectivePlayingState();
@@ -121,6 +111,31 @@ namespace DynamicWin.UI.UIElements.Custom
                 imageScale = 0.7f
             };
             AddLocalObject(btnNext);
+
+            // Subscribe to central thumbnail service event
+            MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+
+            // Try to initialise thumbnail from service cache so it doesn't disappear when re-opening
+            try
+            {
+                var serviceBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                if (serviceBmp != null)
+                {
+                    // Clone into our own SKBitmap
+                    try
+                    {
+                        using var tmpImg = SKImage.FromBitmap(serviceBmp);
+                        var bmp = SKBitmap.FromImage(tmpImg);
+                        lock (mediaLock)
+                        {
+                            thumbnailBitmap = bmp;
+                            // No currentMedia metadata here
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private bool GetEffectivePlayingState()
@@ -137,6 +152,84 @@ namespace DynamicWin.UI.UIElements.Custom
             if (isEnabled)
             {
                 StartFetchLoop();
+
+                // If service has a cached bitmap, ensure it's used (queue as pending to animate in)
+                var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                if (svcBmp != null)
+                {
+                    try
+                    {
+                        using var tmp = SKImage.FromBitmap(svcBmp);
+                        var clone = SKBitmap.FromImage(tmp);
+                        lock (mediaLock)
+                        {
+                            // Queue as pending to trigger animator
+                            if (thumbnailBitmap == null)
+                            {
+                                pendingBitmap = clone;
+                                pendingMedia = null;
+                                pendingMediaKey = null;
+                            }
+                            else
+                            {
+                                // Replace directly
+                                try { thumbnailBitmap.Dispose(); } catch { }
+                                thumbnailBitmap = clone;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                else
+                {
+                    // No cached service bitmap yet — do a one-shot fetch so first-open has a thumbnail.
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync().ConfigureAwait(false);
+                            var meta = await MediaInfo.FetchCurrentMediaAsync().ConfigureAwait(false);
+
+                            if (bytes != null && bytes.Length > 0)
+                            {
+                                SKBitmap? newBmp = null;
+                                try
+                                {
+                                    using var ms = new SKMemoryStream(bytes);
+                                    newBmp = SKBitmap.Decode(ms);
+                                }
+                                catch { newBmp = null; }
+
+                                if (newBmp != null)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        // Queue as pending so animator will run even on first show
+                                        if (thumbnailBitmap == null && pendingBitmap == null)
+                                        {
+                                            pendingBitmap = newBmp;
+                                            pendingMedia = meta;
+                                            pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                        }
+                                        else
+                                        {
+                                            // If thumbnail already exists, set as pending to animate
+                                            if (pendingBitmap != null)
+                                            {
+                                                try { pendingBitmap.Dispose(); } catch { }
+                                            }
+
+                                            pendingBitmap = newBmp;
+                                            pendingMedia = meta;
+                                            pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    });
+                }
             }
             else
             {
@@ -171,94 +264,47 @@ namespace DynamicWin.UI.UIElements.Custom
                 return;
             }
 
-            // Drive animation
-            if (animState != AnimState.Idle)
-            {
-                animTimer += deltaTime;
-
-                if (animState == AnimState.BlurIn)
+            // Drive animator
+            animator.Update(deltaTime, () => { lock (mediaLock) { return pendingBitmap != null; } },
+                onStart: () =>
                 {
-                    float t = Math.Min(1f, animTimer / blurDur);
-                    float e = Easings.EaseInOutCubic(t);
-                    blurAmount = Mathf.Lerp(0f, maxBlur, e);
-                    if (t >= 1f)
-                    {
-                        // Start flip
-                        animState = AnimState.Flip;
-                        animTimer = 0f;
-                    }
-                }
-                else if (animState == AnimState.Flip)
-                {
-                    float t = Math.Min(1f, animTimer / flipDur);
-                    float e = Easings.EaseInOutCubic(t);
-                    // At halfway (eased) swap bitmaps
-                    if (e >= 0.5f && pendingBitmap != null)
-                    {
-                        lock (mediaLock)
-                        {
-                            // Swap displayed bitmap and metadata
-                            if (thumbnailBitmap != null && !thumbnailBitmap.IsNull)
-                            {
-                                try { thumbnailBitmap.Dispose(); } catch { }
-                            }
-                            thumbnailBitmap = pendingBitmap;
-                            pendingBitmap = null;
-
-                            // Update metadata key and currentMedia only when swapped
-                            currentMediaKey = pendingMediaKey;
-                            pendingMediaKey = null;
-
-                            // Commit pending metadata as current
-                            if (pendingMedia != null)
-                            {
-                                currentMedia = pendingMedia;
-                                pendingMedia = null;
-                            }
-                        }
-                    }
-
-                    // End flip
-                    if (t >= 1f)
-                    {
-                        animState = AnimState.BlurOut;
-                        animTimer = 0f;
-                    }
-                }
-                else if (animState == AnimState.BlurOut)
-                {
-                    float t = Math.Min(1f, animTimer / blurOutDur);
-                    float e = Easings.EaseInOutCubic(t);
-                    blurAmount = Mathf.Lerp(maxBlur, 0f, e);
-                    if (t >= 1f)
-                    {
-                        // Finish
-                        blurAmount = 0f;
-                        animState = AnimState.Idle;
-                        animTimer = 0f;
-
-                        // Dispose previousBitmap if exists
-                        if (previousBitmap != null)
-                        {
-                            try { previousBitmap.Dispose(); } catch { }
-                            previousBitmap = null;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // Start animation if a pendingBitmap exists when idle
-                lock (mediaLock)
-                {
-                    if (pendingBitmap != null)
+                    // Owner should capture previousBitmap
+                    lock (mediaLock)
                     {
                         previousBitmap = thumbnailBitmap;
-                        animState = AnimState.BlurIn;
-                        animTimer = 0f;
                     }
-                }
-            }
+                },
+                onMidFlip: () =>
+                {
+                    // Swap bitmaps/metadata mid-flip
+                    lock (mediaLock)
+                    {
+                        if (thumbnailBitmap != null)
+                        {
+                            try { thumbnailBitmap.Dispose(); } catch { }
+                        }
+                        thumbnailBitmap = pendingBitmap;
+                        pendingBitmap = null;
+
+                        currentMediaKey = pendingMediaKey;
+                        pendingMediaKey = null;
+
+                        if (pendingMedia != null)
+                        {
+                            currentMedia = pendingMedia;
+                            pendingMedia = null;
+                        }
+                    }
+                },
+                onFinish: () =>
+                {
+                    // Dispose previousBitmap
+                    if (previousBitmap != null)
+                    {
+                        try { previousBitmap.Dispose(); } catch { }
+                        previousBitmap = null;
+                    }
+                });
 
             // Update timeline periodically
             timelineTimer += deltaTime;
@@ -267,7 +313,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 timelineTimer = 0f;
             }
 
-            // Position controls relative to layout
+            // Position controls relative to layout (unchanged)
             try
             {
                 var rr = GetRect();
@@ -318,6 +364,79 @@ namespace DynamicWin.UI.UIElements.Custom
             }
         }
 
+        private void OnThumbnailChanged(object? sender, MediaChangedEventArgs e)
+        {
+            // Called from MediaThumbnailService loop (background). We only care about bytes/metadata presence.
+            // If bytes present, decode into a bitmap for pending swap; if null, just update metadata.
+            Task.Run(() =>
+            {
+                var media = e.Media;
+                var bytes = e.ThumbnailBytes;
+
+                SKBitmap? newBmp = null;
+                if (bytes != null && bytes.Length > 0)
+                {
+                    try
+                    {
+                        using var ms = new SKMemoryStream(bytes);
+                        newBmp = SKBitmap.Decode(ms);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine("Thumbnail decode in service handler failed: " + ex.Message);
+                        newBmp = null;
+                    }
+                }
+
+                lock (mediaLock)
+                {
+                    // Build key similar to prior logic
+                    string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
+
+                    if (key == currentMediaKey || key == pendingMediaKey)
+                    {
+                        if (newBmp != null)
+                        {
+                            try { newBmp.Dispose(); } catch { }
+                        }
+                    }
+                    else
+                    {
+                        // If there's no current thumbnail yet, queue as pending to animate in (so first show animates)
+                        if (thumbnailBitmap == null && newBmp != null)
+                        {
+                            pendingBitmap = newBmp;
+                            pendingMedia = media;
+                            pendingMediaKey = key;
+                        }
+                        else
+                        {
+                            if (newBmp != null)
+                            {
+                                if (pendingBitmap != null)
+                                {
+                                    try { pendingBitmap.Dispose(); } catch { }
+                                    pendingBitmap = null;
+                                    pendingMediaKey = null;
+                                    pendingMedia = null;
+                                }
+
+                                pendingBitmap = newBmp;
+                                pendingMedia = media;
+                                pendingMediaKey = key;
+                            }
+
+                            if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
+                            {
+                                currentMedia = media;
+                                currentMediaKey = key;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         private void StartFetchLoop()
         {
             if (cts != null) return;
@@ -364,13 +483,12 @@ namespace DynamicWin.UI.UIElements.Custom
                             }
                             else
                             {
-                                // If there's no current thumbnail yet, set immediately
+                                // If there's no current thumbnail yet, queue as pending to animate in
                                 if (thumbnailBitmap == null && newBmp != null)
                                 {
-                                    thumbnailBitmap = newBmp;
-                                    newBmp = null;
-                                    currentMedia = media;
-                                    currentMediaKey = key;
+                                    pendingBitmap = newBmp;
+                                    pendingMedia = media;
+                                    pendingMediaKey = key;
                                 }
                                 else
                                 {
@@ -437,33 +555,25 @@ namespace DynamicWin.UI.UIElements.Custom
             cts.Dispose();
             cts = null;
 
+            // Preserve cached thumbnails when stopping the loop so the UI shows the last image
             lock (mediaLock)
             {
-                currentMedia = null;
-                if (thumbnailBitmap != null)
-                {
-                    try { thumbnailBitmap.Dispose(); } catch { }
-                    thumbnailBitmap = null;
-                }
-
+                // Keep currentMedia and thumbnailBitmap so thumbnail remains visible when re-opening
+                // Only clear transient pending state
                 if (pendingBitmap != null)
                 {
                     try { pendingBitmap.Dispose(); } catch { }
                     pendingBitmap = null;
                 }
 
-                if (previousBitmap != null)
-                {
-                    try { previousBitmap.Dispose(); } catch { }
-                    previousBitmap = null;
-                }
-
-                currentMediaKey = null;
                 pendingMediaKey = null;
                 pendingMedia = null;
 
+                // Do not dispose thumbnailBitmap or previousBitmap here; keep cached for quick re-show
+                // currentMediaKey remains so duplicate detection still works
+
                 // Hide controls
-                //if (progressBar != null) progressBar.SilentSetActive(false);
+                // If (progressBar != null) progressBar.SilentSetActive(false);
             }
         }
 
@@ -529,15 +639,9 @@ namespace DynamicWin.UI.UIElements.Custom
             // Draw thumbnail with animation transforms
             try
             {
-                // Compute flip scale
-                float flipScale = 1f;
-                bool doFlip = (animState == AnimState.Flip);
-                if (doFlip)
-                {
-                    float t = Math.Min(1f, animTimer / flipDur);
-                    float e = Easings.EaseInOutCubic(t);
-                    flipScale = (float)Math.Cos(e * (float)Math.PI); // Eased 1 -> 0 -> -1
-                }
+                // Compute flip scale from animator
+                float flipScale = animator.GetFlipScale();
+                bool doFlip = animator.IsFlipping;
 
                 int save = canvas.Save();
 
@@ -559,7 +663,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     var paint = GetPaint();
                     paint.IsAntialias = true;
                     paint.IsStroke = false;
-                    paint.ImageFilter = blurAmount > 0f ? SKImageFilter.CreateBlur(blurAmount, blurAmount) : null;
+                    paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
 
                     if (displayBmp != null)
@@ -575,7 +679,7 @@ namespace DynamicWin.UI.UIElements.Custom
                             p.IsAntialias = true;
                             p.IsStroke = false;
                             p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
-                            p.ImageFilter = blurAmount > 0f ? SKImageFilter.CreateBlur(blurAmount, blurAmount) : null;
+                            p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                             p.BlendMode = SKBlendMode.SrcOver;
                             canvas.DrawRoundRect(new SKRoundRect(localRect, thumbRadius), p);
                         }
@@ -605,7 +709,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     var paint = GetPaint();
                     paint.IsAntialias = true;
                     paint.IsStroke = false;
-                    paint.ImageFilter = blurAmount > 0f ? SKImageFilter.CreateBlur(blurAmount, blurAmount) : null;
+                    paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
 
                     if (displayBmp != null)
@@ -619,7 +723,7 @@ namespace DynamicWin.UI.UIElements.Custom
                             p.IsAntialias = true;
                             p.IsStroke = false;
                             p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
-                            p.ImageFilter = blurAmount > 0f ? SKImageFilter.CreateBlur(blurAmount, blurAmount) : null;
+                            p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                             p.BlendMode = SKBlendMode.SrcOver;
                             canvas.DrawRoundRect(new SKRoundRect(thumbRect, thumbRadius), p);
                         }
@@ -664,8 +768,6 @@ namespace DynamicWin.UI.UIElements.Custom
             artistPaint.Typeface = Resources.Res.SatoshiRegular;
             artistPaint.Color = GetColor(Theme.TextSecond).Value();
 
-            // Truncate to fit available width
-            float availableWidth = rect.Width - (textX - rect.Left);
             if (!string.IsNullOrEmpty(title))
             {
                 var displayTitle = DWText.Truncate(title, 60);
@@ -677,6 +779,17 @@ namespace DynamicWin.UI.UIElements.Custom
                 var displayArtist = DWText.Truncate(artist, 60);
                 canvas.DrawText(displayArtist, textX, textY + titlePaint.TextSize + artistPaint.TextSize + 6f, artistPaint);
             }
+        }
+
+        public override void OnDestroy()
+        {
+            base.OnDestroy();
+
+            // Unsubscribe from thumbnail service
+            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged; } catch { }
+
+            // Ensure fetch loop stopped and bitmaps cleaned
+            StopFetchLoop();
         }
     }
 }
