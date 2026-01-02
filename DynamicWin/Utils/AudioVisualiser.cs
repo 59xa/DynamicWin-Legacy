@@ -63,16 +63,16 @@ namespace DynamicWin.Utils
 
         // Values to ensure smoothness and reactiveness on the visualiser
         public float attackRate = 60f;   // Quicker rise for livelier feel
-        public float releaseRate = 30f;  // Moderate decay
+        public float releaseRate = 20f;  // Moderate decay
         public float maxChangePerSecond = 18f;
 
         // Noise gating parameters (per-band slow noise estimate + gate multiplier)
         private float[] bandNoiseEstimate;
         // Slower rise, faster fall so the noise estimate doesn't grow and kill bands
-        public float noiseEstimateRiseRate = 0.35f; // Slower rise
+        public float noiseEstimateRiseRate = 0.4f; // Slower rise
         public float noiseEstimateFallRate = 6.0f; // Faster fall
-        public float gateMultiplier = 1.05f;    // Slightly above noise floor
-        public float minGateThreshold = 1e-9f;  // Very small minimum gate
+        public float gateMultiplier = 1.35f;    // Slightly above noise floor
+        public float minGateThreshold = 1e-8f;  // Very small minimum gate
 
         // Per-band adaptive peak normaliser (kept for dynamic scale fallback)
         private float[] bandPeakEstimate;
@@ -80,7 +80,7 @@ namespace DynamicWin.Utils
         public float peakFallRate = 6.0f; // Faster fall so peaks don't hold too long
 
         // Output boost to make visuals pop
-        public float outputBoost = 1.6f;
+        public float outputBoost = 1.0f;
 
         // Thumbnail background caching
         private volatile byte[]? cachedThumbnailBytes;
@@ -344,15 +344,40 @@ namespace DynamicWin.Utils
                     // Update noise-floor estimate (linear domain)
                     float riseAlpha = 1f - MathF.Exp(-noiseEstimateRiseRate * deltaTime);
                     float fallAlpha = 1f - MathF.Exp(-noiseEstimateFallRate * deltaTime);
-                    if (rms > bandNoiseEstimate[i])
-                        bandNoiseEstimate[i] += (rms - bandNoiseEstimate[i]) * riseAlpha;
-                    else
-                        bandNoiseEstimate[i] += (rms - bandNoiseEstimate[i]) * fallAlpha;
+                    float maxNoiseFraction = 0.35f; // never treat more than 35% of signal as noise
+                    float noiseCeiling = rms * maxNoiseFraction;
 
-                    float gateThreshold = Math.Max(minGateThreshold, bandNoiseEstimate[i] * gateMultiplier);
+                    if (rms > bandNoiseEstimate[i])
+                    {
+                        float target = MathF.Min(rms, noiseCeiling);
+                        bandNoiseEstimate[i] += (target - bandNoiseEstimate[i]) * riseAlpha;
+                    }
+                    else
+                    {
+                        bandNoiseEstimate[i] += (rms - bandNoiseEstimate[i]) * fallAlpha;
+                    }
+
+
+                    float localGateMultiplier = gateMultiplier;
+
+                    // Ease the gate for low frequencies
+                    if (i == 0)          // sub
+                        localGateMultiplier = 1.15f;
+                    else if (i == 1)     // low bass
+                        localGateMultiplier = 1.3f;
+
+                    float gateThreshold = Math.Max(
+                        minGateThreshold,
+                        bandNoiseEstimate[i] * localGateMultiplier
+                    );
 
                     // Subtract noise-floor
                     float val = Math.Max(0f, rms - gateThreshold);
+
+                    if (val < 0.00001f && rms > bandNoiseEstimate[i] * 1.1f)
+                    {
+                        val = rms * 0.05f;
+                    }
 
                     // Update per-band peak estimate (fallback scale)
                     float peakRiseA = 1f - MathF.Exp(-peakRiseRate * deltaTime);
@@ -720,24 +745,121 @@ namespace DynamicWin.Utils
 
         private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage img, float totalWidth, float totalHeight)
         {
-            canvas.Save();
-            canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
+            // Attempt to guard against disposed/invalid SKImage instances which can cause access violations
+            SKImage? imgToUse = img;
+            bool disposeTemp = false;
 
-            using var imgPaint = new SKPaint { IsAntialias = true };
-            imgPaint.FilterQuality = SKFilterQuality.High;
-            imgPaint.ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount);
+            try
+            {
+                // First quick sanity check: try to read dimensions which is where crashes have been observed.
+                // Wrap in try/catch so we can attempt to rebuild the image if it is invalid.
+                try
+                {
+                    // force access to width/height to trigger possible exception early
+                    _ = imgToUse?.Width;
+                    _ = imgToUse?.Height;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("DrawThumbnailBar: incoming SKImage appears invalid, attempting to rebuild: " + ex.Message);
 
-            var imgW = img.Width;
-            var imgH = img.Height;
-            float scale = Math.Max(totalWidth / imgW, totalHeight / imgH);
-            float iw = imgW * scale;
-            float ih = imgH * scale;
-            float ix = Position.X + (totalWidth - iw) / 2f;
-            float iy = Position.Y + (totalHeight - ih) / 2f;
-            var dest = SKRect.Create(ix, iy, iw, ih);
+                    SKImage? rebuilt = null;
 
-            canvas.DrawImage(img, dest, imgPaint);
-            canvas.Restore();
+                    // Try service-provided decoded bitmap first
+                    try
+                    {
+                        var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                        if (svcBmp != null)
+                        {
+                            try
+                            {
+                                rebuilt = SKImage.FromBitmap(svcBmp);
+                                disposeTemp = true;
+                            }
+                            catch { rebuilt = null; }
+                        }
+                    }
+                    catch { }
+
+                    // Fallback to cached bytes if available
+                    if (rebuilt == null)
+                    {
+                        lock (thumbLock)
+                        {
+                            if (cachedThumbnailBytes != null)
+                            {
+                                try
+                                {
+                                    using var ms = new SKMemoryStream(cachedThumbnailBytes);
+                                    using var codec = SKCodec.Create(ms);
+                                    if (codec != null)
+                                    {
+                                        using var bitmap = SKBitmap.Decode(codec);
+                                        if (bitmap != null)
+                                        {
+                                            rebuilt = SKImage.FromBitmap(bitmap);
+                                            // bitmap is disposed by using
+                                            disposeTemp = true;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
+                                        if (bmp != null)
+                                        {
+                                            rebuilt = SKImage.FromBitmap(bmp);
+                                            disposeTemp = true;
+                                        }
+                                    }
+                                }
+                                catch { rebuilt = null; }
+                            }
+                        }
+                    }
+
+                    if (rebuilt != null)
+                    {
+                        imgToUse = rebuilt;
+                    }
+                    else
+                    {
+                        // No valid image available; skip drawing thumbnail for this bar
+                        return;
+                    }
+                }
+
+                // Proceed to draw using a valid imgToUse
+                canvas.Save();
+                canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
+
+                using var imgPaint = new SKPaint { IsAntialias = true };
+                imgPaint.FilterQuality = SKFilterQuality.High;
+                imgPaint.ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount);
+
+                var imgW = imgToUse.Width;
+                var imgH = imgToUse.Height;
+                float scale = Math.Max(totalWidth / imgW, totalHeight / imgH);
+                float iw = imgW * scale;
+                float ih = imgH * scale;
+                float ix = Position.X + (totalWidth - iw) / 2f;
+                float iy = Position.Y + (totalHeight - ih) / 2f;
+                var dest = SKRect.Create(ix, iy, iw, ih);
+
+                canvas.DrawImage(imgToUse, dest, imgPaint);
+                canvas.Restore();
+            }
+            finally
+            {
+                // Only dispose temporary images we created here; do not dispose the cachedThumbnailImage owned by this object
+                try
+                {
+                    if (disposeTemp && imgToUse != null)
+                    {
+                        imgToUse.Dispose();
+                    }
+                }
+                catch { }
+            }
         }
 
         public Col GetActionCol()
