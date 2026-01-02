@@ -10,6 +10,7 @@ using System;
 using System.Diagnostics;
 using DynamicWin.Resources;
 using DynamicWin.UI.Menu.Menus;
+using System.Linq;
 
 /*
  * 
@@ -20,7 +21,7 @@ using DynamicWin.UI.Menu.Menus;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          28 December 2025
+ *   Last Modified:          02 January 2026
  *
  */
 
@@ -64,6 +65,27 @@ namespace DynamicWin.UI.UIElements.Custom
 
         // Animated progress fill
         private float displayFill = 0f;
+
+        // Compare two SKBitmaps for visual equality. Uses encoding fallback; safe and robust.
+        private static bool AreBitmapsEqual(SKBitmap? a, SKBitmap? b)
+        {
+            if (a == null || b == null) return false;
+            if (a.Width != b.Width || a.Height != b.Height) return false;
+            try
+            {
+                using var da = a.Encode(SKEncodedImageFormat.Png, 90);
+                using var db = b.Encode(SKEncodedImageFormat.Png, 90);
+                if (da == null || db == null) return false;
+                var aa = da.ToArray();
+                var bb = db.ToArray();
+                if (aa.Length != bb.Length) return false;
+                return aa.SequenceEqual(bb);
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         public Media(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
@@ -205,23 +227,33 @@ namespace DynamicWin.UI.UIElements.Custom
                                     lock (mediaLock)
                                     {
                                         // Queue as pending so animator will run even on first show
-                                        if (thumbnailBitmap == null && pendingBitmap == null)
+                                        // If the decoded bitmap is visually identical to current thumbnail, adopt metadata and skip animation
+                                        if (thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
                                         {
-                                            pendingBitmap = newBmp;
-                                            pendingMedia = meta;
-                                            pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                            currentMedia = meta;
+                                            currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                            try { newBmp.Dispose(); } catch { }
                                         }
                                         else
                                         {
-                                            // If thumbnail already exists, set as pending to animate
-                                            if (pendingBitmap != null)
+                                            if (thumbnailBitmap == null && pendingBitmap == null)
                                             {
-                                                try { pendingBitmap.Dispose(); } catch { }
+                                                pendingBitmap = newBmp;
+                                                pendingMedia = meta;
+                                                pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
                                             }
+                                            else
+                                            {
+                                                // If thumbnail already exists, set as pending to animate
+                                                if (pendingBitmap != null)
+                                                {
+                                                    try { pendingBitmap.Dispose(); } catch { }
+                                                }
 
-                                            pendingBitmap = newBmp;
-                                            pendingMedia = meta;
-                                            pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                                pendingBitmap = newBmp;
+                                                pendingMedia = meta;
+                                                pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                            }
                                         }
                                     }
                                 }
@@ -437,6 +469,19 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
                     else
                     {
+                        // If the incoming bitmap is visually identical to the currently displayed thumbnail,
+                        // treat it as not-new: dispose the decoded bitmap and update metadata/key instead
+                        if (newBmp != null && thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
+                        {
+                            // Adopt metadata without triggering a flip animation
+                            currentMedia = media;
+                            currentMediaKey = key;
+                            try { newBmp.Dispose(); } catch { }
+                            pendingMedia = null;
+                            pendingMediaKey = null;
+                            return; // exit the Task.Run delegate early
+                        }
+
                         // If there's no current thumbnail yet, queue as pending to animate in (so first show animates)
                         if (thumbnailBitmap == null && newBmp != null)
                         {
@@ -528,6 +573,16 @@ namespace DynamicWin.UI.UIElements.Custom
                             }
                             else
                             {
+                                // If the newly-decoded bitmap matches the currently-displayed bitmap, adopt metadata/key
+                                // and avoid queuing an animation.
+                                if (newBmp != null && thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
+                                {
+                                    currentMedia = media;
+                                    currentMediaKey = key;
+                                    try { newBmp.Dispose(); } catch { }
+                                    continue;
+                                }
+
                                 // If there's no current thumbnail yet, queue as pending to animate in
                                 if (thumbnailBitmap == null && newBmp != null)
                                 {
