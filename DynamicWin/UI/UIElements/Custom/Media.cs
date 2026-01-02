@@ -66,23 +66,35 @@ namespace DynamicWin.UI.UIElements.Custom
         // Animated progress fill
         private float displayFill = 0f;
 
-        // Compare two SKBitmaps for visual equality. Uses encoding fallback; safe and robust.
+        // Compare two SKBitmaps for visual equality. Uses fast pixel-by-pixel comparison to avoid allocations.
         private static bool AreBitmapsEqual(SKBitmap? a, SKBitmap? b)
         {
+            if (ReferenceEquals(a, b)) return true;
             if (a == null || b == null) return false;
             if (a.Width != b.Width || a.Height != b.Height) return false;
+
             try
             {
-                using var da = a.Encode(SKEncodedImageFormat.Png, 90);
-                using var db = b.Encode(SKEncodedImageFormat.Png, 90);
-                if (da == null || db == null) return false;
-                var aa = da.ToArray();
-                var bb = db.ToArray();
-                if (aa.Length != bb.Length) return false;
-                return aa.SequenceEqual(bb);
+                // Fast pixel-by-pixel compare using SKBitmap.GetPixel (returns SKColor)
+                int w = a.Width;
+                int h = a.Height;
+
+                // Compare row by row and bail out early on mismatch
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        var ca = a.GetPixel(x, y);
+                        var cb = b.GetPixel(x, y);
+                        if (ca != cb) return false;
+                    }
+                }
+
+                return true;
             }
             catch
             {
+                // Fallback: if direct pixel compare fails for any reason, conservatively return false so caller can update
                 return false;
             }
         }
@@ -146,8 +158,9 @@ namespace DynamicWin.UI.UIElements.Custom
                     // Clone into our own SKBitmap
                     try
                     {
-                        using var tmpImg = SKImage.FromBitmap(serviceBmp);
-                        var bmp = SKBitmap.FromImage(tmpImg);
+                        // Prefer a safe pixel copy to avoid sharing ownership
+                        var bmp = new SKBitmap(serviceBmp.Info);
+                        serviceBmp.CopyTo(bmp);
                         lock (mediaLock)
                         {
                             thumbnailBitmap = bmp;
@@ -181,8 +194,8 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try
                     {
-                        using var tmp = SKImage.FromBitmap(svcBmp);
-                        var clone = SKBitmap.FromImage(tmp);
+                        var clone = new SKBitmap(svcBmp.Info);
+                        svcBmp.CopyTo(clone);
                         lock (mediaLock)
                         {
                             // Queue as pending to trigger animator
@@ -204,7 +217,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
                 else
                 {
-                    // No cached service bitmap yet — do a one-shot fetch so first-open has a thumbnail.
+                    // No cached service bitmap yet – do a one-shot fetch so first-open has a thumbnail.
                     Task.Run(async () =>
                     {
                         try
@@ -901,6 +914,13 @@ namespace DynamicWin.UI.UIElements.Custom
 
             // Ensure fetch loop stopped and bitmaps cleaned
             StopFetchLoop();
+
+            lock (mediaLock)
+            {
+                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+            }
         }
     }
 }
