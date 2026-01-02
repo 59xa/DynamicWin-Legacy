@@ -22,6 +22,8 @@ namespace DynamicWin.Utils
         private readonly float maxBlur;
 
         private bool midSwapCalled = false;
+        // Track previous hasPending value so we only start when a pending appears (rising edge)
+        private bool lastHasPending = false;
 
         public MediaAnimator(float blurDur = 0.18f, float flipDur = 0.36f, float blurOutDur = 0.18f, float maxBlur = 8f)
         {
@@ -42,6 +44,9 @@ namespace DynamicWin.Utils
         /// </remarks>
         public void Update(float deltaTime, Func<bool> hasPending, Action? onStart = null, Action? onMidFlip = null, Action? onFinish = null)
         {
+            bool hasPendingNow = false;
+            try { hasPendingNow = hasPending(); } catch { hasPendingNow = false; }
+
             if (State != AnimState.Idle)
                 AnimTimer += deltaTime;
 
@@ -62,7 +67,7 @@ namespace DynamicWin.Utils
                 float t = Math.Min(1f, AnimTimer / flipDur);
                 float e = Easings.EaseInOutCubic(t);
 
-                if (e >= 0.5f && !midSwapCalled && hasPending())
+                if (e >= 0.5f && !midSwapCalled && hasPendingNow)
                 {
                     midSwapCalled = true;
                     try { onMidFlip?.Invoke(); } catch { }
@@ -89,7 +94,8 @@ namespace DynamicWin.Utils
             }
             else // Idle
             {
-                if (hasPending())
+                // Only start animation on a rising edge (no repeated starts while pending stays true).
+                if (hasPendingNow && !lastHasPending)
                 {
                     // Transition to BlurIn
                     try { onStart?.Invoke(); } catch { }
@@ -97,6 +103,10 @@ namespace DynamicWin.Utils
                     AnimTimer = 0f;
                 }
             }
+
+            // Update lastHasPending for edge detection on next frame. When animation is running we still track
+            // the pending state so mid-swap logic can use hasPendingNow above.
+            lastHasPending = hasPendingNow;
         }
 
         /// <summary>
