@@ -237,7 +237,8 @@ namespace DynamicWin.UI.Menu.Menus
                 RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen = true;
 
                 var _w = new WeatherAPI();
-                _ = _w.Fetch(0, "null", _ctk, _cts);
+                // Start weather fetch loop when settings is opened so user can preview changes.
+                _w.StartFetching(0, 0, null);
             },
             UIAlignment.MiddleRight);
             settingsButton.normalColor = Col.Transparent;
@@ -340,19 +341,6 @@ namespace DynamicWin.UI.Menu.Menus
                 x.SilentSetActive(false);
                 });
 
-            // Initialize next and previous images
-            next = new DWImage(island, Resources.Res.Next, new Vec2(50, 0), new Vec2(30, 30), UIAlignment.Center)
-            {
-            };
-            next.SilentSetActive(false);
-            objects.Add(next);
-            
-            previous = new DWImage(island, Resources.Res.Previous, new Vec2(-50, 0), new Vec2(30, 30), UIAlignment.Center)
-            {
-            };
-            previous.SilentSetActive(false);
-            objects.Add(previous);
-
             return objects;
         }
 
@@ -373,15 +361,12 @@ namespace DynamicWin.UI.Menu.Menus
 
         int cycle = 0;
 
+        // Reusable list to avoid per-frame allocations
+        private readonly List<WidgetBase> widgetsInOneLine = new List<WidgetBase>();
+
         public override void Update()
         {
             tray.Size = new Vec2(topContainer.Size.X, IslandSizeBig().Y - bCD - topSpacing - topContainer.Size.Y);
-
-            //if(cycle % 32 == 0)
-            //{
-            //    var count = Tray.FileCount;
-            //    trayButton.Text.Text = $"Tray {(count > 0 ? $"({count})" : "")}";
-            //}
 
             // Enable / Disable small widgets
 
@@ -396,7 +381,8 @@ namespace DynamicWin.UI.Menu.Menus
             bigWidgets.ForEach(x => x.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Widgets));
             bigMenuItems.ForEach(x =>
             {
-                if(!(x is Tray) || !(x is UIElements.Custom.Media))
+                // Skip activating the Tray and Media UIObjects here; they are controlled separately above
+                if (!(x is Tray) && !(x is UIElements.Custom.Media))
                 {
                     x.SetActive(RendererMain.Instance.MainIsland.IsHovering);
                 }
@@ -507,7 +493,7 @@ namespace DynamicWin.UI.Menu.Menus
 
                 { // Big Widgets
 
-                    List<WidgetBase> widgetsInOneLine = new List<WidgetBase>();
+                    widgetsInOneLine.Clear();
 
                     float lastBiggestY = 0f;
 
@@ -529,6 +515,13 @@ namespace DynamicWin.UI.Menu.Menus
                             widgetsInOneLine.Clear();
                             line++;
                         }
+                    }
+
+                    // If there are leftover widgets in the last row, center them as well
+                    if (widgetsInOneLine.Count > 0)
+                    {
+                        CenterWidgets(widgetsInOneLine, bigWidgetsContainer);
+                        widgetsInOneLine.Clear();
                     }
                 }
             }
