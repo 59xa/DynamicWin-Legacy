@@ -234,11 +234,6 @@ namespace DynamicWin.UI.Menu.Menus
 #if DEBUG
                 System.Diagnostics.Debug.WriteLine("[HOME MENU] User opened Settings menu.");
 #endif
-                RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen = true;
-
-                var _w = new WeatherAPI();
-                // Start weather fetch loop when settings is opened so user can preview changes.
-                _w.StartFetching(0, 0, null);
             },
             UIAlignment.MiddleRight);
             settingsButton.normalColor = Col.Transparent;
