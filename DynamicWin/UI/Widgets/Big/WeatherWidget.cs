@@ -263,30 +263,17 @@ namespace DynamicWin.UI.Widgets.Big
 
             // Updates weather information display
             _WeatherAPI._OnWeatherDataReceived += OnWeatherDataReceived;
-            string[] _countries = null;
 
-            _ = Task.Run(async () =>
+            // Ensure UI reflects current saved settings
+            _LocationTextReplacement.SilentSetActive(RegisterWeatherWidgetSettings.saveData.hideLocation);
+            _LocationText.SilentSetActive(!RegisterWeatherWidgetSettings.saveData.hideLocation);
+
+            // If widget is already active at construction, start fetching
+            if (IsEnabled)
             {
-                _countries = await WeatherAPI.LoadCountryNamesAsync();
-                // If country index is set to 0, display location based on user's IP address
-                if (_countries[RegisterWeatherWidgetSettings.saveData.countryIndex] == "Default")
-                {
-                    Debug.WriteLine("[WEATHER WIDGET] Default selected, fetching geo-location forecast.");
-                    _ = _WeatherAPI.Fetch(RegisterWeatherWidgetSettings.saveData.countryIndex, "default");
-                }
-
-                else
-                {
-                    Debug.WriteLine("[WEATHER WIDGET] Selection is user-defined, fetching user-defined forecast.");
-                    _ = _WeatherAPI.Fetch(RegisterWeatherWidgetSettings.saveData.cityIndex, "city"); // Trigger if user configures weather values apart from Default
-                }
-                
-                // Handles logic if user configures widget to hide weather location
-                _LocationTextReplacement.SilentSetActive(RegisterWeatherWidgetSettings.saveData.hideLocation);
-                _LocationText.SilentSetActive(!RegisterWeatherWidgetSettings.saveData.hideLocation);
-            });
+                StartOrRestartFetchBasedOnSettings();
+            }
         }
-
 
         WeatherData lastWeatherData;
         // Logic to handle weather display updates
@@ -333,6 +320,46 @@ namespace DynamicWin.UI.Widgets.Big
                 default:
                     _ForecastIcon.Image = Res.SevereWeatherWarning;
                     break;
+            }
+        }
+
+        // Override to start/stop fetching when widget becomes active/inactive
+        protected override void OnActiveChanged(bool isEnabled)
+        {
+            base.OnActiveChanged(isEnabled);
+
+            if (_WeatherAPI == null) return;
+
+            if (isEnabled)
+            {
+                StartOrRestartFetchBasedOnSettings();
+            }
+            else
+            {
+                _WeatherAPI.StopFetching();
+            }
+        }
+
+        // Helper to start fetching using current saved configuration
+        private void StartOrRestartFetchBasedOnSettings()
+        {
+            try
+            {
+                string[] _countries = WeatherAPI.LoadCountryNamesAsync().GetAwaiter().GetResult();
+                if (_countries.Length > 0 && _countries[RegisterWeatherWidgetSettings.saveData.countryIndex] == "Default")
+                {
+                    Debug.WriteLine("[WEATHER WIDGET] Default selected, starting geo-location forecast.");
+                    _WeatherAPI.StartFetching(RegisterWeatherWidgetSettings.saveData.countryIndex, RegisterWeatherWidgetSettings.saveData.cityIndex, "default");
+                }
+                else
+                {
+                    Debug.WriteLine("[WEATHER WIDGET] Selection is user-defined, starting user-defined forecast.");
+                    _WeatherAPI.StartFetching(RegisterWeatherWidgetSettings.saveData.countryIndex, RegisterWeatherWidgetSettings.saveData.cityIndex, "city");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("[WEATHER WIDGET] Error starting fetch: " + ex);
             }
         }
 
