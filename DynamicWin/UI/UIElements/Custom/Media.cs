@@ -51,6 +51,8 @@ namespace DynamicWin.UI.UIElements.Custom
         private DWImageButton? btnPlay;
         private DWImageButton? btnNext;
 
+        AudioVisualiser visualiser;
+
         // Timeline state
         private TimeSpan? timelinePosition;
         private TimeSpan? timelineDuration;
@@ -145,6 +147,12 @@ namespace DynamicWin.UI.UIElements.Custom
                 imageScale = 0.7f
             };
             AddLocalObject(btnNext);
+
+            visualiser = new AudioVisualiser(this, new Vec2(-20, 33), new Vec2(28, 28), UIAlignment.TopRight)
+            {
+                UseThumbnailBackground = true
+            };
+            AddLocalObject(visualiser);
 
             // Subscribe to central thumbnail service event
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
