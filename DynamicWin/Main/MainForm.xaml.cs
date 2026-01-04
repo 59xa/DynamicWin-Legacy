@@ -26,9 +26,15 @@ namespace DynamicWin.Main
 
 
         private DateTime _lastRenderTime;
-        private readonly TimeSpan _targetElapsedTime = TimeSpan.FromMilliseconds(16); // ~60 FPS
+        // Target interval driven by monitor refresh rate (set in ctor)
+        private TimeSpan _targetElapsedTime;
 
         public Action onMainFormRender;
+
+        // Mouse/motion tracking for idle detection
+        private System.Windows.Point _lastMousePos = new System.Windows.Point(-1, -1);
+        private DateTime _lastMouseMoveTime = DateTime.MinValue;
+        private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromSeconds(1.0);
 
         [DllImport("user32.dll")]
         public static extern int SetWindowLong(IntPtr window, int idx, int val);
@@ -46,6 +52,22 @@ namespace DynamicWin.Main
             InitializeComponent();
 
             _trayIcon = new Forms.NotifyIcon();
+
+            // Initialise mouse tracking
+            _lastMouseMoveTime = DateTime.UtcNow;
+
+            // Compute initial target frame interval from monitor refresh rate
+            try
+            {
+                int refresh = DisplayHelper.GetRefreshRate();
+                if (refresh <= 0) refresh = 60;
+                _targetElapsedTime = TimeSpan.FromMilliseconds(1000.0 / refresh);
+                Debug.WriteLine($"[MAIN FORM] Initial target frame interval: {_targetElapsedTime.TotalMilliseconds} ms ({refresh} Hz)");
+            }
+            catch
+            {
+                _targetElapsedTime = TimeSpan.FromMilliseconds(16);
+            }
 
             CompositionTarget.Rendering += OnRendering;
 
@@ -81,7 +103,7 @@ namespace DynamicWin.Main
             // Tray icon
 
             _trayIcon.Icon = new System.Drawing.Icon("Resources/icons/TrayIcon.ico");
-            _trayIcon.Text = "DynamicWin";
+            _trayIcon.Text = "DynamicWin-Legacy";
 
             _trayIcon.ContextMenuStrip = new Forms.ContextMenuStrip();
 
@@ -153,6 +175,55 @@ namespace DynamicWin.Main
 
         private void OnRendering(object? sender, EventArgs e)
         {
+            var now = DateTime.UtcNow;
+
+            // Track mouse movement to detect idle while hovering the island
+            try
+            {
+                var pos = System.Windows.Input.Mouse.GetPosition(this);
+                if (pos.X != _lastMousePos.X || pos.Y != _lastMousePos.Y)
+                {
+                    _lastMouseMoveTime = now;
+                    _lastMousePos = pos;
+                }
+            }
+            catch { }
+
+            // Decide refresh rate dynamically based on settings and idle state
+            try
+            {
+                TimeSpan desiredInterval = TimeSpan.FromMilliseconds(16);
+
+                if (Settings.ToggleHighRefreshRate)
+                {
+                    int displayRefresh = DisplayHelper.GetRefreshRate();
+                    if (displayRefresh <= 0) displayRefresh = 60;
+
+                    int targetHz = displayRefresh;
+
+                    if (Settings.LimitRefreshRateWhenIdle)
+                    {
+                        bool islandHover = false;
+                        try
+                        {
+                            islandHover = RendererMain.Instance?.MainIsland?.IsHovering ?? false;
+                        }
+                        catch { }
+
+                        bool idle = !islandHover ||
+                                    ((now - _lastMouseMoveTime) > _idleMouseThreshold);
+
+                        if (idle)
+                            targetHz = 60;
+                    }
+
+                    desiredInterval = TimeSpan.FromMilliseconds(1000.0 / targetHz);
+                }
+
+                _targetElapsedTime = desiredInterval;
+            }
+            catch { }
+
             var currentTime = DateTime.Now;
             if (currentTime - _lastRenderTime >= _targetElapsedTime)
             {
