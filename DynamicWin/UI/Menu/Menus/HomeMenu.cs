@@ -131,7 +131,7 @@ namespace DynamicWin.UI.Menu.Menus
         DWTextImageButton mediaButton;
 
         Tray tray;
-        UIElements.Custom.Media media;
+        MediaPlayer media;
 
         // Enum to track which big menu is active
         public enum BigMenuMode { Widgets, Tray, Media }
@@ -251,7 +251,7 @@ namespace DynamicWin.UI.Menu.Menus
             bigMenuItems.Add(tray);
 
             // Instantiate media UIObject so media.SetActive(...) won't NRE
-            media = new UIElements.Custom.Media(island, new Vec2(0, -topSpacing * 1.5f), Vec2.zero, UIAlignment.BottomCenter)
+            media = new MediaPlayer(island, new Vec2(0, -topSpacing * 1.5f), Vec2.zero, UIAlignment.BottomCenter)
             {
                 Anchor = new Vec2(0.5f, 0.8f)
             };
@@ -377,7 +377,7 @@ namespace DynamicWin.UI.Menu.Menus
             bigMenuItems.ForEach(x =>
             {
                 // Skip activating the Tray and Media UIObjects here; they are controlled separately above
-                if (!(x is Tray) && !(x is UIElements.Custom.Media))
+                if (!(x is Tray) && !(x is MediaPlayer))
                 {
                     x.SetActive(RendererMain.Instance.MainIsland.IsHovering);
                 }
