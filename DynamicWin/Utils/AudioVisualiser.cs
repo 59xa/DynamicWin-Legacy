@@ -20,7 +20,7 @@ using System.Diagnostics;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    18 May 2025
- *   Last Modified:          01 January 2026
+ *   Last Modified:          04 January 2026
  *
  */
 
@@ -536,6 +536,13 @@ namespace DynamicWin.Utils
         {
             if (capture == null) return;
 
+            SKImage? thumbnailImage = null;
+
+            if (UseThumbnailBackground)
+            {
+                thumbnailImage = TryGetFreshThumbnailImage();
+            }
+
             float width = Size.X;
             float height = Size.Y;
             float centerY = Position.Y + height / 2;
@@ -544,57 +551,6 @@ namespace DynamicWin.Utils
             // do NOT dispose cachedThumbnailImage because it's owned by this object.
             SKImage? imgToUse = null;
             bool createdTempImage = false;
-
-            try
-            {
-                var serviceBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                if (serviceBmp != null)
-                {
-                    try
-                    {
-                        imgToUse = SKImage.FromBitmap(serviceBmp);
-                        createdTempImage = true;
-                    }
-                    catch { imgToUse = null; createdTempImage = false; }
-                }
-                else
-                {
-                    lock (thumbLock)
-                    {
-                        if (cachedThumbnailBytes != null && cachedThumbnailImage == null)
-                        {
-                            try
-                            {
-                                using var ms = new SKMemoryStream(cachedThumbnailBytes);
-                                using var codec = SKCodec.Create(ms);
-                                if (codec != null)
-                                {
-                                    using var bitmap = SKBitmap.Decode(codec);
-                                    if (bitmap != null) cachedThumbnailImage = SKImage.FromBitmap(bitmap);
-                                }
-                                else
-                                {
-                                    using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
-                                    if (bmp != null) cachedThumbnailImage = SKImage.FromBitmap(bmp);
-                                }
-                            }
-                            catch { /* ignore decode errors */ }
-                        }
-
-                        if (cachedThumbnailImage != null)
-                        {
-                            imgToUse = cachedThumbnailImage;
-                            createdTempImage = false;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine("Thumbnail prepare failed: " + ex.Message);
-                imgToUse = null;
-                createdTempImage = false;
-            }
 
             float spacing2 = BarSpacing;
             float totalSpacing2 = spacing2 * (barCount - 1);
@@ -614,88 +570,21 @@ namespace DynamicWin.Utils
                 var rect = SKRect.Create(x, barTopY, barWidth2, bH);
                 var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
 
-                if (UseThumbnailBackground && imgToUse != null)
+                if (UseThumbnailBackground && thumbnailImage != null)
                 {
-                    bool drawn = false;
-
-                    // Try drawing and if a null/dispose race occurs, attempt a quick rebuild and retry once
                     try
                     {
-                        DrawThumbnailBar(canvas, roundRect, imgToUse, width, height);
-                        drawn = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine("Draw thumbnail attempt 1 failed: " + ex.Message);
-                        // Try to rebuild image and retry once
-                        try
+                        DrawThumbnailBar(canvas, roundRect, thumbnailImage, width, height);
+
+                        using var overlay = new SKPaint
                         {
-                            // Dispose temp if we created one
-                            if (createdTempImage)
-                            {
-                                try { imgToUse?.Dispose(); } catch { }
-                                imgToUse = null;
-                                createdTempImage = false;
-                            }
-
-                            var svcBmp2 = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                            if (svcBmp2 != null)
-                            {
-                                try
-                                {
-                                    imgToUse = SKImage.FromBitmap(svcBmp2);
-                                    createdTempImage = true;
-                                }
-                                catch { imgToUse = null; createdTempImage = false; }
-                            }
-                            else
-                            {
-                                lock (thumbLock)
-                                {
-                                    if (cachedThumbnailBytes != null)
-                                    {
-                                        try
-                                        {
-                                            using var ms2 = new SKMemoryStream(cachedThumbnailBytes);
-                                            using var codec2 = SKCodec.Create(ms2);
-                                            if (codec2 != null)
-                                            {
-                                                using var bitmap2 = SKBitmap.Decode(codec2);
-                                                if (bitmap2 != null) cachedThumbnailImage = SKImage.FromBitmap(bitmap2);
-                                            }
-                                            else
-                                            {
-                                                using var bmp2 = SKBitmap.Decode(cachedThumbnailBytes);
-                                                if (bmp2 != null) cachedThumbnailImage = SKImage.FromBitmap(bmp2);
-                                            }
-                                        }
-                                        catch { }
-
-                                        if (cachedThumbnailImage != null)
-                                        {
-                                            imgToUse = cachedThumbnailImage;
-                                            createdTempImage = false;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (imgToUse != null)
-                            {
-                                DrawThumbnailBar(canvas, roundRect, imgToUse, width, height);
-                                drawn = true;
-                            }
-                        }
-                        catch (Exception ex2)
-                        {
-                            Debug.WriteLine("Draw thumbnail retry failed: " + ex2.Message);
-                        }
-                    }
-
-                    if (drawn)
-                    {
-                        using var overlay = new SKPaint { Color = new SKColor(255, 255, 255, 40) };
+                            Color = new SKColor(255, 255, 255, 40)
+                        };
                         canvas.DrawRoundRect(roundRect, overlay);
+                    }
+                    catch
+                    {
+                        // Thumbnail drawing is optional – ignore failures
                     }
                 }
                 else
@@ -740,127 +629,82 @@ namespace DynamicWin.Utils
             }
 
             // Dispose temporary image created from service BMP only
-            try { if (createdTempImage) imgToUse?.Dispose(); } catch { }
+            try
+            {
+                thumbnailImage?.Dispose();
+            }
+            catch { }
         }
+
+        private SKImage? TryGetFreshThumbnailImage()
+        {
+            // Try service bitmap that's already decoded
+            try
+            {
+                var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                if (bmp != null)
+                {
+                    return SKImage.FromBitmap(bmp); // Local ownership
+                }
+            }
+            catch { }
+
+            // Fallback to cached bytes
+            try
+            {
+                lock (thumbLock)
+                {
+                    if (cachedThumbnailBytes == null || cachedThumbnailBytes.Length == 0)
+                        return null;
+
+                    using var ms = new SKMemoryStream(cachedThumbnailBytes);
+                    using var codec = SKCodec.Create(ms);
+
+                    if (codec != null)
+                    {
+                        using var bitmap = SKBitmap.Decode(codec);
+                        return bitmap != null ? SKImage.FromBitmap(bitmap) : null;
+                    }
+
+                    using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
+                    return bmp != null ? SKImage.FromBitmap(bmp) : null;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
 
         private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage img, float totalWidth, float totalHeight)
         {
-            // Attempt to guard against disposed/invalid SKImage instances which can cause access violations
-            SKImage? imgToUse = img;
-            bool disposeTemp = false;
+            // At this point img is guaranteed fresh & owned by caller
 
-            try
+            canvas.Save();
+            canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
+
+            using var paint = new SKPaint
             {
-                // First quick sanity check: try to read dimensions which is where crashes have been observed.
-                // Wrap in try/catch so we can attempt to rebuild the image if it is invalid.
-                try
-                {
-                    // force access to width/height to trigger possible exception early
-                    _ = imgToUse?.Width;
-                    _ = imgToUse?.Height;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine("DrawThumbnailBar: incoming SKImage appears invalid, attempting to rebuild: " + ex.Message);
+                IsAntialias = true,
+                FilterQuality = SKFilterQuality.High,
+                ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount)
+            };
 
-                    SKImage? rebuilt = null;
+            float scale = Math.Max(
+                totalWidth / img.Width,
+                totalHeight / img.Height
+            );
 
-                    // Try service-provided decoded bitmap first
-                    try
-                    {
-                        var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                        if (svcBmp != null)
-                        {
-                            try
-                            {
-                                rebuilt = SKImage.FromBitmap(svcBmp);
-                                disposeTemp = true;
-                            }
-                            catch { rebuilt = null; }
-                        }
-                    }
-                    catch { }
+            float iw = img.Width * scale;
+            float ih = img.Height * scale;
 
-                    // Fallback to cached bytes if available
-                    if (rebuilt == null)
-                    {
-                        lock (thumbLock)
-                        {
-                            if (cachedThumbnailBytes != null)
-                            {
-                                try
-                                {
-                                    using var ms = new SKMemoryStream(cachedThumbnailBytes);
-                                    using var codec = SKCodec.Create(ms);
-                                    if (codec != null)
-                                    {
-                                        using var bitmap = SKBitmap.Decode(codec);
-                                        if (bitmap != null)
-                                        {
-                                            rebuilt = SKImage.FromBitmap(bitmap);
-                                            // bitmap is disposed by using
-                                            disposeTemp = true;
-                                        }
-                                    }
-                                    else
-                                    {
-                                        using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
-                                        if (bmp != null)
-                                        {
-                                            rebuilt = SKImage.FromBitmap(bmp);
-                                            disposeTemp = true;
-                                        }
-                                    }
-                                }
-                                catch { rebuilt = null; }
-                            }
-                        }
-                    }
+            float ix = Position.X + (totalWidth - iw) / 2f;
+            float iy = Position.Y + (totalHeight - ih) / 2f;
 
-                    if (rebuilt != null)
-                    {
-                        imgToUse = rebuilt;
-                    }
-                    else
-                    {
-                        // No valid image available; skip drawing thumbnail for this bar
-                        return;
-                    }
-                }
-
-                // Proceed to draw using a valid imgToUse
-                canvas.Save();
-                canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
-
-                using var imgPaint = new SKPaint { IsAntialias = true };
-                imgPaint.FilterQuality = SKFilterQuality.High;
-                imgPaint.ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount);
-
-                var imgW = imgToUse.Width;
-                var imgH = imgToUse.Height;
-                float scale = Math.Max(totalWidth / imgW, totalHeight / imgH);
-                float iw = imgW * scale;
-                float ih = imgH * scale;
-                float ix = Position.X + (totalWidth - iw) / 2f;
-                float iy = Position.Y + (totalHeight - ih) / 2f;
-                var dest = SKRect.Create(ix, iy, iw, ih);
-
-                canvas.DrawImage(imgToUse, dest, imgPaint);
-                canvas.Restore();
-            }
-            finally
-            {
-                // Only dispose temporary images we created here; do not dispose the cachedThumbnailImage owned by this object
-                try
-                {
-                    if (disposeTemp && imgToUse != null)
-                    {
-                        imgToUse.Dispose();
-                    }
-                }
-                catch { }
-            }
+            canvas.DrawImage(img, SKRect.Create(ix, iy, iw, ih), paint);
+            canvas.Restore();
         }
+
 
         public Col GetActionCol()
         {
