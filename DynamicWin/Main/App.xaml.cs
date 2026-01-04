@@ -19,7 +19,7 @@ namespace DynamicWin
         public static MMDevice defaultDevice;
         public static MMDevice defaultMicrophone;
 
-        public static string Version => "v1.5.0a7";
+        public static string Version => "v1.5.0a8";
         public static string ReleaseStream => "canary";
 
         [STAThread]
@@ -97,6 +97,8 @@ namespace DynamicWin
                 ResizeMode = ResizeMode.NoResize,
                 Topmost = true
             };
+
+            mainForm.SizeToContent = SizeToContent.Manual;
 
             var screenWidth = SystemParameters.PrimaryScreenWidth;
             mainForm.Left = (screenWidth - mainForm.Width) / 2;
