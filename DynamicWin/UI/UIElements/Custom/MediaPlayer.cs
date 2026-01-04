@@ -21,13 +21,13 @@ using System.Linq;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          02 January 2026
+ *   Last Modified:          04 January 2026
  *
  */
 
 namespace DynamicWin.UI.UIElements.Custom
 {
-    public class Media : UIObject
+    public class MediaPlayer : UIObject
     {
         private CancellationTokenSource? cts;
         private DynamicWin.Utils.Media? currentMedia;
@@ -40,6 +40,16 @@ namespace DynamicWin.UI.UIElements.Custom
         // Keys to detect duplicates
         private string? currentMediaKey;
         private string? pendingMediaKey;
+
+        // Scrolling title state
+        private float titleScrollOffset = 0f; // Current scroll position
+        private float titleScrollSpeed = 30f; // Pixels per second
+        private float titleScrollDelay = 1f;  // Seconds to pause before scrolling
+        private float titleScrollTimer = 0f;  // Timer for delay
+        private bool isTitleScrolling = false;
+        private string? fullTitleText = null;
+        private float titleTextWidth = 0f;
+        private const int titleScrollCharThreshold = 45;
 
         // Animation state handled by MediaAnimator
         private readonly MediaAnimator animator = new MediaAnimator();
@@ -101,7 +111,7 @@ namespace DynamicWin.UI.UIElements.Custom
             }
         }
 
-        public Media(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
+        public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
             controller = new MediaController();
 
@@ -430,6 +440,47 @@ namespace DynamicWin.UI.UIElements.Custom
             catch (Exception ex)
             {
                 Debug.WriteLine("Update layout error: " + ex.Message);
+            }
+
+            if (!string.IsNullOrEmpty(currentMedia?.Title))
+            {
+                fullTitleText = currentMedia.Title;
+
+                var paint = GetPaint();
+                paint.TextSize = 14f;
+                paint.Typeface = Resources.Res.SatoshiBold;
+
+                titleTextWidth = paint.MeasureText(fullTitleText);
+
+                // Trigger scrolling if longer than threshold
+                if (fullTitleText.Length > titleScrollCharThreshold)
+                {
+                    isTitleScrolling = true;
+
+                    if (titleScrollTimer < titleScrollDelay)
+                    {
+                        titleScrollTimer += deltaTime; // Wait before scroll
+                    }
+                    else
+                    {
+                        titleScrollOffset += titleScrollSpeed * deltaTime;
+                        if (titleScrollOffset > titleTextWidth + 20f) // Wrap after text + gap
+                        {
+                            titleScrollOffset = 0f;
+                            titleScrollTimer = 0f; // Pause before next scroll
+                        }
+                    }
+                }
+                else
+                {
+                    isTitleScrolling = false;
+                    titleScrollOffset = 0f;
+                }
+            }
+            else
+            {
+                isTitleScrolling = false;
+                titleScrollOffset = 0f;
             }
         }
 
@@ -900,15 +951,39 @@ namespace DynamicWin.UI.UIElements.Custom
             artistPaint.Typeface = Resources.Res.SatoshiRegular;
             artistPaint.Color = GetColor(Theme.TextSecond).Value();
 
-            if (!string.IsNullOrEmpty(title))
+            if (!string.IsNullOrEmpty(fullTitleText))
             {
-                var displayTitle = DWText.Truncate(title, 60);
-                canvas.DrawText(displayTitle, textX, textY + titlePaint.TextSize, titlePaint);
+                float maxWidth = rect.Width - (textX - rect.Left) - 45f; // Max width for text
+
+                if (isTitleScrolling)
+                {
+                    // Draw scrolling text
+                    canvas.Save();
+                    // Clip to visible width
+                    canvas.ClipRect(SKRect.Create(textX, textY, maxWidth, titlePaint.TextSize + 2f), antialias: true);
+
+                    float xPos = textX - titleScrollOffset;
+                    canvas.DrawText(fullTitleText, xPos, textY + titlePaint.TextSize, titlePaint);
+
+                    // Draw second copy for seamless wrap
+                    if (xPos + titleTextWidth < textX + maxWidth)
+                    {
+                        canvas.DrawText(fullTitleText, xPos + titleTextWidth + 20f, textY + titlePaint.TextSize, titlePaint);
+                    }
+
+                    canvas.Restore();
+                }
+                else
+                {
+                    // Draw truncated text normally
+                    var truncated = DWText.Truncate(fullTitleText, titleScrollCharThreshold);
+                    canvas.DrawText(truncated, textX, textY + titlePaint.TextSize, titlePaint);
+                }
             }
 
             if (!string.IsNullOrEmpty(artist))
             {
-                var displayArtist = DWText.Truncate(artist, 60);
+                var displayArtist = DWText.Truncate(artist, 45);
                 canvas.DrawText(displayArtist, textX, textY + titlePaint.TextSize + artistPaint.TextSize + 6f, artistPaint);
             }
         }
