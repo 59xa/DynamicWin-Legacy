@@ -195,7 +195,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             limitRefreshRateDisclaimer2 = new DWText(
                 island,
-                "Toggle this setting to reduce some of the performance draw.",
+                "Toggle this setting to improve some of the performance usage.",
                 new Vec2(65, 0),
                 UIAlignment.TopLeft
             )
