@@ -107,6 +107,18 @@ namespace DynamicWin.Main
 
             _trayIcon.ContextMenuStrip = new Forms.ContextMenuStrip();
 
+            _trayIcon.ContextMenuStrip.Opening += (s, e) =>
+            {
+                this.Topmost = false;
+                Activate();
+            };
+
+            _trayIcon.ContextMenuStrip.Closing += (s, e) =>
+            {
+                this.Topmost = true;
+            };
+
+
             _trayIcon.ContextMenuStrip.Items.Add("Restart Control", null, (x, y) =>
             {
                 if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
