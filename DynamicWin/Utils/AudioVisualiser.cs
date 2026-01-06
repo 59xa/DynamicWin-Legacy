@@ -85,6 +85,10 @@ namespace DynamicWin.Utils
         // Thumbnail background caching
         private volatile byte[]? cachedThumbnailBytes;
         private SKImage? cachedThumbnailImage;
+        // Thumbnail crossfade
+        private SKImage? previousThumbnailImage;
+        private float thumbnailFade = 3f; // 1 = fully current
+        public float ThumbnailFadeDuration { get; set; } = 0.35f; // Seconds
         private DateTime lastThumbnailRequest = DateTime.MinValue;
         private readonly object thumbLock = new object();
         public bool UseThumbnailBackground { get; set; } = false;
@@ -166,19 +170,16 @@ namespace DynamicWin.Utils
             {
                 lock (thumbLock)
                 {
-                    // If m is null, clear cached bytes/image so no stale artwork remains
-                    if (m == null)
+                    // Move current → previous
+                    if (cachedThumbnailImage != null)
                     {
-                        cachedThumbnailBytes = null;
-                        cachedThumbnailImage?.Dispose();
-                        cachedThumbnailImage = null;
+                        previousThumbnailImage?.Dispose();
+                        previousThumbnailImage = cachedThumbnailImage;
                     }
-                    else
-                    {
-                        cachedThumbnailBytes = m?.ThumbnailData;
-                        cachedThumbnailImage?.Dispose();
-                        cachedThumbnailImage = null;
-                    }
+
+                    cachedThumbnailBytes = m?.ThumbnailData;
+                    cachedThumbnailImage = null; // Will be recreated lazily
+                    thumbnailFade = 0f;
                 }
             }
             catch { }
@@ -259,6 +260,22 @@ namespace DynamicWin.Utils
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
+
+            if (UseThumbnailBackground && thumbnailFade < 1f)
+            {
+                thumbnailFade += deltaTime / Math.Max(0.0001f, ThumbnailFadeDuration);
+                if (thumbnailFade >= 1f)
+                {
+                    thumbnailFade = 1f;
+
+                    // Fade finished -> old image no longer needed
+                    lock (thumbLock)
+                    {
+                        previousThumbnailImage?.Dispose();
+                        previousThumbnailImage = null;
+                    }
+                }
+            }
 
             // If our thumbnail background option is enabled, request thumbnail periodically (async)
             if (UseThumbnailBackground)
@@ -574,7 +591,13 @@ namespace DynamicWin.Utils
                 {
                     try
                     {
-                        DrawThumbnailBar(canvas, roundRect, thumbnailImage, width, height);
+                        SKImage? prev;
+                        lock (thumbLock)
+                        {
+                            prev = previousThumbnailImage;
+                        }
+
+                        DrawThumbnailBar(canvas, roundRect, thumbnailImage, prev, width, height, thumbnailFade);
 
                         using var overlay = new SKPaint
                         {
@@ -675,36 +698,44 @@ namespace DynamicWin.Utils
             return null;
         }
 
-
-        private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage img, float totalWidth, float totalHeight)
+        private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage current, SKImage? previous, float totalWidth, float totalHeight, float fade
+        )
         {
             // At this point img is guaranteed fresh & owned by caller
-
             canvas.Save();
             canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
 
-            using var paint = new SKPaint
+            void Draw(SKImage img, float alpha)
             {
-                IsAntialias = true,
-                FilterQuality = SKFilterQuality.High,
-                ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount)
-            };
+                using var paint = new SKPaint
+                {
+                    IsAntialias = true,
+                    FilterQuality = SKFilterQuality.High,
+                    Color = SKColors.White.WithAlpha((byte)(alpha * 255)),
+                    ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount)
+                };
 
-            float scale = Math.Max(
-                totalWidth / img.Width,
-                totalHeight / img.Height
-            );
+                float scale = Math.Max(
+                    totalWidth / img.Width,
+                    totalHeight / img.Height
+                );
 
-            float iw = img.Width * scale;
-            float ih = img.Height * scale;
+                float iw = img.Width * scale;
+                float ih = img.Height * scale;
 
-            float ix = Position.X + (totalWidth - iw) / 2f;
-            float iy = Position.Y + (totalHeight - ih) / 2f;
+                float ix = Position.X + (totalWidth - iw) / 2f;
+                float iy = Position.Y + (totalHeight - ih) / 2f;
 
-            canvas.DrawImage(img, SKRect.Create(ix, iy, iw, ih), paint);
+                canvas.DrawImage(img, SKRect.Create(ix, iy, iw, ih), paint);
+            }
+
+            if (previous != null && fade < 1f)
+                Draw(previous, 1f - fade);
+
+            Draw(current, fade);
+
             canvas.Restore();
         }
-
 
         public Col GetActionCol()
         {
