@@ -244,7 +244,7 @@ namespace DynamicWin.UI.Menu
             if (menuAnimatorOut != null && menuAnimatorOut.IsRunning) return;
             onMenuChange?.Invoke(activeMenu, newActiveMenu);
 
-            menuAnimatorOut = new Animator(300, 1);
+            menuAnimatorOut = new Animator(450, 1);
 
             RendererMain.Instance.blurOverride = 35f;
 
