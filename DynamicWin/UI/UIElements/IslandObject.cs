@@ -11,8 +11,8 @@ namespace DynamicWin.UI.UIElements
 
         public SecondOrder scaleSecondOrder;
 
-        public float[] secondOrderValuesExpand = [2.5f, 0.6f, 0.1f];
-        public float[] secondOrderValuesContract = [3f, 0.9f, 0.1f];
+        public float[] secondOrderValuesExpand = [2.3f, 0.6f, 0.15f];
+        public float[] secondOrderValuesContract = [2.8f, 0.8f, 0.1f];
 
         public bool hidden = false;
         
