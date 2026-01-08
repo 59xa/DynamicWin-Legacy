@@ -40,17 +40,17 @@ namespace DynamicWin.Utils
         private float[] barGain;
 
         // Band balance multipliers to keep spectrum visually balanced (static, no historical normalisation)
-        private float[] bandBalance = new float[] { 1.0f, 1.0f, 1.0f, 1.0f, 0.9f, 1.1f };
+        private float[] bandBalance = new float[] { 1f, 1.0f, 1.15f, 1.10f, 1.25f, 1.35f };
 
         // Hardcoded frequency ranges per bar (Hz)
         private readonly float[][] freqRanges = new float[][]
         {
-            new float[]{ 0f,   60f   },
-            new float[]{ 60f,   250f  },
-            new float[]{ 250f,  500f  },
-            new float[]{ 500f,  2000f },
-            new float[]{ 2000f, 6000f },
-            new float[]{ 6000f, 20000f }
+            new float[]{ 20f,   120f },
+            new float[]{ 120f,  400f },
+            new float[]{ 400f,  1200f },
+            new float[]{ 1200f, 5000f },
+            new float[]{ 5000f, 12000f },
+            new float[]{ 12000f, 20000f }
         };
 
         private WasapiLoopbackCapture capture;
@@ -148,6 +148,10 @@ namespace DynamicWin.Utils
                 barHeight[i] = 0f;
                 barGain[i] = 1f;   // default: unity gain
                 bandNoiseEstimate[i] = 1e-9f; // start with very small floor to avoid permanent gating
+
+                const float absoluteNoiseFloor = 2e-5f;
+                bandNoiseEstimate[i] = Math.Max(bandNoiseEstimate[i], absoluteNoiseFloor);
+
                 bandPeakEstimate[i] = 1e-7f;  // small initial peak to avoid division by zero
             }
 
@@ -391,11 +395,6 @@ namespace DynamicWin.Utils
                     // Subtract noise-floor
                     float val = Math.Max(0f, rms - gateThreshold);
 
-                    if (val < 0.00001f && rms > bandNoiseEstimate[i] * 1.1f)
-                    {
-                        val = rms * 0.05f;
-                    }
-
                     // Update per-band peak estimate (fallback scale)
                     float peakRiseA = 1f - MathF.Exp(-peakRiseRate * deltaTime);
                     float peakFallA = 1f - MathF.Exp(-peakFallRate * deltaTime);
@@ -414,6 +413,13 @@ namespace DynamicWin.Utils
                     float gain = (barGain != null && i < barGain.Length) ? barGain[i] : 1f;
                     float balance = (i < bandBalance.Length) ? bandBalance[i] : 1f;
                     float valLin = val * gain * balance * outputBoost;
+
+                    if (valLin < 1e-5f)
+                    {
+                        targetHeights[i] = 0f;
+                        continue;
+                    }
+
                     float db = 20f * MathF.Log10(Math.Max(valLin, eps2));
 
                     const float minDb = -64f;
@@ -442,6 +448,12 @@ namespace DynamicWin.Utils
 
                 // Compute average amplitude (simple average of targets)
                 averageAmplitude = targetHeights.Average();
+
+                if (averageAmplitude < 0.015f)
+                {
+                    for (int i = 0; i < barCount; i++)
+                        targetHeights[i] = 0f;
+                }
 
                 // Ensure smoothness when adjusting bar height according to values
                 for (int i = 0; i < barCount; i++)
