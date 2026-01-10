@@ -40,7 +40,7 @@ namespace DynamicWin.Utils
         private float[] barGain;
 
         // Band balance multipliers to keep spectrum visually balanced (static, no historical normalisation)
-        private float[] bandBalance = new float[] { 1f, 1.0f, 1.15f, 1.10f, 1.25f, 1.35f };
+        private float[] bandBalance = new float[] { 1f, 0.75f, 1.15f, 1.10f, 1.25f, 1.35f };
 
         // Hardcoded frequency ranges per bar (Hz)
         private readonly float[][] freqRanges = new float[][]
@@ -431,13 +431,16 @@ namespace DynamicWin.Utils
                     float dynamicScale = val / Math.Max(bandPeakEstimate[i], eps2);
                     dynamicScale = Math.Clamp(dynamicScale, 0f, 1f);
 
-                    // Combine: prefer dB mapping but allow dynamicScale to boost bands that are underrepresented
+                    // Combine dB mapping + dynamic scale
                     float normalized = MathF.Max(normalizedDb, dynamicScale);
 
-                    // Gentle gamma to make small signals more visible
+                    // Apply band balance here (after everything)
+                    normalized *= balance;
+
+                    // Gentle gamma
                     normalized = MathF.Pow(normalized, 0.75f);
 
-                    // Slight compensation for lower bars so highs don't dominate visually
+                    // Slight compensation for lower bars
                     float compensation = 1.0f - i * 0.05f;
                     float finalValue = normalized * compensation;
 
