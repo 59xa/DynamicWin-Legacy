@@ -14,7 +14,7 @@ using DynamicWin.Main;
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    27 November 2025
- *  Last Modified:          22 December 2025
+ *  Last Modified:          10 January 2026
  *
  */
 
@@ -70,7 +70,7 @@ namespace DynamicWin.Utils
 
                 // FORCE REVERT: canary -> release
                 if (Settings.ReleaseStream == 0 &&
-                    DynamicWinMain.ReleaseStream == "canary" &&
+                    DynamicWinMain.ReleaseStream == Channel.Canary &&
                     release != null)
                 {
 #if DEBUG
@@ -392,5 +392,34 @@ namespace DynamicWin.Utils
         public string version { get; set; }
         public string downloadUri { get; set; }
         public string releaseStream { get; set; }
+    }
+
+    public enum Channel
+    {
+        Release,
+        Canary
+    }
+
+    public static class ReleaseChannelExtensions
+    {
+        public static string ToFriendlyString(this Channel channel)
+        {
+            return channel switch
+            {
+                Channel.Release => "release",
+                Channel.Canary => "canary",
+                _ => "unknown"
+            };
+        }
+
+        public static string GetIconPath(this Channel stream)
+        {
+            return stream switch
+            {
+                Channel.Release => "Resources/icons/release.ico",
+                Channel.Canary => "Resources/icons/canary.ico",
+                _ => "Resources/icons/release.ico"
+            };
+        }
     }
 }

@@ -7,9 +7,14 @@
 	<Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>OutPortable.ico</ApplicationIcon>
+    <ApplicationIcon>Resources/icons/release.ico</ApplicationIcon>
     <Company>$(Authors)</Company>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="canary.ico" />
+    <None Remove="release.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <COMReference Include="IWshRuntimeLibrary">
@@ -24,7 +29,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="OutPortable.ico" />
+    <Content Include="Resources\icons\canary.ico" />
+    <Content Include="Resources\icons\release.ico" />
   </ItemGroup>
 
   <ItemGroup>
@@ -73,6 +79,12 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Resources\icons\battery\NoBattery.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Resources\icons\canary.ico">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Resources\icons\cog.ico">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Resources\icons\edit.png">
@@ -139,6 +151,9 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Resources\icons\playback\Stop.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Resources\icons\release.ico">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Resources\icons\search.png">

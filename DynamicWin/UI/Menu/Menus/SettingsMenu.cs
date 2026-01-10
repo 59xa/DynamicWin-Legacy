@@ -454,7 +454,7 @@ namespace DynamicWin.UI.Menu.Menus
             checkForUpdateBtn.Anchor.X = 0;
             objects.Add(checkForUpdateBtn);
 
-            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream})", new Vec2(25, -15), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream.ToFriendlyString()})", new Vec2(25, -15), UIAlignment.TopLeft)
             {
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),

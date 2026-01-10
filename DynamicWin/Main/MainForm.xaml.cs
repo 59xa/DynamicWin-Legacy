@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Forms = System.Windows.Forms;
 
 namespace DynamicWin.Main
@@ -79,7 +80,8 @@ namespace DynamicWin.Main
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
-            this.Title = "DynamicWin Overlay";
+            this.Title = "DynamicWin-Legacy Island";
+            this.Icon = BitmapFrame.Create(new Uri(DynamicWinMain.ReleaseStream.GetIconPath(), UriKind.Relative));
 
             // Loaded event to ensure that this does not show the application on the Alt+Tab switcher
 
@@ -101,8 +103,7 @@ namespace DynamicWin.Main
             MainForm.Instance.AllowDrop = true;
 
             // Tray icon
-
-            _trayIcon.Icon = new System.Drawing.Icon("Resources/icons/TrayIcon.ico");
+            _trayIcon.Icon = new System.Drawing.Icon("Resources/icons/cog.ico");
             _trayIcon.Text = "DynamicWin-Legacy";
 
             _trayIcon.ContextMenuStrip = new Forms.ContextMenuStrip();
