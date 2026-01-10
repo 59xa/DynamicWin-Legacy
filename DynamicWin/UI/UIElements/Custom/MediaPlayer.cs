@@ -21,7 +21,7 @@ using System.Linq;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          04 January 2026
+ *   Last Modified:          10 January 2026
  *
  */
 
@@ -49,7 +49,7 @@ namespace DynamicWin.UI.UIElements.Custom
         private bool isTitleScrolling = false;
         private string? fullTitleText = null;
         private float titleTextWidth = 0f;
-        private const int titleScrollCharThreshold = 45;
+        private const int titleScrollCharThreshold = 35;
 
         // Animation state handled by MediaAnimator
         private readonly MediaAnimator animator = new MediaAnimator();
