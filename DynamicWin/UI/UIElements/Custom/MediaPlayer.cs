@@ -160,7 +160,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
             visualiser = new AudioVisualiser(this, new Vec2(-20, 33), new Vec2(28, 28), UIAlignment.TopRight)
             {
-                UseThumbnailBackground = true
+                UseThumbnailBackground = true,
+                EnableColourTransition = false,
             };
             AddLocalObject(visualiser);
 
