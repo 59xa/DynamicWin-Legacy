@@ -37,6 +37,8 @@ namespace DynamicWin.Utils
         private float[] barHeight;
         private float[] barGain;
 
+        private float[] targetHeights; // Re-use per-frame to avoid allocations
+
         private float[] bandBalance = new float[] { 1f, 0.75f, 1.15f, 1.10f, 1.25f, 1.35f };
 
         private readonly float[][] freqRanges = new float[][]
@@ -78,7 +80,7 @@ namespace DynamicWin.Utils
         public float outputBoost = 1.0f;
 
         private volatile byte[]? cachedThumbnailBytes;
-        private SKImage? cachedThumbnailImage;
+        private SKImage? cachedThumbnailImage; // Keep decoded image cached to avoid per-frame decode/encode
         private SKImage? previousThumbnailImage;
         private float thumbnailFade = 3f;
         public float ThumbnailFadeDuration { get; set; } = 0.35f;
@@ -114,15 +116,18 @@ namespace DynamicWin.Utils
             bandNoiseEstimate = new float[barCount];
             bandPeakEstimate = new float[barCount];
 
+            targetHeights = new float[barCount];
+
             fftBuffer = new Complex[fftLength];
             window = new float[fftLength];
             bitRevIndices = new int[fftLength];
 
             // Pre-compute Hann window and bit-reversal indices
+            int log2 = (int)Math.Log2(fftLength);
             for (int i = 0; i < fftLength; i++)
             {
                 window[i] = 0.5f * (1 - MathF.Cos(2 * MathF.PI * i / (fftLength - 1)));
-                bitRevIndices[i] = BitReverse(i, (int)Math.Log2(fftLength));
+                bitRevIndices[i] = BitReverse(i, log2);
             }
 
             for (int i = 0; i < barCount; i++)
@@ -195,8 +200,11 @@ namespace DynamicWin.Utils
             {
                 int lowIndex = Math.Max(0, (int)(freqRanges[i][0] / sampleRate * fftLength));
                 int highIndex = Math.Min((int)(freqRanges[i][1] / sampleRate * fftLength), fftMagnitudes.Length - 1);
-                barBinIndices[i] = Enumerable.Range(lowIndex, highIndex - lowIndex + 1).ToArray();
-                barBinCounts[i] = barBinIndices[i].Length;
+                int len = Math.Max(0, highIndex - lowIndex + 1);
+                var arr = new int[len];
+                for (int j = 0; j < len; j++) arr[j] = lowIndex + j;
+                barBinIndices[i] = arr;
+                barBinCounts[i] = len;
             }
         }
 
@@ -214,7 +222,7 @@ namespace DynamicWin.Utils
                     }
 
                     cachedThumbnailBytes = m?.ThumbnailData;
-                    cachedThumbnailImage = null; // Will be recreated lazily
+                    cachedThumbnailImage = null; // Will be recreated lazily on next Draw
                     thumbnailFade = 0f;
                 }
             }
@@ -286,6 +294,8 @@ namespace DynamicWin.Utils
                 cachedThumbnailImage?.Dispose();
                 cachedThumbnailImage = null;
                 cachedThumbnailBytes = null;
+                previousThumbnailImage?.Dispose();
+                previousThumbnailImage = null;
             }
         }
 
@@ -312,7 +322,8 @@ namespace DynamicWin.Utils
                 }
             }
 
-            float[] targetHeights = new float[barCount];
+            // Re-use targetHeights array to avoid per-frame allocations
+            for (int t = 0; t < barCount; t++) targetHeights[t] = 0f;
 
             lock (fftLock)
             {
@@ -352,8 +363,15 @@ namespace DynamicWin.Utils
                 }
             }
 
-            averageAmplitude = targetHeights.Average();
-            if (averageAmplitude < 0.015f) for (int i = 0; i < barCount; i++) targetHeights[i] = 0f;
+            // Compute average amplitude without LINQ to avoid iterator overhead
+            float sumAvg = 0f;
+            for (int i = 0; i < barCount; i++) sumAvg += targetHeights[i];
+            averageAmplitude = sumAvg / Math.Max(1, barCount);
+
+            if (averageAmplitude < 0.015f)
+            {
+                for (int i = 0; i < barCount; i++) targetHeights[i] = 0f;
+            }
 
             // Smooth interpolation
             for (int i = 0; i < barCount; i++)
@@ -388,19 +406,25 @@ namespace DynamicWin.Utils
 
             lock (fftLock)
             {
-                for (int i = 0; i < fftMagnitudes.Length; i++)
+                int magLen = fftMagnitudes.Length;
+                for (int i = 0; i < magLen; i++)
                 {
                     // Approximate magnitude for speed
                     float mag = ApproxMagnitude(fftBuffer[i]) * magnitudeScale;
                     fftMagnitudes[i] = mag < 1e-12f ? 0f : mag;
                 }
 
-                // Update running RMS per bar
+                // Update running RMS per bar (use indexed loops to avoid foreach overhead)
                 for (int i = 0; i < barCount; i++)
                 {
                     float sum = 0f;
-                    foreach (int bin in barBinIndices[i])
-                        sum += fftMagnitudes[bin] * fftMagnitudes[bin];
+                    var bins = barBinIndices[i];
+                    for (int j = 0; j < bins.Length; j++)
+                    {
+                        int bin = bins[j];
+                        float v = fftMagnitudes[bin];
+                        sum += v * v;
+                    }
                     barSumSquares[i] = sum;
                 }
             }
@@ -464,20 +488,42 @@ namespace DynamicWin.Utils
             if (capture == null) return;
 
             SKImage? thumbnailImage = null;
+            SKImage? prevThumb = null;
 
             if (UseThumbnailBackground)
             {
-                thumbnailImage = TryGetFreshThumbnailImage();
+                // Get or create decoded image once per frame (cached)
+                lock (thumbLock)
+                {
+                    if (cachedThumbnailImage != null)
+                    {
+                        thumbnailImage = cachedThumbnailImage;
+                    }
+                    else if (cachedThumbnailBytes != null && cachedThumbnailBytes.Length > 0)
+                    {
+                        try
+                        {
+                            using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
+                            if (bmp != null)
+                            {
+                                cachedThumbnailImage = SKImage.FromBitmap(bmp);
+                                thumbnailImage = cachedThumbnailImage;
+                                // Keep cachedThumbnailBytes intact in case service needs it; we created image once
+                            }
+                        }
+                        catch
+                        {
+                            thumbnailImage = null;
+                        }
+                    }
+
+                    prevThumb = previousThumbnailImage;
+                }
             }
 
             float width = Size.X;
             float height = Size.Y;
             float centerY = Position.Y + height / 2;
-
-            // Prepare image to use for thumbnail background. If we create a temporary SKImage it must be disposed;
-            // do NOT dispose cachedThumbnailImage because it's owned by this object.
-            SKImage? imgToUse = null;
-            bool createdTempImage = false;
 
             float spacing2 = BarSpacing;
             float totalSpacing2 = spacing2 * (barCount - 1);
@@ -501,13 +547,7 @@ namespace DynamicWin.Utils
                 {
                     try
                     {
-                        SKImage? prev;
-                        lock (thumbLock)
-                        {
-                            prev = previousThumbnailImage;
-                        }
-
-                        DrawThumbnailBar(canvas, roundRect, thumbnailImage, prev, width, height, thumbnailFade);
+                        DrawThumbnailBar(canvas, roundRect, thumbnailImage, prevThumb, width, height, thumbnailFade);
 
                         using var overlay = new SKPaint
                         {
@@ -561,77 +601,13 @@ namespace DynamicWin.Utils
                 }
             }
 
-            // Dispose temporary image created from service BMP only
-            try
-            {
-                thumbnailImage?.Dispose();
-            }
-            catch { }
-        }
-
-        private SKImage? TryGetFreshThumbnailImage()
-        {
-            // If the service provided a decoded SKImage we keep an owned copy in cachedThumbnailImage.
-            // Clone it here to provide an owned image to the caller (so the caller may dispose it).
-            try
-            {
-                lock (thumbLock)
-                {
-                    if (cachedThumbnailImage != null)
-                    {
-                        // Encode & re-create to produce an independent SKImage the caller owns
-                        using var data = cachedThumbnailImage.Encode();
-                        if (data != null)
-                        {
-                            var clone = SKImage.FromEncodedData(data);
-                            if (clone != null) return clone;
-                        }
-                    }
-                }
-            }
-            catch { }
-
-            // Try service bitmap that's already decoded (may be a platform bitmap)
-            try
-            {
-                var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                if (bmp != null)
-                {
-                    return SKImage.FromBitmap(bmp); // Local ownership
-                }
-            }
-            catch { }
-
-            // Fallback to cached bytes
-            try
-            {
-                lock (thumbLock)
-                {
-                    if (cachedThumbnailBytes == null || cachedThumbnailBytes.Length == 0)
-                        return null;
-
-                    using var ms = new SKMemoryStream(cachedThumbnailBytes);
-                    using var codec = SKCodec.Create(ms);
-
-                    if (codec != null)
-                    {
-                        using var bitmap = SKBitmap.Decode(codec);
-                        return bitmap != null ? SKImage.FromBitmap(bitmap) : null;
-                    }
-
-                    using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
-                    return bmp != null ? SKImage.FromBitmap(bmp) : null;
-                }
-            }
-            catch { }
-
-            return null;
+            // Do not dispose cached images here - they are owned by this object and will be disposed in OnDestroy or when replaced
         }
 
         private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage current, SKImage? previous, float totalWidth, float totalHeight, float fade
         )
         {
-            // At this point img is guaranteed fresh & owned by caller
+            // At this point img is guaranteed fresh & owned by this object (do not dispose)
             canvas.Save();
             canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
 
@@ -679,17 +655,14 @@ namespace DynamicWin.Utils
 
         public void ResetVisuals()
         {
-            barHeight = new float[barCount];
-            // Reset gain to defaults
-            barGain = new float[barCount];
-            bandNoiseEstimate = new float[barCount];
-            bandPeakEstimate = new float[barCount];
             for (int i = 0; i < barCount; i++)
             {
+                barHeight[i] = 0f;
                 barGain[i] = 1f;
                 bandNoiseEstimate[i] = 1e-9f;
                 bandPeakEstimate[i] = 1e-7f;
             }
+
             Primary = Theme.Primary;
             Secondary = Theme.Secondary.Override(a: 0.5f);
 
@@ -698,6 +671,8 @@ namespace DynamicWin.Utils
                 cachedThumbnailImage?.Dispose();
                 cachedThumbnailImage = null;
                 cachedThumbnailBytes = null;
+                previousThumbnailImage?.Dispose();
+                previousThumbnailImage = null;
             }
         }
 
