@@ -90,6 +90,13 @@ namespace DynamicWin
             Migrations.MakeSmallWidgetMigrations();
             UpdateStartup();
 
+            // Ensure media manager is initialised early on an STA thread to avoid races when UI queries media
+            try
+            {
+                MediaInfo.Initialize();
+            }
+            catch { }
+
             mainForm = new MainForm
             {
                 Width = 600,

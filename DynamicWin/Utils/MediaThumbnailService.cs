@@ -284,13 +284,6 @@ namespace DynamicWin.Utils
             try { cts.Cancel(); } catch { }
             try { cts.Dispose(); } catch { }
             cts = null;
-            lastBytes = null;
-            lastMedia = null;
-            if (lastBitmap != null)
-            {
-                try { lastBitmap.Dispose(); } catch { }
-                lastBitmap = null;
-            }
         }
 
         /// <summary>
