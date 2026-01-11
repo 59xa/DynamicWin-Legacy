@@ -16,7 +16,7 @@ using Windows.Media.Control;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          10 January 2026
+ *   Last Modified:          11 January 2026
  *
  */
 
@@ -27,7 +27,9 @@ namespace DynamicWin.UI.UIElements.Custom
         private CancellationTokenSource? cts;
         private DynamicWin.Utils.Media? currentMedia;
         private SKBitmap? thumbnailBitmap; // Currently cached decoded bitmap (owned by this object)
+        private ulong? thumbnailFingerprint; // Cached fingerprint for thumbnailBitmap
         private SKBitmap? pendingBitmap; // Newly decoded bitmap waiting to animate in
+        private ulong? pendingFingerprint;
         private DynamicWin.Utils.Media? pendingMedia; // Pending metadata object
         private readonly object mediaLock = new object();
         // How often the background loop waits between iterations (cooperative wait broken into steps)
@@ -44,6 +46,7 @@ namespace DynamicWin.UI.UIElements.Custom
         private float titleScrollTimer = 0f;  // Timer for delay
         private bool isTitleScrolling = false;
         private string? fullTitleText = null;
+        private string? prevFullTitleText = null; // Track previous to avoid re-measuring
         private float titleTextWidth = 0f;
         private const int titleScrollCharThreshold = 35;
 
@@ -109,36 +112,40 @@ namespace DynamicWin.UI.UIElements.Custom
         // Extra height applied to timeline when hovering/seeking (smoothed)
         private float timelineExtraHeight = 0f;
 
-        // Compare two SKBitmaps for visual equality. Uses fast pixel-by-pixel comparison to avoid allocations.
-        private static bool AreBitmapsEqual(SKBitmap? a, SKBitmap? b)
+        // Lightweight fingerprint for bitmap equality: sample a few pixels and dimensions
+        private static ulong ComputeFingerprint(SKBitmap bmp)
         {
-            if (ReferenceEquals(a, b)) return true;
-            if (a == null || b == null) return false;
-            if (a.Width != b.Width || a.Height != b.Height) return false;
-
-            try
+            if (bmp == null) return 0ul;
+            unchecked
             {
-                // Fast pixel-by-pixel compare using SKBitmap.GetPixel (returns SKColor)
-                int w = a.Width;
-                int h = a.Height;
+                ulong h = 1469598103934665603UL; // FNV offset basis
+                h ^= (ulong)bmp.Width; h *= 1099511628211UL;
+                h ^= (ulong)bmp.Height; h *= 1099511628211UL;
 
-                // Compare row by row and bail out early on mismatch
-                for (int y = 0; y < h; y++)
+                // Sample up to 8 points: corners, mid-edges, center. Use modulo to clamp.
+                int w = Math.Max(1, bmp.Width);
+                int hgt = Math.Max(1, bmp.Height);
+                (int x, int y)[] samples = new (int, int)[] {
+                    (0,0), (w-1,0), (0,hgt-1), (w-1,hgt-1),
+                    (w/2, hgt/2), (w/2,0), (w/2,hgt-1), (0,hgt/2)
+                };
+
+                foreach (var s in samples)
                 {
-                    for (int x = 0; x < w; x++)
+                    try
                     {
-                        var ca = a.GetPixel(x, y);
-                        var cb = b.GetPixel(x, y);
-                        if (ca != cb) return false;
+                        var c = bmp.GetPixel(Math.Max(0, Math.Min(s.x, w-1)), Math.Max(0, Math.Min(s.y, hgt-1)));
+                        // Pack ARGB into ulong
+                        ulong val = ((ulong)c.Alpha << 24) | ((ulong)c.Red << 16) | ((ulong)c.Green << 8) | (ulong)c.Blue;
+                        h ^= val; h *= 1099511628211UL;
+                    }
+                    catch
+                    {
+                        // Ignore sampling errors
                     }
                 }
 
-                return true;
-            }
-            catch
-            {
-                // Fallback: if direct pixel compare fails for any reason, conservatively return false so caller can update
-                return false;
+                return h;
             }
         }
 
@@ -214,6 +221,7 @@ namespace DynamicWin.UI.UIElements.Custom
                         lock (mediaLock)
                         {
                             thumbnailBitmap = bmp;
+                            thumbnailFingerprint = ComputeFingerprint(bmp);
                             // No currentMedia metadata here
                         }
                     }
@@ -252,6 +260,7 @@ namespace DynamicWin.UI.UIElements.Custom
                             if (thumbnailBitmap == null)
                             {
                                 pendingBitmap = clone;
+                                pendingFingerprint = ComputeFingerprint(clone);
                                 pendingMedia = null;
                                 pendingMediaKey = null;
                             }
@@ -260,6 +269,7 @@ namespace DynamicWin.UI.UIElements.Custom
                                 // Replace directly
                                 try { thumbnailBitmap.Dispose(); } catch { }
                                 thumbnailBitmap = clone;
+                                thumbnailFingerprint = ComputeFingerprint(clone);
                             }
                         }
                     }
@@ -287,11 +297,12 @@ namespace DynamicWin.UI.UIElements.Custom
 
                                 if (newBmp != null)
                                 {
+                                    ulong fp = ComputeFingerprint(newBmp);
                                     lock (mediaLock)
                                     {
                                         // Queue as pending so animator will run even on first show
-                                        // If the decoded bitmap is visually identical to current thumbnail, adopt metadata and skip animation
-                                        if (thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
+                                        // If the decoded bitmap is visually identical to current thumbnail (fingerprint), adopt metadata and skip animation
+                                        if (thumbnailBitmap != null && thumbnailFingerprint.HasValue && thumbnailFingerprint.Value == fp)
                                         {
                                             currentMedia = meta;
                                             currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
@@ -304,6 +315,7 @@ namespace DynamicWin.UI.UIElements.Custom
                                             if (thumbnailBitmap == null && pendingBitmap == null)
                                             {
                                                 pendingBitmap = newBmp;
+                                                pendingFingerprint = fp;
                                                 pendingMedia = meta;
                                                 pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
                                             }
@@ -316,6 +328,7 @@ namespace DynamicWin.UI.UIElements.Custom
                                                 }
 
                                                 pendingBitmap = newBmp;
+                                                pendingFingerprint = fp;
                                                 pendingMedia = meta;
                                                 pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
                                             }
@@ -330,8 +343,8 @@ namespace DynamicWin.UI.UIElements.Custom
                                 {
                                     lock (mediaLock)
                                     {
-                                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
+                                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
                                         if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
                                         currentMediaKey = null;
                                         pendingMediaKey = null;
@@ -412,7 +425,9 @@ namespace DynamicWin.UI.UIElements.Custom
                             try { thumbnailBitmap.Dispose(); } catch { }
                         }
                         thumbnailBitmap = pendingBitmap;
+                        thumbnailFingerprint = pendingFingerprint;
                         pendingBitmap = null;
+                        pendingFingerprint = null;
 
                         currentMediaKey = pendingMediaKey;
                         pendingMediaKey = null;
@@ -688,11 +703,15 @@ namespace DynamicWin.UI.UIElements.Custom
             {
                 fullTitleText = currentMedia.Title;
 
-                var paint = GetPaint();
-                paint.TextSize = 14f;
-                paint.Typeface = Resources.Res.SatoshiBold;
-
-                titleTextWidth = paint.MeasureText(fullTitleText);
+                // Only re-measure text width when title actually changes
+                if (prevFullTitleText != fullTitleText)
+                {
+                    var paint = GetPaint();
+                    paint.TextSize = 14f;
+                    paint.Typeface = Resources.Res.SatoshiBold;
+                    titleTextWidth = paint.MeasureText(fullTitleText);
+                    prevFullTitleText = fullTitleText;
+                }
 
                 // Trigger scrolling if longer than threshold
                 if (fullTitleText.Length > titleScrollCharThreshold)
@@ -721,6 +740,18 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             else
             {
+                // Ensure we show a clear placeholder when no media title is available
+                fullTitleText = "No media playing";
+
+                if (prevFullTitleText != fullTitleText)
+                {
+                    var paint = GetPaint();
+                    paint.TextSize = 14f;
+                    paint.Typeface = Resources.Res.SatoshiBold;
+                    titleTextWidth = paint.MeasureText(fullTitleText);
+                    prevFullTitleText = fullTitleText;
+                }
+
                 isTitleScrolling = false;
                 titleScrollOffset = 0f;
             }
@@ -795,8 +826,8 @@ namespace DynamicWin.UI.UIElements.Custom
                         currentMedia = null;
                         currentMediaKey = null;
 
-                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
+                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
                         if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
 
                         pendingMedia = null;
@@ -809,13 +840,30 @@ namespace DynamicWin.UI.UIElements.Custom
                     return;
                 }
 
+                // Build key similar to prior logic
+                string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
+
+                lock (mediaLock)
+                {
+                    if (key == currentMediaKey || key == pendingMediaKey)
+                    {
+                        // Nothing to do; avoid decode
+                        return;
+                    }
+                }
+
                 SKBitmap? newBmp = null;
+                ulong? newFp = null;
                 if (bytes != null && bytes.Length > 0)
                 {
                     try
                     {
                         using var ms = new SKMemoryStream(bytes);
                         newBmp = SKBitmap.Decode(ms);
+                        if (newBmp != null)
+                        {
+                            newFp = ComputeFingerprint(newBmp);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -823,81 +871,78 @@ namespace DynamicWin.UI.UIElements.Custom
                         Debug.WriteLine("Thumbnail decode in service handler failed: " + ex.Message);
 #endif
                         newBmp = null;
+                        newFp = null;
                     }
                 }
 
                 lock (mediaLock)
                 {
-                    // Build key similar to prior logic
-                    string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
-
+                    // If key now matches current or pending, bail
                     if (key == currentMediaKey || key == pendingMediaKey)
                     {
-                        if (newBmp != null)
-                        {
-                            try { newBmp.Dispose(); } catch { }
-                        }
+                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
+                        return;
+                    }
+
+                    // If the incoming bitmap is visually identical to the currently-displayed thumbnail (fingerprint), adopt metadata/key instead
+                    if (newFp.HasValue && thumbnailFingerprint.HasValue && newFp.Value == thumbnailFingerprint.Value)
+                    {
+                        currentMedia = media;
+                        currentMediaKey = key;
+                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
+                        pendingMedia = null;
+                        pendingMediaKey = null;
+
+                        // Fresh timeline sample arrived -> cancel optimistic UI
+                        optimisticActive = false;
+                        return;
+                    }
+
+                    // If there's no current thumbnail yet, queue as pending to animate in (so first show animates)
+                    if (thumbnailBitmap == null && newBmp != null)
+                    {
+                        pendingBitmap = newBmp;
+                        pendingFingerprint = newFp;
+                        pendingMedia = media;
+                        pendingMediaKey = key;
                     }
                     else
                     {
-                        // If the incoming bitmap is visually identical to the currently-displayed thumbnail,
-                        // treat it as not-new: dispose the decoded(bitmap) and update metadata/key instead
-                        if (newBmp != null && thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
+                        if (newBmp != null)
                         {
-                            // Adopt metadata without triggering a flip animation
-                            currentMedia = media;
-                            currentMediaKey = key;
-                            try { newBmp.Dispose(); } catch { }
-                            pendingMedia = null;
-                            pendingMediaKey = null;
+                            if (pendingBitmap != null)
+                            {
+                                try { pendingBitmap.Dispose(); } catch { }
+                                pendingBitmap = null;
+                                pendingFingerprint = null;
+                                pendingMediaKey = null;
+                                pendingMedia = null;
+                            }
 
-                            // Fresh timeline sample arrived -> cancel optimistic UI
-                            optimisticActive = false;
-                            return; // exit the Task.Run delegate early
-                        }
-
-                        // If there's no current thumbnail yet, queue as pending to animate in (so first show animates)
-                        if (thumbnailBitmap == null && newBmp != null)
-                        {
                             pendingBitmap = newBmp;
+                            pendingFingerprint = newFp;
                             pendingMedia = media;
                             pendingMediaKey = key;
                         }
-                        else
+
+                        if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
                         {
-                            if (newBmp != null)
-                            {
-                                if (pendingBitmap != null)
-                                {
-                                    try { pendingBitmap.Dispose(); } catch { }
-                                    pendingBitmap = null;
-                                    pendingMediaKey = null;
-                                    pendingMedia = null;
-                                }
+                            currentMedia = media;
+                            currentMediaKey = key;
 
-                                pendingBitmap = newBmp;
-                                pendingMedia = media;
-                                pendingMediaKey = key;
+                            // If no media, wipe thumbnail cache so UI doesn't show stale artwork
+                            if (media == null)
+                            {
+                                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
+                                if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
+
+                                pendingMediaKey = null;
+                                pendingMedia = null;
                             }
 
-                            if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
-                            {
-                                currentMedia = media;
-                                currentMediaKey = key;
-
-                                // If no media, wipe thumbnail cache so UI doesn't show stale artwork
-                                if (media == null)
-                                {
-                                    if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                                    if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-                                    if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
-                                    pendingMediaKey = null;
-                                    pendingMedia = null;
-                                }
-
-                                // Fresh timeline sample arrived -> cancel optimistic UI
-                                optimisticActive = false;
-                            }
+                            // Fresh timeline sample arrived -> cancel optimistic UI
+                            optimisticActive = false;
                         }
                     }
                 }
@@ -1033,96 +1078,109 @@ namespace DynamicWin.UI.UIElements.Custom
                         // Build lightweight key to detect duplicates (title|artist|thumbLen)
                         string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(media.ThumbnailData?.Length ?? 0)}";
 
-                        // Convert thumbnail bytes to SKBitmap on background thread and update fields under lock
-                        SKBitmap? newBmp = null;
-                        try
+                        // If key matches current or pending, skip decode entirely
+                        if (key == currentMediaKey || key == pendingMediaKey)
                         {
-                            if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
-                            {
-                                using var ms = new MemoryStream(media.ThumbnailData);
-                                newBmp = SKBitmap.Decode(ms);
-                            }
+                            // Nothing to do, swallow
                         }
-                        catch (Exception ex)
+                        else
                         {
+                            // Convert thumbnail bytes to SKBitmap on background thread and update fields under lock
+                            SKBitmap? newBmp = null;
+                            ulong? newFp = null;
+                            try
+                            {
+                                if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
+                                {
+                                    using var ms = new MemoryStream(media.ThumbnailData);
+                                    newBmp = SKBitmap.Decode(ms);
+                                    if (newBmp != null) newFp = ComputeFingerprint(newBmp);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
 #if DEBUG
-                            Debug.WriteLine("Thumbnail decode failed: " + ex.Message);
+                                Debug.WriteLine("Thumbnail decode failed: " + ex.Message);
 #endif
-                            newBmp = null;
-                        }
-
-                        lock (mediaLock)
-                        {
-                            // If key matches current or pending, skip updates entirely
-                            if (key == currentMediaKey || key == pendingMediaKey)
-                            {
-                                // No change
-                                if (newBmp != null)
-                                {
-                                    try { newBmp.Dispose(); } catch { }
-                                }
+                                newBmp = null;
+                                newFp = null;
                             }
-                            else
+
+                            lock (mediaLock)
                             {
-                                // If the newly-decoded bitmap matches the currently-displayed bitmap, adopt metadata/key
-                                // and avoid queuing an animation.
-                                if (newBmp != null && thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
+                                // If key matches current or pending, skip updates entirely
+                                if (key == currentMediaKey || key == pendingMediaKey)
                                 {
-                                    currentMedia = media;
-                                    currentMediaKey = key;
-                                    try { newBmp.Dispose(); } catch { }
-
-                                    // Fresh timeline sample arrived -> cancel optimistic UI
-                                    optimisticActive = false;
-                                    continue;
-                                }
-
-                                // If there's no current thumbnail yet, queue as pending to animate in
-                                if (thumbnailBitmap == null && newBmp != null)
-                                {
-                                    pendingBitmap = newBmp;
-                                    pendingMedia = media;
-                                    pendingMediaKey = key;
+                                    if (newBmp != null)
+                                    {
+                                        try { newBmp.Dispose(); } catch { }
+                                    }
                                 }
                                 else
                                 {
-                                    // Queue as pending (replace any existing pending)
-                                    if (newBmp != null)
-                                    {
-                                        if (pendingBitmap != null)
-                                        {
-                                            try { pendingBitmap.Dispose(); } catch { }
-                                            pendingBitmap = null;
-                                            pendingMediaKey = null;
-                                            pendingMedia = null;
-                                        }
-
-                                        pendingBitmap = newBmp;
-                                        pendingMedia = media;
-                                        pendingMediaKey = key;
-
-                                        // Store pending metadata to update textual fields when swapped
-                                    }
-
-                                    // If no thumbnail changes, but metadata changed and no pending, update currentMedia immediately
-                                    if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
+                                    // If the newly-decoded bitmap fingerprint matches the currently-displayed bitmap, adopt metadata/key
+                                    // and avoid queuing an animation.
+                                    if (newFp.HasValue && thumbnailFingerprint.HasValue && newFp.Value == thumbnailFingerprint.Value)
                                     {
                                         currentMedia = media;
                                         currentMediaKey = key;
-
-                                        // If no media present, wipe cached thumbnails so UI can't show stale artwork
-                                        if (media == null)
-                                        {
-                                            if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                                            if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-                                            if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
-
-                                            pendingMediaKey = null;
-                                            pendingMedia = null;
-                                        }
+                                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
 
                                         // Fresh timeline sample arrived -> cancel optimistic UI
                                         optimisticActive = false;
+                                        continue;
+                                    }
+
+                                    // If there's no current thumbnail yet, queue as pending to animate in
+                                    if (thumbnailBitmap == null && newBmp != null)
+                                    {
+                                        pendingBitmap = newBmp;
+                                        pendingFingerprint = newFp;
+                                        pendingMedia = media;
+                                        pendingMediaKey = key;
+                                    }
+                                    else
+                                    {
+                                        // Queue as pending (replace any existing pending)
+                                        if (newBmp != null)
+                                        {
+                                            if (pendingBitmap != null)
+                                            {
+                                                try { pendingBitmap.Dispose(); } catch { }
+                                                pendingBitmap = null;
+                                                pendingFingerprint = null;
+                                                pendingMediaKey = null;
+                                                pendingMedia = null;
+                                            }
+
+                                            pendingBitmap = newBmp;
+                                            pendingFingerprint = newFp;
+                                            pendingMedia = media;
+                                            pendingMediaKey = key;
+
+                                            // Store pending metadata to update textual fields when swapped
+                                        }
+
+                                        // If no thumbnail changes, but metadata changed and no pending, update currentMedia immediately
+                                        if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
+                                        {
+                                            currentMedia = media;
+                                            currentMediaKey = key;
+
+                                            // If no media present, wipe cached thumbnails so UI can't show stale artwork
+                                            if (media == null)
+                                            {
+                                                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
+                                                if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
+
+                                                pendingMediaKey = null;
+                                                pendingMedia = null;
+                                            }
+
+                                            // Fresh timeline sample arrived -> cancel optimistic UI
+                                            optimisticActive = false;
+                                        }
                                     }
                                 }
                             }
@@ -1174,6 +1232,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try { pendingBitmap.Dispose(); } catch { }
                     pendingBitmap = null;
+                    pendingFingerprint = null;
                 }
 
                 pendingMediaKey = null;
@@ -1449,36 +1508,45 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
 
                 // Draw timeline text on both sides
-                if (timelineDuration.HasValue)
+                string leftText;
+                string rightText;
+
+                if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
                 {
                     // Use smoothed displayedElapsedSeconds for visible text to avoid second-level jitter
                     var leftTs = TimeSpan.FromSeconds(displayedElapsedSeconds);
                     var rightRemain = timelineDuration.Value - TimeSpan.FromSeconds(displayedElapsedSeconds);
 
-                    string leftText = FormatTimeSpanForDisplay(leftTs);
+                    leftText = FormatTimeSpanForDisplay(leftTs);
                     // Right side shows remaining with a leading '-' to indicate time left
-                    string rightText = "-" + FormatTimeSpanForDisplay(rightRemain);
+                    rightText = "-" + FormatTimeSpanForDisplay(rightRemain);
+                }
+                else
+                {
+                    // No timeline available: show placeholder
+                    leftText = "--:--";
+                    rightText = "--:--";
+                }
 
-                    using (var paint = GetPaint())
-                    {
-                        paint.IsStroke = false;
-                        paint.IsAntialias = true;
-                        paint.Color = timelineTextColor;
-                        paint.TextSize = timelineTextSize;
-                        paint.Typeface = Resources.Res.SatoshiRegular;
+                using (var paint = GetPaint())
+                {
+                    paint.IsStroke = false;
+                    paint.IsAntialias = true;
+                    paint.Color = timelineTextColor;
+                    paint.TextSize = timelineTextSize;
+                    paint.Typeface = Resources.Res.SatoshiRegular;
 
-                        // Text Y position just below bar
-                        float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
+                    // Text Y position just below bar
+                    float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
 
-                        // Left text
-                        float leftX = barX - timelineSidePadding + 4f;
-                        canvas.DrawText(leftText, leftX, timelineTextY, paint);
+                    // Left text
+                    float leftX = barX - timelineSidePadding + 4f;
+                    canvas.DrawText(leftText, leftX, timelineTextY, paint);
 
-                        // Right text
-                        float rightTextWidth = paint.MeasureText(rightText);
-                        float rightX = barX + barWidth + timelineSidePadding - rightTextWidth - 4f;
-                        canvas.DrawText(rightText, rightX, timelineTextY, paint);
-                    }
+                    // Right text
+                    float rightTextWidth = paint.MeasureText(rightText);
+                    float rightX = barX + barWidth + timelineSidePadding - rightTextWidth - 4f;
+                    canvas.DrawText(rightText, rightX, timelineTextY, paint);
                 }
             }
             catch (Exception ex)
@@ -1501,8 +1569,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
             lock (mediaLock)
             {
-                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
+                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
                 if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
             }
         }
