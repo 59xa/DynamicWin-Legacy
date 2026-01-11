@@ -15,10 +15,10 @@ namespace DynamicWin.Utils
     *    - Allow user to interact with media controls inside a widget that implements it.
     *    - Provide separate APIs for metadata and thumbnail bytes to avoid fetching thumbnails when not required.
     *    
-    *   Author:                 Florian Butz
+    *   Author:                 Florian Butz & 59xa
     *   GitHub:                 https://github.com/FlorianButz
     *   Implementation Date:    3 August 2024
-    *   Last Modified:          31 December 2025
+    *   Last Modified:          11 January 2026
     */
 
     public class MediaController
@@ -56,7 +56,7 @@ namespace DynamicWin.Utils
     *   Author:                 59xa
     *   GitHub:                 https://github.com/59xa
     *   Implementation Date:    19 May 2025
-    *   Last Modified:          10 January 2026
+    *   Last Modified:          11 January 2026
     */
 
     public class MediaInfo
