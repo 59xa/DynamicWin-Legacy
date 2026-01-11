@@ -82,7 +82,6 @@ namespace DynamicWin.Utils
         private SKImage? previousThumbnailImage;
         private float thumbnailFade = 3f;
         public float ThumbnailFadeDuration { get; set; } = 0.35f;
-        private DateTime lastThumbnailRequest = DateTime.MinValue;
         private readonly object thumbLock = new object();
         public bool UseThumbnailBackground { get; set; } = false;
         public float ThumbnailFetchInterval { get; set; } = 1.0f;
@@ -149,6 +148,43 @@ namespace DynamicWin.Utils
             // Subscribe to central thumbnail service if using thumbnail background
             MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
+
+            // Prime thumbnail cache from central service instead of fetching directly
+            try
+            {
+                var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                if (bmp != null)
+                {
+                    lock (thumbLock)
+                    {
+                        cachedThumbnailImage?.Dispose();
+                        // Keep an owned copy of the service bitmap for later cloning in Draw
+                        cachedThumbnailImage = SKImage.FromBitmap(bmp);
+                        cachedThumbnailBytes = null;
+                        thumbnailFade = 0f;
+                    }
+                }
+                else
+                {
+                    // Try to get cached bytes from the central service
+                    try
+                    {
+                        var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                        if (bytes != null && bytes.Length > 0)
+                        {
+                            lock (thumbLock)
+                            {
+                                cachedThumbnailBytes = (byte[])bytes.Clone();
+                                cachedThumbnailImage?.Dispose();
+                                cachedThumbnailImage = null;
+                                thumbnailFade = 0f;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private void InitBarBinMapping(float sampleRate)
@@ -274,40 +310,6 @@ namespace DynamicWin.Utils
                         previousThumbnailImage = null;
                     }
                 }
-            }
-
-            if (UseThumbnailBackground && (DateTime.UtcNow - lastThumbnailRequest).TotalSeconds >= ThumbnailFetchInterval)
-            {
-                lastThumbnailRequest = DateTime.UtcNow;
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        var media = await MediaInfo.FetchCurrentMediaAsync().ConfigureAwait(false);
-                        if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
-                        {
-                            lock (thumbLock)
-                            {
-                                if (cachedThumbnailBytes == null || cachedThumbnailBytes.Length != media.ThumbnailData.Length || !cachedThumbnailBytes.SequenceEqual(media.ThumbnailData))
-                                {
-                                    cachedThumbnailBytes = media.ThumbnailData;
-                                    cachedThumbnailImage?.Dispose();
-                                    cachedThumbnailImage = null;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            lock (thumbLock)
-                            {
-                                cachedThumbnailBytes = null;
-                                cachedThumbnailImage?.Dispose();
-                                cachedThumbnailImage = null;
-                            }
-                        }
-                    }
-                    catch { }
-                });
             }
 
             float[] targetHeights = new float[barCount];
@@ -569,7 +571,27 @@ namespace DynamicWin.Utils
 
         private SKImage? TryGetFreshThumbnailImage()
         {
-            // Try service bitmap that's already decoded
+            // If the service provided a decoded SKImage we keep an owned copy in cachedThumbnailImage.
+            // Clone it here to provide an owned image to the caller (so the caller may dispose it).
+            try
+            {
+                lock (thumbLock)
+                {
+                    if (cachedThumbnailImage != null)
+                    {
+                        // Encode & re-create to produce an independent SKImage the caller owns
+                        using var data = cachedThumbnailImage.Encode();
+                        if (data != null)
+                        {
+                            var clone = SKImage.FromEncodedData(data);
+                            if (clone != null) return clone;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Try service bitmap that's already decoded (may be a platform bitmap)
             try
             {
                 var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
