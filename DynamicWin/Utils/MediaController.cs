@@ -75,9 +75,33 @@ namespace DynamicWin.Utils
         private static readonly TimeSpan _timelineCacheDuration = TimeSpan.FromMilliseconds(250);
         private static MediaTimeline? _timelineCache = null;
 
+        // Exponential backoff parameters to avoid busy retry loops when COM service is unavailable
+        private static DateTime _lastStartAttempt = DateTime.MinValue;
+        private static int _failedStartAttempts = 0;
+        private static readonly TimeSpan _startBackoffBase = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan _startBackoffMax = TimeSpan.FromSeconds(60);
+
         public static MediaInfo Instance => _i ??= new MediaInfo();
 
         public static Media? Current { get; private set; }
+
+        /// <summary>
+        /// Compute current backoff duration based on number of recent failures (exponential, capped).
+        /// </summary>
+        private static TimeSpan GetCurrentBackoff()
+        {
+            if (_failedStartAttempts <= 0) return TimeSpan.Zero;
+            try
+            {
+                double seconds = _startBackoffBase.TotalSeconds * Math.Pow(2, Math.Min(_failedStartAttempts - 1, 10));
+                seconds = Math.Min(seconds, _startBackoffMax.TotalSeconds);
+                return TimeSpan.FromSeconds(seconds);
+            }
+            catch
+            {
+                return _startBackoffBase;
+            }
+        }
 
         /// <summary>
         /// Ensures the MediaManager instance exists and has been started. Returns true when ready.
@@ -85,6 +109,16 @@ namespace DynamicWin.Utils
         /// </summary>
         private static async Task<bool> EnsureManagerStartedAsync()
         {
+            // Fast check: if recent start attempt occurred, throttle and return false quickly to avoid expensive retries
+            var backoff = GetCurrentBackoff();
+            if (!_started && (DateTime.UtcNow - _lastStartAttempt) < backoff)
+            {
+                return false;
+            }
+
+            // Record attempt time
+            _lastStartAttempt = DateTime.UtcNow;
+
             if (_m == null)
             {
                 try
@@ -99,21 +133,33 @@ namespace DynamicWin.Utils
                     _m = null;
                     _started = false;
                     _lastFetch = DateTime.UtcNow;
+                    _failedStartAttempts++;
                     return false;
                 }
             }
 
-            if (_started) return true;
+            if (_started) 
+            {
+                // success path; reset failure counter if there were failures
+                if (_failedStartAttempts != 0) _failedStartAttempts = 0;
+                return true;
+            }
 
             await _startLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_started) return true;
+                if (_started) 
+                {
+                    if (_failedStartAttempts != 0) _failedStartAttempts = 0;
+                    return true;
+                }
 
                 try
                 {
                     await _m.StartAsync().ConfigureAwait(false);
                     _started = true;
+                    // Reset failure counter on success
+                    _failedStartAttempts = 0;
                     return true;
                 }
                 catch (Exception ex)
@@ -125,6 +171,7 @@ namespace DynamicWin.Utils
                     _lastFetch = DateTime.UtcNow;
                     Current = null;
                     _started = false;
+                    _failedStartAttempts++;
                     try
                     {
                         if (_m is IDisposable d) d.Dispose();
@@ -138,6 +185,41 @@ namespace DynamicWin.Utils
             {
                 _startLock.Release();
             }
+        }
+
+        /// <summary>
+        /// Helper to reset the internal MediaManager instance when a COM/IPC failure occurs.
+        /// This allows future calls to reinitialize the manager cleanly.
+        /// </summary>
+        private static void ResetManager(string reason = null, Exception? ex = null)
+        {
+#if DEBUG
+            try
+            {
+                Debug.WriteLine($"[MEDIA CONTROLLER] ResetManager triggered. Reason: {reason}. Exception: {ex?.Message}");
+            }
+            catch { }
+#endif
+            try
+            {
+                if (_m != null)
+                {
+                    try { if (_m is IDisposable d) d.Dispose(); } catch { }
+                }
+            }
+            catch { }
+
+            _m = null!;
+            _started = false;
+            // Backoff the next start attempt based on failures to avoid tight retry storms
+            _failedStartAttempts = Math.Min(_failedStartAttempts + 1, 12);
+            _lastStartAttempt = DateTime.UtcNow;
+            _lastFetch = DateTime.UtcNow; // avoid tight retry storms
+            Current = null;
+
+            // Clear timeline cache too so subsequent timeline fetches will reattempt initialization
+            _timelineCache = null;
+            _lastTimelineFetch = DateTime.MinValue;
         }
 
         /// <summary>
@@ -202,50 +284,74 @@ namespace DynamicWin.Utils
                 if (Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
                     return Current;
 
-                var _s = _m?.GetFocusedSession();
-                if (_s == null)
+                try
                 {
-                    Current = null;
+                    var _s = _m?.GetFocusedSession();
+                    if (_s == null)
+                    {
+                        Current = null;
+                        _lastFetch = DateTime.UtcNow;
+                        return null;
+                    }
+
+                    // Await media properties instead of blocking
+                    var control = _s.ControlSession;
+                    if (control == null)
+                    {
+                        Current = null;
+                        _lastFetch = DateTime.UtcNow;
+                        return null;
+                    }
+
+                    var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
+                    if (_p == null)
+                    {
+                        Current = null;
+                        _lastFetch = DateTime.UtcNow;
+                        return null;
+                    }
+
+                    var _t = control.GetTimelineProperties();
+
+                    var _i = control.GetPlaybackInfo();
+
+                    // Note: intentionally do not read thumbnail stream here - keep metadata-only
+                    var result = new Media 
+                    { 
+                        Title = _p.Title,
+                        Artist = _p.Artist,
+                        ThumbnailData = null,
+                    };
+
+                    Current = result;
                     _lastFetch = DateTime.UtcNow;
-                    return null;
-                }
-
-                // Await media properties instead of blocking
-                var control = _s.ControlSession;
-                if (control == null)
-                {
-                    Current = null;
-                    _lastFetch = DateTime.UtcNow;
-                    return null;
-                }
-
-                var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
-                if (_p == null)
-                {
-                    Current = null;
-                    _lastFetch = DateTime.UtcNow;
-                    return null;
-                }
-
-                var _t = control.GetTimelineProperties();
-
-                var _i = control.GetPlaybackInfo();
-
-                // Note: intentionally do not read thumbnail stream here - keep metadata-only
-                var result = new Media 
-                { 
-                    Title = _p.Title,
-                    Artist = _p.Artist,
-                    ThumbnailData = null,
-                };
-
-                Current = result;
-                _lastFetch = DateTime.UtcNow;
 
 #if DEBUG
-                Debug.WriteLine($"[MEDIA CONTROLLER] TITLE: {_p.Title}, ARTIST: {_p.Artist}, START: {_t.StartTime}, END: {_t.EndTime}, POSITION: {_t.Position}, PLAYBACK STATUS: {_i.PlaybackStatus}");
+                    Debug.WriteLine($"[MEDIA CONTROLLER] TITLE: {_p.Title}, ARTIST: {_p.Artist}, START: {_t.StartTime}, END: {_t.EndTime}, POSITION: {_t.Position}, PLAYBACK STATUS: {_i.PlaybackStatus}");
 #endif
-                return result;
+                    return result;
+                }
+                catch (COMException cex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching media: " + cex.Message);
+#endif
+                    // Reset manager so future requests will reinitialize it with backoff
+                    ResetManager("COMException in FetchCurrentMediaAsync", cex);
+                    return null;
+                }
+                catch (Exception ex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] Error while fetching media: " + ex.Message);
+#endif
+                    // For unexpected errors, also defensively reset if it's an IPC/COM style failure
+                    if (ex is ObjectDisposedException || ex is InvalidOperationException)
+                    {
+                        ResetManager("Exception in FetchCurrentMediaAsync", ex);
+                    }
+                    return null;
+                }
             }
             finally
             {
@@ -264,6 +370,7 @@ namespace DynamicWin.Utils
             if (_timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
                 return _timelineCache;
 
+            // Fast check to avoid heavy work when manager is unavailable
             if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
                 return null;
 
@@ -306,13 +413,21 @@ namespace DynamicWin.Utils
                     _lastTimelineFetch = DateTime.UtcNow;
                     return tl;
                 }
+                catch (COMException cex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching timeline: " + cex.Message);
+#endif
+                    ResetManager("COMException in FetchCurrentTimelineAsync", cex);
+                    _timelineCache = null;
+                    _lastTimelineFetch = DateTime.UtcNow;
+                    return null;
+                }
                 catch (Exception ex)
                 {
 #if DEBUG
-                    Debug.WriteLine("[MEDIA CONTROLLER] FetchCurrentTimelineAsync error: " + ex.Message);
+                    Debug.WriteLine("[MEDIA INFO] FetchCurrentTimelineAsync error: " + ex.Message);
 #endif
-                    _timelineCache = null;
-                    _lastTimelineFetch = DateTime.UtcNow;
                     return null;
                 }
             }
@@ -357,18 +472,34 @@ namespace DynamicWin.Utils
                     await stream.CopyToAsync(ms).ConfigureAwait(false);
                     return ms.ToArray();
                 }
+                catch (COMException cex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail bytes: " + cex.Message);
+#endif
+                    ResetManager("COMException in FetchCurrentThumbnailBytesAsync", cex);
+                    return null;
+                }
                 catch (Exception ex)
                 {
 #if DEBUG
-                    Debug.WriteLine("[MEDIA CONTROLLER] Failed to read thumbnail bytes: " + ex.Message);
+                    Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error: " + ex.Message);
 #endif
                     return null;
                 }
             }
+            catch (COMException cex)
+            {
+#if DEBUG
+                Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail session: " + cex.Message);
+#endif
+                ResetManager("COMException in FetchCurrentThumbnailBytesAsync (session)", cex);
+                return null;
+            }
             catch (Exception ex)
             {
 #if DEBUG
-                Debug.WriteLine("[MEDIA CONTROLLER] FetchCurrentThumbnailBytesAsync error: " + ex.Message);
+                Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error (outer): " + ex.Message);
 #endif
                 return null;
             }
@@ -398,18 +529,34 @@ namespace DynamicWin.Utils
                     await op.AsTask().ConfigureAwait(false);
                     return true;
                 }
+                catch (COMException cex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] COM failure while seeking: " + cex.Message);
+#endif
+                    ResetManager("COMException in SeekCurrentSessionAsync", cex);
+                    return false;
+                }
                 catch (Exception ex)
                 {
 #if DEBUG
-                    Debug.WriteLine("[MEDIA CONTROLLER] SeekCurrentSessionAsync failed: " + ex.Message);
+                    Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync failed: " + ex.Message);
 #endif
                     return false;
                 }
             }
+            catch (COMException cex)
+            {
+#if DEBUG
+                Debug.WriteLine("[MEDIA INFO] COM failure while obtaining session for seek: " + cex.Message);
+#endif
+                ResetManager("COMException in SeekCurrentSessionAsync (session)", cex);
+                return false;
+            }
             catch (Exception ex)
             {
 #if DEBUG
-                Debug.WriteLine("[MEDIA CONTROLLER] SeekCurrentSessionAsync error: " + ex.Message);
+                Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync error (outer): " + ex.Message);
 #endif
                 return false;
             }
