@@ -1,16 +1,11 @@
 using DynamicWin.Main;
-using DynamicWin.UI.UIElements;
-using System.Collections.Generic;
-using SkiaSharp;
-using DynamicWin.Utils;
-using System.Threading.Tasks;
-using System.Threading;
-using System.IO;
-using System;
-using System.Diagnostics;
 using DynamicWin.Resources;
 using DynamicWin.UI.Menu.Menus;
-using System.Linq;
+using DynamicWin.Utils;
+using SkiaSharp;
+using System.Diagnostics;
+using System.IO;
+using Windows.Media.Control;
 
 /*
  * 
@@ -35,7 +30,8 @@ namespace DynamicWin.UI.UIElements.Custom
         private SKBitmap? pendingBitmap; // Newly decoded bitmap waiting to animate in
         private DynamicWin.Utils.Media? pendingMedia; // Pending metadata object
         private readonly object mediaLock = new object();
-        private TimeSpan fetchInterval = TimeSpan.FromSeconds(1);
+        // How often the background loop waits between iterations (cooperative wait broken into steps)
+        private TimeSpan fetchInterval = TimeSpan.FromMilliseconds(250); // faster timeline updates
 
         // Keys to detect duplicates
         private string? currentMediaKey;
@@ -67,9 +63,6 @@ namespace DynamicWin.UI.UIElements.Custom
         private TimeSpan? timelinePosition;
         private TimeSpan? timelineDuration;
         private bool isPlayingFlag = false;
-        private float timelineTimer = 0f;
-        private const float timelineInterval = 0.5f;
-        private bool timelineFetchInProgress = false;
 
         // Optimistic toggle to update UI immediately when user presses play/pause
         private bool optimisticState = false;
@@ -77,6 +70,44 @@ namespace DynamicWin.UI.UIElements.Custom
 
         // Animated progress fill
         private float displayFill = 0f;
+
+        private float timelineHeight = 6f; // Thickness of the bar
+        private SKColor timelineBgColor = new SKColor(255, 255, 255, 30); // subtle background
+        private SKColor timelineFgColor = new SKColor(255, 255, 255, 180); // active fill
+        private float timelineBarPadding = 12f; // vertical padding below buttons
+        private float timelineSidePadding = 40f; // space on left/right for timeline text
+        private SKColor timelineTextColor = new SKColor(255, 255, 255, 200);
+        private float timelineTextSize = 10f;
+
+        // Add lastSampleKey to detect new samples
+        private string? lastSampleKey = null;
+
+        // Latest timeline sample (elapsed since start) and timestamp when it was received
+        private TimeSpan? lastSampleElapsed = null;
+        private TimeSpan? lastSampleDuration = null;
+        private DateTime lastSampleReceivedAt = DateTime.MinValue;
+        private GlobalSystemMediaTransportControlsSessionPlaybackStatus lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+
+        // Keep the latest MediaTimeline for the current session (metadata kept in currentMedia)
+        private MediaTimeline? currentTimeline = null;
+
+        // Only fetch timeline once per media change; let local clock advance between fetches to avoid jitter
+        private bool timelineFetchedOnce = false;
+
+        private DateTime lastTimelineResync = DateTime.MinValue;
+
+        // If the user is interacting with the timeline (seeking), set this to true and update userSeekElapsed
+        private bool userIsSeeking = false;
+        private TimeSpan userSeekElapsed = TimeSpan.Zero;
+        private bool mouseDownOverTimeline = false;
+        // Whether the cursor is hovering over the timeline bar (used to increase bar height)
+        private bool isHoveringOverTimeline = false;
+
+        // Smoothed displayed elapsed seconds to avoid integer-second jitter in the UI text
+        private float displayedElapsedSeconds = 0f;
+        private bool displayedElapsedInitialized = false;
+        // Extra height applied to timeline when hovering/seeking (smoothed)
+        private float timelineExtraHeight = 0f;
 
         // Compare two SKBitmaps for visual equality. Uses fast pixel-by-pixel comparison to avoid allocations.
         private static bool AreBitmapsEqual(SKBitmap? a, SKBitmap? b)
@@ -264,7 +295,9 @@ namespace DynamicWin.UI.UIElements.Custom
                                         {
                                             currentMedia = meta;
                                             currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
-                                            try { newBmp.Dispose(); } catch { }
+
+                                            // Fresh timeline sample arrived -> cancel optimistic UI
+                                            optimisticActive = false;
                                         }
                                         else
                                         {
@@ -303,6 +336,9 @@ namespace DynamicWin.UI.UIElements.Custom
                                         currentMediaKey = null;
                                         pendingMediaKey = null;
                                         currentMedia = null;
+
+                                        // Fresh timeline sample (none) -> cancel optimistic UI
+                                        optimisticActive = false;
                                     }
                                 }
                             }
@@ -314,6 +350,18 @@ namespace DynamicWin.UI.UIElements.Custom
             else
             {
                 StopFetchLoop();
+            }
+        }
+
+        private static string FormatTimeSpanForDisplay(TimeSpan ts)
+        {
+            if (ts.TotalHours >= 1)
+            {
+                return string.Format("{0:D2}:{1:D2}:{2:D2}", (int)ts.TotalHours, ts.Minutes, ts.Seconds);
+            }
+            else
+            {
+                return string.Format("{0:D2}:{1:D2}", (int)ts.TotalMinutes, ts.Seconds);
             }
         }
 
@@ -373,6 +421,13 @@ namespace DynamicWin.UI.UIElements.Custom
                         {
                             currentMedia = pendingMedia;
                             pendingMedia = null;
+
+                            // Fresh timeline sample arrived -> cancel optimistic UI
+                            optimisticActive = false;
+
+                            // Media changed -> we should fetch a fresh timeline next loop
+                            timelineFetchedOnce = false;
+                            lastTimelineResync = DateTime.MinValue;
                         }
                     }
                 },
@@ -386,11 +441,114 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
                 });
 
-            // Update timeline periodically
-            timelineTimer += deltaTime;
-            if (timelineTimer >= timelineInterval && !timelineFetchInProgress)
+            // Snapshot currentMedia under lock so Update/Draw see consistent values
+            TimeSpan? sampleElapsed = null;
+            TimeSpan? sampleDuration = null;
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus samplePlayback = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+            string sampleKey = null; // left unused for now
+
+            lock (mediaLock)
             {
-                timelineTimer = 0f;
+                if (lastSampleElapsed.HasValue && lastSampleDuration.HasValue && lastSampleReceivedAt != DateTime.MinValue)
+                {
+                    // Compute elapsed since sample received
+                    var since = DateTime.UtcNow - lastSampleReceivedAt;
+
+                    if (userIsSeeking)
+                    {
+                        sampleElapsed = userSeekElapsed;
+                    }
+                    else
+                    {
+                        // If playback was Playing at sample time, advance; otherwise keep snapshot
+                        if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        {
+                            sampleElapsed = lastSampleElapsed.Value + since;
+                        }
+                        else
+                        {
+                            sampleElapsed = lastSampleElapsed.Value;
+                        }
+                    }
+
+                    sampleDuration = lastSampleDuration;
+
+                    // Keep currentTimeline in sync for UI consumers (text metadata remains in currentMedia)
+                    if (currentTimeline != null)
+                    {
+                        try
+                        {
+                            currentTimeline.Position = currentTimeline.StartTime + sampleElapsed.Value;
+                            currentTimeline.EndTime = currentTimeline.StartTime + sampleDuration.Value;
+                            currentTimeline.PlaybackStatus = lastPlaybackStatus;
+                        }
+                        catch { }
+                    }
+                }
+                else
+                {
+                    optimisticActive = false;
+                    // No timeline snapshot available -> clear currentTimeline so UI hides
+                    currentTimeline = null;
+                }
+            }
+
+            // Update timeline info using snapshot 
+            if (sampleElapsed.HasValue && sampleDuration.HasValue)
+            {
+                timelinePosition = sampleElapsed.Value;
+                timelineDuration = sampleDuration.Value;
+
+                if (timelinePosition < TimeSpan.Zero) timelinePosition = TimeSpan.Zero;
+
+                // Determine play state from lastPlaybackStatus (snapshot)
+                isPlayingFlag = (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing);
+
+                // If not playing, do not advance timelinePosition further; it was computed above using snapshot
+                if (!isPlayingFlag)
+                {
+                    // Ensure we don't advance optimistically
+                }
+
+                // Cap at end
+                if (timelineDuration.HasValue && timelinePosition > timelineDuration)
+                {
+                    timelinePosition = timelineDuration;
+                }
+            }
+            else
+            {
+                timelinePosition = null;
+                timelineDuration = null;
+                isPlayingFlag = false;
+                lastSampleKey = null;
+
+                // No timeline -> do NOT reset displayFill here to preserve smooth visual; leave displayFill as-is
+            }
+
+            // Animate displayFill towards actual progress (after timelinePosition updated)
+            float targetFill = 0f;
+            bool haveTarget = false;
+
+            if (userIsSeeking)
+            {
+                if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
+                {
+                    targetFill = Math.Clamp((float)(userSeekElapsed.TotalSeconds / timelineDuration.Value.TotalSeconds), 0f, 1f);
+                    haveTarget = true;
+                }
+            }
+            else if (timelinePosition.HasValue && timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
+            {
+                targetFill = Math.Clamp((float)(timelinePosition.Value.TotalSeconds / timelineDuration.Value.TotalSeconds), 0f, 1f);
+                haveTarget = true;
+            }
+
+            // Smoothly interpolate displayFill to target to avoid snapping on resync
+            if (haveTarget)
+            {
+                const float smoothing = 30f; // more responsive interpolation
+                displayFill = Mathf.Lerp(displayFill, targetFill, Math.Min(1f, smoothing * deltaTime));
             }
 
             // Position controls relative to layout (unchanged)
@@ -440,9 +598,92 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             catch (Exception ex)
             {
+#if DEBUG
                 Debug.WriteLine("Update layout error: " + ex.Message);
+#endif
             }
 
+            // Handle timeline mouse interactions (seeking)
+            try
+            {
+                // Compute timeline bar rect in screen coordinates
+                var rr = GetRect();
+                float barWidth = rr.Rect.Width - 2 * timelineSidePadding;
+                float barX = rr.Rect.Left + (rr.Rect.Width - barWidth) / 2f;
+                float btnBottom = btnPrev != null ? btnPrev.LocalPosition.Y + btnPrev.Size.Y : rr.Rect.Bottom - 20f;
+                float barY = rr.Rect.Top + btnBottom + timelineBarPadding;
+                if (barY + timelineHeight > rr.Rect.Bottom) barY = rr.Rect.Bottom - timelineHeight - timelineBarPadding;
+
+                var barRect = SKRect.Create(barX, barY, barWidth, timelineHeight);
+
+                var mousePos = RendererMain.CursorPosition;
+
+                // Mouse down over timeline begins seeking
+                if (IsHovering && IsMouseDown && !mouseDownOverTimeline && barRect.Contains(mousePos.X, mousePos.Y))
+                {
+                    mouseDownOverTimeline = true;
+                    userIsSeeking = true;
+                    // Compute initial seek position
+                    // Prefer initialising from current snapshot so drag feels continuous
+                    if (timelinePosition.HasValue && timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
+                    {
+                        userSeekElapsed = timelinePosition.Value;
+                        float rel = Math.Clamp((mousePos.X - barX) / barWidth, 0f, 1f);
+                        userSeekElapsed = TimeSpan.FromSeconds(rel * timelineDuration.Value.TotalSeconds);
+                    }
+                }
+
+                // While mouse is down and over timeline, update seek position
+                if (mouseDownOverTimeline && IsMouseDown)
+                {
+                    if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
+                    {
+                        float rel = Math.Clamp((mousePos.X - barX) / barWidth, 0f, 1f);
+                        userSeekElapsed = TimeSpan.FromSeconds(rel * timelineDuration.Value.TotalSeconds);
+                    }
+                }
+
+                // On mouse up, if seeking, commit the seek
+                if (mouseDownOverTimeline && !IsMouseDown)
+                {
+                    mouseDownOverTimeline = false;
+                    if (userIsSeeking)
+                    {
+                        // Compute target absolute position as StartTime + userSeekElapsed
+                        TimeSpan? start = currentTimeline?.StartTime;
+                        if (start.HasValue)
+                        {
+                            var target = start.Value + userSeekElapsed;
+                            
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    var ok = await MediaInfo.SeekCurrentSessionAsync(target).ConfigureAwait(false);
+                                    if (ok)
+                                    {
+                                        // On success, force timeline resync next loop
+                                        lock (mediaLock)
+                                        {
+                                            // Update local snapshot to the seeked position so UI reflects the change immediately
+                                            lastSampleElapsed = userSeekElapsed;
+                                            lastSampleReceivedAt = DateTime.UtcNow;
+                                            lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                                            timelineFetchedOnce = false;
+                                        }
+                                     }
+                                }
+                                catch { }
+                            });
+                        }
+
+                        // Keep userIsSeeking true until after commit to allow UI to show seek state briefly
+                        userIsSeeking = false;
+                     }
+                 }
+             }
+             catch { }
+            
             if (!string.IsNullOrEmpty(currentMedia?.Title))
             {
                 fullTitleText = currentMedia.Title;
@@ -483,6 +724,58 @@ namespace DynamicWin.UI.UIElements.Custom
                 isTitleScrolling = false;
                 titleScrollOffset = 0f;
             }
+
+            // Update displayed elapsed seconds using the visible snapshot (sampleElapsed) to avoid second-level jitter
+            // sampleElapsed already includes local clock advancement when playback is Playing
+            if (sampleElapsed.HasValue && sampleDuration.HasValue)
+            {
+                float desired = (float)sampleElapsed.Value.TotalSeconds;
+
+                if (userIsSeeking)
+                {
+                    // When seeking, jump the smoothed value to the seek target for immediate feedback
+                    displayedElapsedSeconds = (float)userSeekElapsed.TotalSeconds;
+                    displayedElapsedInitialized = true;
+                }
+                else if (!displayedElapsedInitialized)
+                {
+                    // Initialise to current value
+                    displayedElapsedSeconds = desired;
+                    displayedElapsedInitialized = true;
+                }
+                else
+                {
+                    // If paused/stopped, snap to sample exactly to avoid backward corrections
+                    if (!isPlayingFlag)
+                    {
+                        displayedElapsedSeconds = desired;
+                    }
+                    else
+                    {
+                        // Smoothly interpolate towards desired when playing to keep motion continuous
+                        const float smoothing = 12f;
+                        displayedElapsedSeconds = Mathf.Lerp(displayedElapsedSeconds, desired, Math.Min(1f, smoothing * deltaTime));
+                    }
+                }
+            }
+
+            // Update hover/seek-driven timeline extra height (smooth transition)
+            try
+            {
+                var rr2 = GetRect();
+                float barWidth2 = rr2.Rect.Width - 2 * timelineSidePadding;
+                float barX2 = rr2.Rect.Left + (rr2.Rect.Width - barWidth2) / 2f;
+                float btnBottom2 = btnPrev != null ? btnPrev.LocalPosition.Y + btnPrev.Size.Y : rr2.Rect.Bottom - 20f;
+                float barY2 = rr2.Rect.Top + btnBottom2 + timelineBarPadding;
+                if (barY2 + timelineHeight > rr2.Rect.Bottom) barY2 = rr2.Rect.Bottom - timelineHeight - timelineBarPadding;
+                var barRect2 = SKRect.Create(barX2, barY2, barWidth2, timelineHeight);
+                var mousePos2 = RendererMain.CursorPosition;
+                isHoveringOverTimeline = barRect2.Contains(mousePos2.X, mousePos2.Y) && IsHovering;
+
+                float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 3f : 0f);
+                timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
+            }
+            catch { }
         }
 
         private void OnThumbnailChanged(object? sender, MediaChangedEventArgs e)
@@ -508,6 +801,9 @@ namespace DynamicWin.UI.UIElements.Custom
 
                         pendingMedia = null;
                         pendingMediaKey = null;
+
+                        // Fresh timeline sample (none) -> cancel optimistic UI
+                        optimisticActive = false;
                     }
 
                     return;
@@ -523,7 +819,9 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
                     catch (Exception ex)
                     {
+#if DEBUG
                         Debug.WriteLine("Thumbnail decode in service handler failed: " + ex.Message);
+#endif
                         newBmp = null;
                     }
                 }
@@ -542,8 +840,8 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
                     else
                     {
-                        // If the incoming bitmap is visually identical to the currently displayed thumbnail,
-                        // treat it as not-new: dispose the decoded bitmap and update metadata/key instead
+                        // If the incoming bitmap is visually identical to the currently-displayed thumbnail,
+                        // treat it as not-new: dispose the decoded(bitmap) and update metadata/key instead
                         if (newBmp != null && thumbnailBitmap != null && AreBitmapsEqual(newBmp, thumbnailBitmap))
                         {
                             // Adopt metadata without triggering a flip animation
@@ -552,6 +850,9 @@ namespace DynamicWin.UI.UIElements.Custom
                             try { newBmp.Dispose(); } catch { }
                             pendingMedia = null;
                             pendingMediaKey = null;
+
+                            // Fresh timeline sample arrived -> cancel optimistic UI
+                            optimisticActive = false;
                             return; // exit the Task.Run delegate early
                         }
 
@@ -593,6 +894,9 @@ namespace DynamicWin.UI.UIElements.Custom
                                     pendingMediaKey = null;
                                     pendingMedia = null;
                                 }
+
+                                // Fresh timeline sample arrived -> cancel optimistic UI
+                                optimisticActive = false;
                             }
                         }
                     }
@@ -612,6 +916,118 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try
                     {
+                        // Fetch lightweight timeline sample frequently so UI can update progress smoothly
+                        try
+                        {
+                            bool needFetch = false;
+                            // Always allow frequent timeline fetches (MediaInfo already caches at 250ms)
+                            if (!userIsSeeking)
+                                needFetch = true;
+
+                            // Avoid fetching timeline while user is actively seeking to prevent overwriting the user's drag
+                            if (needFetch && !userIsSeeking)
+                            {
+                                var tl = await MediaInfo.FetchCurrentTimelineAsync().ConfigureAwait(false);
+                                if (tl != null)
+                                {
+#if DEBUG
+                                    Debug.WriteLine($"[MEDIA TIMELINE] Pos={tl.Position} Start={tl.StartTime} End={tl.EndTime} Status={tl.PlaybackStatus}");
+#endif
+                                    lock (mediaLock)
+                                    {
+                                        // Compute absolute elapsed at sample
+                                        var absElapsed = tl.Position - tl.StartTime;
+                                        var now = DateTime.UtcNow;
+
+                                        // If we already have a prior sample, perform a drift-tolerant update to avoid jitter
+                                        if (lastSampleElapsed.HasValue && lastSampleReceivedAt != DateTime.MinValue)
+                                        {
+                                            // If the current playback status is not Playing (paused/stopped), anchor exactly to the sample
+                                            // This prevents the UI from drifting backwards while paused.
+                                            if (tl.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                                            {
+                                                lastSampleElapsed = absElapsed;
+                                                lastSampleReceivedAt = now;
+                                            }
+                                            else
+                                            {
+                                                // Predict where the elapsed should be based on our local clock
+                                                var predicted = lastSampleElapsed.Value + (now - lastSampleReceivedAt);
+                                                // Error = desired - predicted
+                                                var error = (absElapsed - predicted).TotalSeconds;
+
+                                                // If error is very large, resync immediately; otherwise gently nudge the anchor
+                                                const double largeResyncSeconds = 3.0; // >3s indicates a real discontinuity (seek/track change)
+                                                const double nudgeFactor = 0.12; // Fraction of error to apply per sample (slow convergence)
+
+                                                if (Math.Abs(error) > largeResyncSeconds)
+                                                {
+                                                    // Large discontinuity -> reset anchor to the sample
+                                                    lastSampleElapsed = absElapsed;
+                                                    lastSampleReceivedAt = now;
+                                                    // Reset displayed elapsed as well to avoid a visible jump while converging
+                                                    displayedElapsedSeconds = (float)absElapsed.TotalSeconds;
+                                                    displayedElapsedInitialized = true;
+                                                }
+                                                else
+                                                {
+                                                    // Gentle correction: apply a fraction of the error to the stored anchor so predicted slowly converges
+                                                    try
+                                                    {
+                                                        lastSampleElapsed = lastSampleElapsed.Value + TimeSpan.FromSeconds(error * nudgeFactor);
+                                                        // Do NOT update lastSampleReceivedAt; keep local clock anchor so progression remains smooth
+                                                        // Update duration to newest value so progress fraction is accurate
+                                                        lastSampleDuration = tl.EndTime - tl.StartTime;
+                                                    }
+                                                    catch { }
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Anchor first sample to it
+                                            lastSampleElapsed = absElapsed;
+                                            lastSampleReceivedAt = now;
+                                            lastSampleDuration = tl.EndTime - tl.StartTime;
+                                            // Initialise smoothed displayed time to the anchored sample
+                                            displayedElapsedSeconds = (float)absElapsed.TotalSeconds;
+                                            displayedElapsedInitialized = true;
+                                        }
+
+                                        // Always update playback status and currentTimeline reference
+                                        lastPlaybackStatus = tl.PlaybackStatus;
+                                        currentTimeline = tl;
+
+                                        timelineFetchedOnce = true; // Mark fetched
+                                        lastTimelineResync = DateTime.UtcNow;
+
+                                        // Fresh timeline sample arrived -> cancel optimistic UI so external pauses/plays are reflected
+                                        optimisticActive = false;
+                                    }
+                                }
+                                else
+                                {
+                                    // If timeline is null, ensure we clear snapshot so UI hides timeline
+                                    lock (mediaLock)
+                                    {
+                                        lastSampleElapsed = null;
+                                        lastSampleDuration = null;
+                                        currentTimeline = null;
+                                        timelineFetchedOnce = false;
+
+                                        // Cancel optimistic UI when no timeline is available
+                                        optimisticActive = false;
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+#if DEBUG
+                            Debug.WriteLine("Timeline fetch error: " + ex.Message);
+#endif
+                        }
+
                         var media = await MediaInfo.FetchCurrentMediaAsync();
 
                         // Build lightweight key to detect duplicates (title|artist|thumbLen)
@@ -629,7 +1045,9 @@ namespace DynamicWin.UI.UIElements.Custom
                         }
                         catch (Exception ex)
                         {
+#if DEBUG
                             Debug.WriteLine("Thumbnail decode failed: " + ex.Message);
+#endif
                             newBmp = null;
                         }
 
@@ -653,6 +1071,9 @@ namespace DynamicWin.UI.UIElements.Custom
                                     currentMedia = media;
                                     currentMediaKey = key;
                                     try { newBmp.Dispose(); } catch { }
+
+                                    // Fresh timeline sample arrived -> cancel optimistic UI
+                                    optimisticActive = false;
                                     continue;
                                 }
 
@@ -699,6 +1120,9 @@ namespace DynamicWin.UI.UIElements.Custom
                                             pendingMediaKey = null;
                                             pendingMedia = null;
                                         }
+
+                                        // Fresh timeline sample arrived -> cancel optimistic UI
+                                        optimisticActive = false;
                                     }
                                 }
                             }
@@ -707,7 +1131,9 @@ namespace DynamicWin.UI.UIElements.Custom
                     catch (OperationCanceledException) { break; }
                     catch (Exception ex)
                     {
+#if DEBUG
                         Debug.WriteLine("Media fetch loop error: " + ex.Message);
+#endif
                     }
 
                     // Cooperative non-throwing wait: break long interval into short steps and check token
@@ -929,7 +1355,9 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             catch (Exception ex)
             {
+#if DEBUG
                 Debug.WriteLine("Draw thumbnail error: " + ex.Message);
+#endif
             }
 
             // Draw title and artist to the right of thumbnail
@@ -986,6 +1414,78 @@ namespace DynamicWin.UI.UIElements.Custom
             {
                 var displayArtist = DWText.Truncate(artist, 45);
                 canvas.DrawText(displayArtist, textX, textY + titlePaint.TextSize + artistPaint.TextSize + 6f, artistPaint);
+            }
+
+            try
+            {
+                // Timeline bar width reduced to leave room for text
+                float barWidth = rect.Width - 2 * timelineSidePadding;
+                float barX = rect.Left + (rect.Width - barWidth) / 2f; // horizontally centered
+
+                // Position bar slightly below buttons
+                float barY = rect.Top + 95f + timelineBarPadding;
+
+                if (barY + timelineHeight > rect.Bottom) barY = rect.Bottom - timelineHeight - timelineBarPadding;
+
+                // Draw background
+                using (var paint = GetPaint())
+                {
+                    paint.IsStroke = false;
+                    paint.IsAntialias = true;
+                    paint.Color = timelineBgColor;
+                    canvas.DrawRoundRect(SKRect.Create(barX, barY, barWidth, timelineHeight), timelineHeight / 2f, timelineHeight / 2f, paint);
+                }
+
+                // Draw foreground fill (height increases when hovering or seeking)
+                float drawTimelineHeight = timelineHeight + timelineExtraHeight;
+                float barYOffset = (timelineHeight - drawTimelineHeight) / 2f;
+                using (var paint = GetPaint())
+                {
+                    paint.IsStroke = false;
+                    paint.IsAntialias = true;
+                    paint.Color = timelineFgColor;
+                    float fillWidth = barWidth * displayFill;
+                    canvas.DrawRoundRect(SKRect.Create(barX, barY + barYOffset, fillWidth, drawTimelineHeight), drawTimelineHeight / 2f, drawTimelineHeight / 2f, paint);
+                }
+
+                // Draw timeline text on both sides
+                if (timelineDuration.HasValue)
+                {
+                    // Use smoothed displayedElapsedSeconds for visible text to avoid second-level jitter
+                    var leftTs = TimeSpan.FromSeconds(displayedElapsedSeconds);
+                    var rightRemain = timelineDuration.Value - TimeSpan.FromSeconds(displayedElapsedSeconds);
+
+                    string leftText = FormatTimeSpanForDisplay(leftTs);
+                    // Right side shows remaining with a leading '-' to indicate time left
+                    string rightText = "-" + FormatTimeSpanForDisplay(rightRemain);
+
+                    using (var paint = GetPaint())
+                    {
+                        paint.IsStroke = false;
+                        paint.IsAntialias = true;
+                        paint.Color = timelineTextColor;
+                        paint.TextSize = timelineTextSize;
+                        paint.Typeface = Resources.Res.SatoshiRegular;
+
+                        // Text Y position just below bar
+                        float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
+
+                        // Left text
+                        float leftX = barX - timelineSidePadding + 4f;
+                        canvas.DrawText(leftText, leftX, timelineTextY, paint);
+
+                        // Right text
+                        float rightTextWidth = paint.MeasureText(rightText);
+                        float rightX = barX + barWidth + timelineSidePadding - rightTextWidth - 4f;
+                        canvas.DrawText(rightText, rightX, timelineTextY, paint);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("Draw timeline bar error: " + ex.Message);
+#endif
             }
         }
 
