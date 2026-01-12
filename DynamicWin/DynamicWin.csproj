@@ -7,13 +7,21 @@
 	<Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>Resources/icons/release.ico</ApplicationIcon>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <Company>$(Authors)</Company>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="canary.ico" />
     <None Remove="release.ico" />
+    <None Remove="Resources\icons\context\align-centre.png" />
+    <None Remove="Resources\icons\context\align-left.png" />
+    <None Remove="Resources\icons\context\align-right.png" />
+    <None Remove="Resources\icons\context\cog.png" />
+    <None Remove="Resources\icons\context\exit.png" />
+    <None Remove="Resources\icons\context\left.png" />
+    <None Remove="Resources\icons\context\refresh.png" />
+    <None Remove="Resources\icons\context\right.png" />
+    <None Remove="Resources\icons\context\trash.png" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,11 +34,6 @@
       <Isolated>false</Isolated>
       <EmbedInteropTypes>true</EmbedInteropTypes>
     </COMReference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="Resources\icons\canary.ico" />
-    <Content Include="Resources\icons\release.ico" />
   </ItemGroup>
 
   <ItemGroup>
@@ -48,6 +51,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="app.ico">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="canary.ico">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="Resources\CascadiaMono.ttf">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
@@ -79,9 +88,6 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Resources\icons\battery\NoBattery.png">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Update="Resources\icons\canary.ico">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Resources\icons\cog.ico">
@@ -165,9 +171,6 @@
     <None Update="Resources\icons\test.jpg">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="Resources\icons\TrayIcon.ico">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
     <None Update="Resources\icons\weather\Cloudy.png">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
@@ -211,6 +214,36 @@
 
   <ItemGroup>
     <Folder Include="Resources\icons\settings\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\icons\context\align-centre.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\align-left.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\align-right.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\cog.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\exit.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\left.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\refresh.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\right.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\icons\context\trash.png">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
   </ItemGroup>
 
 </Project>
