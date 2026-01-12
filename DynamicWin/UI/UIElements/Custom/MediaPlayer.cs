@@ -75,11 +75,11 @@ namespace DynamicWin.UI.UIElements.Custom
         private float displayFill = 0f;
 
         private float timelineHeight = 6f; // Thickness of the bar
-        private SKColor timelineBgColor = new SKColor(255, 255, 255, 30); // subtle background
-        private SKColor timelineFgColor = new SKColor(255, 255, 255, 180); // active fill
+        private Col timelineBgColor = Theme.WidgetBackground.Override(a: 200); // subtle background
+        private Col timelineFgColor = Theme.TextMain; // active fill
         private float timelineBarPadding = 12f; // vertical padding below buttons
         private float timelineSidePadding = 40f; // space on left/right for timeline text
-        private SKColor timelineTextColor = new SKColor(255, 255, 255, 200);
+        private Col timelineTextColor = Theme.TextMain.Override(a: 55);
         private float timelineTextSize = 10f;
 
         // Add lastSampleKey to detect new samples
@@ -154,7 +154,7 @@ namespace DynamicWin.UI.UIElements.Custom
             controller = new MediaController();
 
             // Create interactive playback buttons and progress UI as local objects; will be positioned in Update
-            btnPrev = new DWImageButton(this, Resources.Res.Previous, new Vec2(0, 0), new Vec2(28, 28), () => { controller.Previous(); }, alignment: UIAlignment.TopLeft)
+            btnPrev = new DWImageButton(this, Res.Previous, new Vec2(0, 0), new Vec2(28, 28), () => { controller.Previous(); }, alignment: UIAlignment.TopLeft)
             {
                 roundRadius = 14f,
                 normalColor = Col.Transparent,
@@ -165,7 +165,7 @@ namespace DynamicWin.UI.UIElements.Custom
             AddLocalObject(btnPrev);
 
             // Hook play/pause button to also toggle optimistic UI state
-            btnPlay = new DWImageButton(this, Resources.Res.Play, new Vec2(0, 0), new Vec2(32, 32), () => {
+            btnPlay = new DWImageButton(this, Res.Play, new Vec2(0, 0), new Vec2(32, 32), () => {
                 // Optimistic toggle
                 optimisticState = !GetEffectivePlayingState();
                 optimisticActive = true;
@@ -174,7 +174,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 // Update icon immediately
                 if (btnPlay != null)
                 {
-                    btnPlay.Image.Image = optimisticState ? (Resources.Res.Pause ?? Resources.Res.Stop) : Resources.Res.Play;
+                    btnPlay.Image.Image = optimisticState ? (Res.Pause ?? Res.Stop) : Res.Play;
                 }
             }, alignment: UIAlignment.TopLeft)
             {
@@ -186,7 +186,7 @@ namespace DynamicWin.UI.UIElements.Custom
             };
             AddLocalObject(btnPlay);
 
-            btnNext = new DWImageButton(this, Resources.Res.Next, new Vec2(0, 0), new Vec2(28, 28), () => { controller.Next(); }, alignment: UIAlignment.TopLeft)
+            btnNext = new DWImageButton(this, Res.Next, new Vec2(0, 0), new Vec2(28, 28), () => { controller.Next(); }, alignment: UIAlignment.TopLeft)
             {
                 roundRadius = 14f,
                 normalColor = Col.Transparent,
@@ -747,7 +747,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     var paint = GetPaint();
                     paint.TextSize = 14f;
-                    paint.Typeface = Resources.Res.SatoshiBold;
+                    paint.Typeface = Res.SatoshiBold;
                     titleTextWidth = paint.MeasureText(fullTitleText);
                     prevFullTitleText = fullTitleText;
                 }
@@ -803,7 +803,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 var mousePos2 = RendererMain.CursorPosition;
                 isHoveringOverTimeline = barRect2.Contains(mousePos2.X, mousePos2.Y) && IsHovering;
 
-                float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 3f : 0f);
+                float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
                 timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
             }
             catch { }
@@ -1237,12 +1237,6 @@ namespace DynamicWin.UI.UIElements.Custom
 
                 pendingMediaKey = null;
                 pendingMedia = null;
-
-                // Do not dispose thumbnailBitmap or previousBitmap here; keep cached for quick re-show
-                // currentMediaKey remains so duplicate detection still works
-
-                // Hide controls
-                // If (progressBar != null) progressBar.SilentSetActive(false);
             }
         }
 
@@ -1491,7 +1485,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     paint.IsStroke = false;
                     paint.IsAntialias = true;
-                    paint.Color = timelineBgColor;
+                    paint.Color = GetColor(timelineBgColor).Value();
                     canvas.DrawRoundRect(SKRect.Create(barX, barY, barWidth, timelineHeight), timelineHeight / 2f, timelineHeight / 2f, paint);
                 }
 
@@ -1502,7 +1496,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     paint.IsStroke = false;
                     paint.IsAntialias = true;
-                    paint.Color = timelineFgColor;
+                    paint.Color = GetColor(timelineFgColor).Value();
                     float fillWidth = barWidth * displayFill;
                     canvas.DrawRoundRect(SKRect.Create(barX, barY + barYOffset, fillWidth, drawTimelineHeight), drawTimelineHeight / 2f, drawTimelineHeight / 2f, paint);
                 }
@@ -1532,7 +1526,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     paint.IsStroke = false;
                     paint.IsAntialias = true;
-                    paint.Color = timelineTextColor;
+                    paint.Color = GetColor(timelineTextColor).Value();
                     paint.TextSize = timelineTextSize;
                     paint.Typeface = Resources.Res.SatoshiRegular;
 
