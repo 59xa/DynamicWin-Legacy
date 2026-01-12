@@ -3,7 +3,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
-	<ApplicationIcon>..\Other\InstallerIcon\SetupIcon.ico</ApplicationIcon>
+	<ApplicationIcon>..\Other\InstallerIcon\updater.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
