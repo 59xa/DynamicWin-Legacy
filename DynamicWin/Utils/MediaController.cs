@@ -18,7 +18,7 @@ namespace DynamicWin.Utils
     *   Author:                 Florian Butz & 59xa
     *   GitHub:                 https://github.com/FlorianButz
     *   Implementation Date:    3 August 2024
-    *   Last Modified:          11 January 2026
+    *   Last Modified:          12 January 2026
     */
 
     public class MediaController
@@ -56,7 +56,7 @@ namespace DynamicWin.Utils
     *   Author:                 59xa
     *   GitHub:                 https://github.com/59xa
     *   Implementation Date:    19 May 2025
-    *   Last Modified:          11 January 2026
+    *   Last Modified:          12 January 2026
     */
 
     public class MediaInfo
