@@ -607,38 +607,44 @@ namespace DynamicWin.Utils
             // Do not dispose cached images here - they are owned by this object and will be disposed in OnDestroy or when replaced
         }
 
-        private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage current, SKImage? previous, float totalWidth, float totalHeight, float fade
-        )
+        private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage current, SKImage? previous, float totalWidth, float totalHeight, float fade)
         {
-            // At this point img is guaranteed fresh & owned by this object (do not dispose)
+            if (canvas == null || current == null) return;
+
             canvas.Save();
             canvas.ClipRoundRect(roundRect, SKClipOperation.Intersect, true);
 
             void Draw(SKImage img, float alpha)
             {
-                using var paint = new SKPaint
+                if (img == null) return;
+                if (img.Width <= 0 || img.Height <= 0) return; // Prevent zero-dimension crash
+
+                try
                 {
-                    IsAntialias = true,
-                    FilterQuality = SKFilterQuality.High,
-                    Color = SKColors.White.WithAlpha((byte)(alpha * 255)),
-                    ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount)
-                };
+                    using var paint = new SKPaint
+                    {
+                        IsAntialias = true,
+                        FilterQuality = SKFilterQuality.High,
+                        Color = SKColors.White.WithAlpha((byte)(alpha * 255)),
+                        ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount)
+                    };
 
-                float scale = Math.Max(
-                    totalWidth / img.Width,
-                    totalHeight / img.Height
-                );
+                    float scale = Math.Max(totalWidth / img.Width, totalHeight / img.Height);
+                    float iw = img.Width * scale;
+                    float ih = img.Height * scale;
 
-                float iw = img.Width * scale;
-                float ih = img.Height * scale;
+                    float ix = Position.X + (totalWidth - iw) / 2f;
+                    float iy = Position.Y + (totalHeight - ih) / 2f;
 
-                float ix = Position.X + (totalWidth - iw) / 2f;
-                float iy = Position.Y + (totalHeight - ih) / 2f;
-
-                canvas.DrawImage(img, SKRect.Create(ix, iy, iw, ih), paint);
+                    canvas.DrawImage(img, SKRect.Create(ix, iy, iw, ih), paint);
+                }
+                catch
+                {
+                    // Silently ignore any Skia native errors (disposed image as example)
+                }
             }
 
-            if (previous != null && fade < 1f)
+            if (previous != null && previous.Width > 0 && previous.Height > 0 && fade < 1f)
                 Draw(previous, 1f - fade);
 
             Draw(current, fade);
