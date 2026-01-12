@@ -104,6 +104,66 @@ namespace DynamicWin.Utils
         }
 
         /// <summary>
+        /// Select the best WinRT session to use. Prefers Playing sessions, then any non-Closed session,
+        /// then the focused session, then the first available session. Uses the WinRT SessionManager to
+        /// enumerate sessions (works even when the wrapper MediaManager doesn't expose a session list).
+        /// </summary>
+        private static async Task<GlobalSystemMediaTransportControlsSession?> GetBestWinRTSessionAsync()
+        {
+            try
+            {
+                var mgrOp = GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+                var mgr = await mgrOp.AsTask().ConfigureAwait(false);
+                if (mgr == null) return null;
+
+                var sessions = mgr.GetSessions(); // IReadOnlyList<GlobalSystemMediaTransportControlsSession>
+                if (sessions != null && sessions.Count > 0)
+                {
+                    // Prefer Playing
+                    foreach (var s in sessions)
+                    {
+                        try
+                        {
+                            var info = s.GetPlaybackInfo();
+                            if (info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                                return s;
+                        }
+                        catch { }
+                    }
+
+                    // Prefer any non-Closed
+                    foreach (var s in sessions)
+                    {
+                        try
+                        {
+                            var info = s.GetPlaybackInfo();
+                            if (info != null && info.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed)
+                                return s;
+                        }
+                        catch { }
+                    }
+
+                    // Focused session
+                    try
+                    {
+                        var focused = mgr.GetCurrentSession();
+                        if (focused != null) return focused;
+                    }
+                    catch { }
+
+                    // First available
+                    try { return sessions[0]; } catch { }
+                }
+
+                // Fallback to current session
+                try { return mgr.GetCurrentSession(); } catch { }
+            }
+            catch { }
+
+            return null;
+        }
+
+        /// <summary>
         /// Ensures the MediaManager instance exists and has been started. Returns true when ready.
         /// This method is safe to call concurrently and will return false on failure.
         /// </summary>
@@ -174,10 +234,20 @@ namespace DynamicWin.Utils
                     _failedStartAttempts++;
                     try
                     {
-                        if (_m is IDisposable d) d.Dispose();
+                        // Use thread-safe exchange to set _m to null before disposing to avoid races and potential null refs
+                        var mLocal = Interlocked.Exchange(ref _m, null);
+                        if (mLocal is IDisposable disp)
+                        {
+                            try { disp.Dispose(); }
+                            catch (Exception dex)
+                            {
+#if DEBUG
+                                Debug.WriteLine("[MEDIA CONTROLLER] Dispose failed: " + dex.Message);
+#endif
+                            }
+                        }
                     }
                     catch { }
-                    _m = null;
                     return false;
                 }
             }
@@ -204,7 +274,16 @@ namespace DynamicWin.Utils
             {
                 if (_m != null)
                 {
-                    try { if (_m is IDisposable d) d.Dispose(); } catch { }
+                    try
+                    {
+                        // Exchange the reference with null first to avoid races where other threads try to use _m
+                        var mLocal = Interlocked.Exchange(ref _m, null);
+                        if (mLocal is IDisposable disp)
+                        {
+                            try { disp.Dispose(); } catch { }
+                        }
+                    }
+                    catch { }
                 }
             }
             catch { }
@@ -274,7 +353,7 @@ namespace DynamicWin.Utils
             // Ensure manager exists and is started only once
             if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
             {
-                return null;
+                // Even if wrapper manager isn't ready, try WinRT manager directly below
             }
 
             await _fetchLock.WaitAsync().ConfigureAwait(false);
@@ -286,16 +365,7 @@ namespace DynamicWin.Utils
 
                 try
                 {
-                    var _s = _m?.GetFocusedSession();
-                    if (_s == null)
-                    {
-                        Current = null;
-                        _lastFetch = DateTime.UtcNow;
-                        return null;
-                    }
-
-                    // Await media properties instead of blocking
-                    var control = _s.ControlSession;
+                    var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
                     if (control == null)
                     {
                         Current = null;
@@ -371,8 +441,7 @@ namespace DynamicWin.Utils
                 return _timelineCache;
 
             // Fast check to avoid heavy work when manager is unavailable
-            if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
-                return null;
+            await EnsureManagerStartedAsync().ConfigureAwait(false);
 
             await _timelineLock.WaitAsync().ConfigureAwait(false);
             try
@@ -380,15 +449,7 @@ namespace DynamicWin.Utils
                 if (_timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
                     return _timelineCache;
 
-                var _s = _m?.GetFocusedSession();
-                if (_s == null)
-                {
-                    _timelineCache = null;
-                    _lastTimelineFetch = DateTime.UtcNow;
-                    return null;
-                }
-
-                var control = _s.ControlSession;
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
                 if (control == null)
                 {
                     _timelineCache = null;
@@ -445,18 +506,12 @@ namespace DynamicWin.Utils
         public static async Task<byte[]?> FetchCurrentThumbnailBytesAsync()
         {
             // Ensure manager exists and has been started only once
-            if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
-            {
-                return null;
-            }
+            await EnsureManagerStartedAsync().ConfigureAwait(false);
 
             // Do not use the same _fetchLock as metadata - allow thumbnail fetches to proceed concurrently
             try
             {
-                var _s = _m?.GetFocusedSession();
-                if (_s == null) return null;
-
-                var control = _s.ControlSession;
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
                 if (control == null) return null;
 
                 var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
@@ -511,15 +566,11 @@ namespace DynamicWin.Utils
         /// </summary>
         public static async Task<bool> SeekCurrentSessionAsync(TimeSpan position)
         {
-            if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
-                return false;
+            await EnsureManagerStartedAsync().ConfigureAwait(false);
 
             try
             {
-                var _s = _m?.GetFocusedSession();
-                if (_s == null) return false;
-
-                var control = _s.ControlSession;
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
                 if (control == null) return false;
 
                 try
