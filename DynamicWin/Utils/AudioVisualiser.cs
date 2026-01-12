@@ -91,6 +91,7 @@ namespace DynamicWin.Utils
 
         public Col Primary;
         public Col Secondary;
+        private SKColor thumbnailColorAdjustment;
 
         private float averageAmplitude = 0f;
         public float AverageAmplitude { get => averageAmplitude; }
@@ -109,6 +110,8 @@ namespace DynamicWin.Utils
             roundRadius = V;
             this.Primary = Primary ?? Theme.Primary;
             this.Secondary = Secondary ?? Theme.Secondary.Override(a: 0.5f);
+
+            thumbnailColorAdjustment = GetColor(Theme.TextMain.Override(a: 215)).Value();
 
             fftMagnitudes = new float[fftLength / 2];
             barHeight = new float[barCount];
@@ -551,7 +554,7 @@ namespace DynamicWin.Utils
 
                         using var overlay = new SKPaint
                         {
-                            Color = new SKColor(255, 255, 255, 40)
+                            Color = thumbnailColorAdjustment
                         };
                         canvas.DrawRoundRect(roundRect, overlay);
                     }
