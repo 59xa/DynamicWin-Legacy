@@ -346,8 +346,8 @@ namespace DynamicWin.UI.Menu.Menus
         public float bigWidgetsSpacing = 15;
         int maxBigWidgetInOneRow = 2;
 
-        public float smallWidgetsSpacing = 10;
-        public float middleWidgetsSpacing = 35;
+        public float smallWidgetsSpacing = 15f;
+        public float middleWidgetsSpacing = 70f;
 
         float sCD = 20; // Small widget padding (horizontal)
         float bCD = 50;
@@ -442,19 +442,43 @@ namespace DynamicWin.UI.Menu.Menus
                     }
                 }
 
-                { // Center Small Widgets
-                    float centerStackPos = 0f;
-                    foreach (var smallCenter in smallCenterWidgets)
-                    {
-                        smallCenter.Anchor.X = 1;
-                        smallCenter.LocalPosition.X = centerStackPos;
+                float requiredCenterWidth = 0f;
+                foreach (var w in smallCenterWidgets)
+                {
+                    requiredCenterWidth += w.GetWidgetSize().X;
+                }
+                requiredCenterWidth += smallWidgetsSpacing * Math.Max(0, smallCenterWidgets.Count - 1);
 
-                        centerStackPos -= smallWidgetsSpacing + smallCenter.GetWidgetSize().X;
-                    }
+                float availableWidth = smallWidgetsContainer.Size.X;
 
-                    foreach (var smallCenter in smallCenterWidgets)
+                // Minimum spacing to prevent overlap (can be 0)
+                float safeSpacing = smallWidgetsSpacing;
+
+                if (requiredCenterWidth > availableWidth)
+                {
+                    // Reduce spacing but never go negative
+                    safeSpacing = Math.Max(
+                        0f,
+                        (availableWidth - requiredCenterWidth + smallWidgetsSpacing * (smallCenterWidgets.Count - 1))
+                        / Math.Max(1, smallCenterWidgets.Count - 1)
+                    );
+                }
+
+                { // Center Small Widgets (overlap-safe)
+                    float totalWidth = 0f;
+
+                    foreach (var w in smallCenterWidgets)
+                        totalWidth += w.GetWidgetSize().X;
+
+                    totalWidth += safeSpacing * Math.Max(0, smallCenterWidgets.Count - 1);
+
+                    float startX = -totalWidth / 2f;
+
+                    foreach (var w in smallCenterWidgets)
                     {
-                        smallCenter.LocalPosition.X -= centerStackPos / 2 + smallWidgetsSpacing;
+                        w.Anchor.X = 0.5f;
+                        w.LocalPosition.X = startX + w.GetWidgetSize().X / 2f;
+                        startX += w.GetWidgetSize().X + safeSpacing;
                     }
                 }
             }
