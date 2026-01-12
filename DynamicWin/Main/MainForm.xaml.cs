@@ -120,7 +120,7 @@ namespace DynamicWin.Main
             };
 
 
-            _trayIcon.ContextMenuStrip.Items.Add("Restart Control", null, (x, y) =>
+            _trayIcon.ContextMenuStrip.Items.Add("Restart Control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
             {
                 if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
                 this.Content = new Grid();
@@ -129,6 +129,7 @@ namespace DynamicWin.Main
             });
 
             _settingsTrayItem = new Forms.ToolStripMenuItem("Settings");
+            _settingsTrayItem.Image = ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/cog.png");
             _settingsTrayItem.Click += (x, y) =>
             {
                 MenuManager.OpenMenu(new SettingsMenu());
@@ -136,7 +137,7 @@ namespace DynamicWin.Main
 
             _trayIcon.ContextMenuStrip.Items.Add(_settingsTrayItem);
 
-            _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (x, y) =>
+            _trayIcon.ContextMenuStrip.Items.Add("Exit", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/exit.png"), (x, y) =>
             {
                 SaveManager.SaveAll();
                 Process.GetCurrentProcess().Kill();
