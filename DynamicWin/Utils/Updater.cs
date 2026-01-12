@@ -416,9 +416,9 @@ namespace DynamicWin.Utils
         {
             return stream switch
             {
-                Channel.Release => "Resources/icons/release.ico",
-                Channel.Canary => "Resources/icons/canary.ico",
-                _ => "Resources/icons/release.ico"
+                Channel.Release => "app.ico",
+                Channel.Canary => "canary.ico",
+                _ => "app.ico"
             };
         }
     }
