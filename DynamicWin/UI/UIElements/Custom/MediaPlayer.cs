@@ -75,7 +75,7 @@ namespace DynamicWin.UI.UIElements.Custom
         private float displayFill = 0f;
 
         private float timelineHeight = 6f; // Thickness of the bar
-        private Col timelineBgColor = Theme.WidgetBackground.Override(a: 200); // subtle background
+        private SKColor timelineBgColor; // subtle background
         private Col timelineFgColor = Theme.TextMain; // active fill
         private float timelineBarPadding = 12f; // vertical padding below buttons
         private float timelineSidePadding = 40f; // space on left/right for timeline text
@@ -151,6 +151,7 @@ namespace DynamicWin.UI.UIElements.Custom
 
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
+            timelineBgColor = GetColor(Theme.WidgetBackground.Override(a: 200)).Value();
             controller = new MediaController();
 
             // Create interactive playback buttons and progress UI as local objects; will be positioned in Update
@@ -1485,7 +1486,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     paint.IsStroke = false;
                     paint.IsAntialias = true;
-                    paint.Color = GetColor(timelineBgColor).Value();
+                    paint.Color = timelineBgColor;
                     canvas.DrawRoundRect(SKRect.Create(barX, barY, barWidth, timelineHeight), timelineHeight / 2f, timelineHeight / 2f, paint);
                 }
 
