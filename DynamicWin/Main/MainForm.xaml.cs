@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Forms = System.Windows.Forms;
 
 namespace DynamicWin.Main
@@ -26,9 +27,15 @@ namespace DynamicWin.Main
 
 
         private DateTime _lastRenderTime;
-        private readonly TimeSpan _targetElapsedTime = TimeSpan.FromMilliseconds(16); // ~60 FPS
+        // Target interval driven by monitor refresh rate (set in ctor)
+        private TimeSpan _targetElapsedTime;
 
         public Action onMainFormRender;
+
+        // Mouse/motion tracking for idle detection
+        private System.Windows.Point _lastMousePos = new System.Windows.Point(-1, -1);
+        private DateTime _lastMouseMoveTime = DateTime.MinValue;
+        private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromSeconds(1.0);
 
         [DllImport("user32.dll")]
         public static extern int SetWindowLong(IntPtr window, int idx, int val);
@@ -47,6 +54,22 @@ namespace DynamicWin.Main
 
             _trayIcon = new Forms.NotifyIcon();
 
+            // Initialise mouse tracking
+            _lastMouseMoveTime = DateTime.UtcNow;
+
+            // Compute initial target frame interval from monitor refresh rate
+            try
+            {
+                int refresh = DisplayHelper.GetRefreshRate();
+                if (refresh <= 0) refresh = 60;
+                _targetElapsedTime = TimeSpan.FromMilliseconds(1000.0 / refresh);
+                Debug.WriteLine($"[MAIN FORM] Initial target frame interval: {_targetElapsedTime.TotalMilliseconds} ms ({refresh} Hz)");
+            }
+            catch
+            {
+                _targetElapsedTime = TimeSpan.FromMilliseconds(16);
+            }
+
             CompositionTarget.Rendering += OnRendering;
 
             instance = this;
@@ -57,7 +80,8 @@ namespace DynamicWin.Main
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
-            this.Title = "DynamicWin Overlay";
+            this.Title = "DynamicWin-Legacy Island";
+            this.Icon = BitmapFrame.Create(new Uri(DynamicWinMain.ReleaseStream.GetIconPath(), UriKind.Relative));
 
             // Loaded event to ensure that this does not show the application on the Alt+Tab switcher
 
@@ -79,13 +103,24 @@ namespace DynamicWin.Main
             MainForm.Instance.AllowDrop = true;
 
             // Tray icon
-
-            _trayIcon.Icon = new System.Drawing.Icon("Resources/icons/TrayIcon.ico");
-            _trayIcon.Text = "DynamicWin";
+            _trayIcon.Icon = new System.Drawing.Icon("Resources/icons/cog.ico");
+            _trayIcon.Text = "DynamicWin-Legacy";
 
             _trayIcon.ContextMenuStrip = new Forms.ContextMenuStrip();
 
-            _trayIcon.ContextMenuStrip.Items.Add("Restart Control", null, (x, y) =>
+            _trayIcon.ContextMenuStrip.Opening += (s, e) =>
+            {
+                this.Topmost = false;
+                Activate();
+            };
+
+            _trayIcon.ContextMenuStrip.Closing += (s, e) =>
+            {
+                this.Topmost = true;
+            };
+
+
+            _trayIcon.ContextMenuStrip.Items.Add("Restart Control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
             {
                 if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
                 this.Content = new Grid();
@@ -94,6 +129,7 @@ namespace DynamicWin.Main
             });
 
             _settingsTrayItem = new Forms.ToolStripMenuItem("Settings");
+            _settingsTrayItem.Image = ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/cog.png");
             _settingsTrayItem.Click += (x, y) =>
             {
                 MenuManager.OpenMenu(new SettingsMenu());
@@ -101,7 +137,7 @@ namespace DynamicWin.Main
 
             _trayIcon.ContextMenuStrip.Items.Add(_settingsTrayItem);
 
-            _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (x, y) =>
+            _trayIcon.ContextMenuStrip.Items.Add("Exit", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/exit.png"), (x, y) =>
             {
                 SaveManager.SaveAll();
                 Process.GetCurrentProcess().Kill();
@@ -153,6 +189,55 @@ namespace DynamicWin.Main
 
         private void OnRendering(object? sender, EventArgs e)
         {
+            var now = DateTime.UtcNow;
+
+            // Track mouse movement to detect idle while hovering the island
+            try
+            {
+                var pos = System.Windows.Input.Mouse.GetPosition(this);
+                if (pos.X != _lastMousePos.X || pos.Y != _lastMousePos.Y)
+                {
+                    _lastMouseMoveTime = now;
+                    _lastMousePos = pos;
+                }
+            }
+            catch { }
+
+            // Decide refresh rate dynamically based on settings and idle state
+            try
+            {
+                TimeSpan desiredInterval = TimeSpan.FromMilliseconds(16);
+
+                if (Settings.ToggleHighRefreshRate)
+                {
+                    int displayRefresh = DisplayHelper.GetRefreshRate();
+                    if (displayRefresh <= 0) displayRefresh = 60;
+
+                    int targetHz = displayRefresh;
+
+                    if (Settings.LimitRefreshRateWhenIdle)
+                    {
+                        bool islandHover = false;
+                        try
+                        {
+                            islandHover = RendererMain.Instance?.MainIsland?.IsHovering ?? false;
+                        }
+                        catch { }
+
+                        bool idle = !islandHover ||
+                                    ((now - _lastMouseMoveTime) > _idleMouseThreshold);
+
+                        if (idle)
+                            targetHz = 60;
+                    }
+
+                    desiredInterval = TimeSpan.FromMilliseconds(1000.0 / targetHz);
+                }
+
+                _targetElapsedTime = desiredInterval;
+            }
+            catch { }
+
             var currentTime = DateTime.Now;
             if (currentTime - _lastRenderTime >= _targetElapsedTime)
             {

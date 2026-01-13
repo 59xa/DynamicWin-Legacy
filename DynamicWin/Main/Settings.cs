@@ -19,6 +19,10 @@ namespace DynamicWin.Main
         private static bool allowBlur;
         private static bool allowAnimation;
         private static bool antiAliasing;
+        private static bool toggleHighRefreshRate;
+        private static bool limitRefreshRateWhenIdle;
+        private static bool toggleIslandShadow;
+        private static bool toggleHomeMenuShadow;
         private static bool runOnStartup;
         private static int theme;
         private static int activeScreenIndex;
@@ -29,6 +33,10 @@ namespace DynamicWin.Main
         public static bool AllowBlur { get => allowBlur; set => allowBlur = value; }
         public static bool AllowAnimation { get => allowAnimation; set => allowAnimation = value; }
         public static bool AntiAliasing { get => antiAliasing; set => antiAliasing = value; }
+        public static bool ToggleHighRefreshRate { get => toggleHighRefreshRate; set => toggleHighRefreshRate = value; }
+        public static bool LimitRefreshRateWhenIdle { get => limitRefreshRateWhenIdle; set => limitRefreshRateWhenIdle = value; }
+        public static bool ToggleIslandShadow { get => toggleIslandShadow; set => toggleIslandShadow = value; }
+        public static bool ToggleHomeMenuShadow { get => toggleHomeMenuShadow; set => toggleHomeMenuShadow = value; }
         public static bool RunOnStartup { get => runOnStartup; set => runOnStartup = value; }
         public static int Theme { get => theme; set => theme = value; }
         public static int ScreenIndex { get => activeScreenIndex; set => activeScreenIndex = value; }
@@ -52,6 +60,11 @@ namespace DynamicWin.Main
                     AllowBlur = (bool)SaveManager.Get("settings.allowblur");
                     AllowAnimation = (bool)SaveManager.Get("settings.allowanimtion");
                     AntiAliasing = (bool)SaveManager.Get("settings.antialiasing");
+                    ToggleHighRefreshRate = SaveManager.Contains("settings.ToggleHighRefreshRate") ? (bool)SaveManager.Get("settings.ToggleHighRefreshRate") : true;
+                    LimitRefreshRateWhenIdle = SaveManager.Contains("settings.LimitRefreshRateWhenIdle") ? (bool)SaveManager.Get("settings.LimitRefreshRateWhenIdle") : false;
+                    ToggleIslandShadow = SaveManager.Contains("settings.ToggleIslandShadow") ? (bool)SaveManager.Get("settings.ToggleIslandShadow") : true;
+                    ToggleHomeMenuShadow = SaveManager.Contains("settings.ToggleHomeMenuShadow") ? (bool)SaveManager.Get("settings.ToggleHomeMenuShadow") : true;
+
                     RunOnStartup = (bool)SaveManager.Get("settings.runonstartup");
 
                     AllowAutomaticUpdates = SaveManager.Contains("settings.AllowAutomaticUpdates") ? (bool)SaveManager.Get("settings.AllowAutomaticUpdates") : true;
@@ -86,14 +99,19 @@ namespace DynamicWin.Main
                     smallWidgetsMiddle = new List<string>();
                     bigWidgets = new List<string>();
 
-                    smallWidgetsRight.Add("DynamicWin.UI.Widgets.Small.RegisterUsedDevicesWidget");
-                    smallWidgetsLeft.Add("DynamicWin.UI.Widgets.Small.RegisterTimeWidget");
-                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterMediaWidget");
+                    smallWidgetsRight.Add("DynamicWin.UI.Widgets.Small.RegisterSmallVisualiserWidget");
+                    smallWidgetsLeft.Add("DynamicWin.UI.Widgets.Small.RegisterMediaThumbnailWidget");
+                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterWeatherWidget");
+                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterTimerWidget");
 
                     IslandMode = IslandObject.IslandMode.Island;
                     AllowBlur = true;
                     AllowAnimation = true;
                     AntiAliasing = true;
+                    ToggleHighRefreshRate = false;
+                    LimitRefreshRateWhenIdle = true;
+                    ToggleIslandShadow = true;
+                    ToggleHomeMenuShadow = false;
                     ReleaseStream = 0;
 
                     // default automatic updates enabled
@@ -139,6 +157,10 @@ namespace DynamicWin.Main
             SaveManager.Add("settings.allowblur", AllowBlur);
             SaveManager.Add("settings.allowanimtion", AllowAnimation);
             SaveManager.Add("settings.antialiasing", AntiAliasing);
+            SaveManager.Add("settings.ToggleHighRefreshRate", ToggleHighRefreshRate);
+            SaveManager.Add("settings.LimitRefreshRateWhenIdle", LimitRefreshRateWhenIdle);
+            SaveManager.Add("settings.ToggleIslandShadow", ToggleIslandShadow);
+            SaveManager.Add("settings.ToggleHomeMenuShadow", ToggleHomeMenuShadow);
             SaveManager.Add("settings.runonstartup", RunOnStartup);
             SaveManager.Add("settings.ReleaseStream", ReleaseStream);
 

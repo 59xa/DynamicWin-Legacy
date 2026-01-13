@@ -9,12 +9,14 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
+/* DEPRECATED */
+
 namespace DynamicWin.UI.Widgets.Big
 {
     class RegisterMediaWidget : IRegisterableWidget
     {
         public bool IsSmallWidget => false;
-        public string WidgetName => "Media Playback Control";
+        public string WidgetName => "Legacy Media Playback Control";
 
         public WidgetBase CreateWidgetInstance(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter)
         {
@@ -37,10 +39,9 @@ namespace DynamicWin.UI.Widgets.Big
         DWText title;
         DWText artist;
 
-        /*protected override float GetWidgetWidth()
-        {
-            return base.GetWidgetWidth() * 2f;
-        }*/
+        // Cache previous artist and song values
+        private string? lastTitle = null;
+        private string? lastArtist = null;
 
         public MediaWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
@@ -91,9 +92,13 @@ namespace DynamicWin.UI.Widgets.Big
             audioVisualiser = new AudioVisualiser(this, new Vec2(0, 30), new Vec2(125, 25));
             AddLocalObject(audioVisualiser);
 
+            // Use generalised colour for audio visualiser
             audioVisualiserBig = new AudioVisualiser(this, new Vec2(0, 0), GetWidgetSize(), alignment: UIAlignment.Center,
-                Primary: spotifyCol.Override(a: 0.35f), Secondary: spotifyCol.Override(a: 0.025f) * 0.1f);
+                Primary: mediaCol.Override(a: 1f), Secondary: mediaCol.Override(a: 1f) * 0.1f);
+
+            audioVisualiserBig.BlurAmount = 20f;
             audioVisualiserBig.SilentSetActive(false);
+            AddLocalObject(audioVisualiserBig);
 
             noMediaPlaying = new DWText(this, "No Media Playing", new Vec2(0, 30))
             {
@@ -128,36 +133,27 @@ namespace DynamicWin.UI.Widgets.Big
 
         int cycle = 0;
 
+        // Flag to avoid overlapping fetches
+        private bool fetchingMedia = false;
+
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
             if (cycle % 32 == 0)
             {
-                isSpotifyAvaliable = IsSpotifyAvaliable();
+                // Periodically fetch current media info
+                _ = FetchAndApplyMediaAsync();
 
-                if (isSpotifyAvaliable)
+                // Use last fetched values if available
+                if (!string.IsNullOrEmpty(lastTitle))
                 {
-                    string titleString;
-                    string artistString;
-                    string error;
+                    title.Text = DWText.Truncate(lastTitle, (GetWidgetWidth() == 400 ? 50 : 20));
+                }
 
-                    GetSpotifyTrackInfo(out titleString, out artistString, out error);
-
-                    if (string.IsNullOrEmpty(error))
-                    {
-                        title.Text = DWText.Truncate(titleString, (GetWidgetWidth() == 400 ? 50 : 20));
-                        artist.Text = DWText.Truncate(artistString, (GetWidgetWidth() == 400 ? 60 : 28));
-                    }
-                    else
-                    {
-                        if (!error.Equals("Paused") || title.Text.ToLower().Equals("title") || title.Text.ToLower().Equals("error"))
-                        {
-                            title.Text = "Error";
-                            artist.Text = DWText.Truncate(error, 24);
-                        }
-
-                    }
+                if (!string.IsNullOrEmpty(lastArtist))
+                {
+                    artist.Text = DWText.Truncate(lastArtist, (GetWidgetWidth() == 400 ? 60 : 28));
                 }
             }
             cycle++;
@@ -166,22 +162,17 @@ namespace DynamicWin.UI.Widgets.Big
             next.normalColor = Theme.IconColor * audioVisualiser.GetActionCol().Override(a: 0.2f);
             playPause.normalColor = Theme.IconColor * audioVisualiser.GetActionCol().Override(a: 0.2f);
 
-            if (!isSpotifyAvaliable)
-                smoothedAmp = (float)Math.Max(Mathf.Lerp(smoothedAmp, audioVisualiser.AverageAmplitude, smoothing * deltaTime), audioVisualiser.AverageAmplitude);
-            else
-                smoothedAmp = (float)Math.Max(Mathf.Lerp(smoothedAmp, audioVisualiser.AverageAmplitude, smoothing * deltaTime), audioVisualiser.AverageAmplitude);
+            smoothedAmp = (float)Math.Max(Mathf.Lerp(smoothedAmp, audioVisualiser.AverageAmplitude, smoothing * deltaTime), audioVisualiser.AverageAmplitude);
 
             if (smoothedAmp < 0.005f) smoothedAmp = 0f;
 
-            spotifyBlur = Mathf.Lerp(spotifyBlur, isSpotifyAvaliable ? 0f : 25f, 10f * deltaTime);
+            bool showSmallVisualiser = !isMediaAvailable && !smoothedAmp.Equals(0f);
 
-            noMediaPlaying.SetActive(smoothedAmp.Equals(0f) && !isSpotifyAvaliable);
-            title.SetActive(isSpotifyAvaliable);
-            artist.SetActive(isSpotifyAvaliable);
-            audioVisualiserBig.SetActive(isSpotifyAvaliable);
-            audioVisualiser.SetActive(!isSpotifyAvaliable);
-
-            audioVisualiserBig.UpdateCall(deltaTime);
+            noMediaPlaying.SetActive(!showSmallVisualiser && !isMediaAvailable);
+            title.SetActive(isMediaAvailable);
+            artist.SetActive(isMediaAvailable);
+            audioVisualiserBig.SetActive(isMediaAvailable);
+            audioVisualiser.SetActive(showSmallVisualiser);
         }
 
         private void InitMediaPlayer()
@@ -189,9 +180,57 @@ namespace DynamicWin.UI.Widgets.Big
             controller = new MediaController();
         }
 
-        float spotifyBlur = 0f;
-        bool isSpotifyAvaliable = false;
-        Col spotifyCol = Col.FromHex("#1cb351");
+        private async Task FetchAndApplyMediaAsync()
+        {
+            if (fetchingMedia) return;
+            fetchingMedia = true;
+
+            try
+            {
+                var media = await MediaInfo.FetchCurrentMediaAsync();
+
+                // Marshal UI updates to UI thread
+                BeginInvokeUI(() =>
+                {
+                    if (media != null)
+                    {
+                        // Show media info
+                        lastTitle = media.Title;
+                        lastArtist = media.Artist;
+
+                        title.Text = !string.IsNullOrEmpty(media.Title) ? DWText.Truncate(media.Title, (GetWidgetWidth() == 400 ? 50 : 20)) : "Title";
+                        artist.Text = !string.IsNullOrEmpty(media.Artist) ? DWText.Truncate(media.Artist, (GetWidgetWidth() == 400 ? 60 : 28)) : string.Empty;
+                        isMediaAvailable = true;
+                    }
+                    else
+                    {
+                        // No media
+                        isMediaAvailable = false;
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Failed to fetch media info: " + ex.Message);
+                BeginInvokeUI(() => isMediaAvailable = false);
+            }
+            finally
+            {
+                fetchingMedia = false;
+            }
+        }
+
+        bool isMediaAvailable = false;
+        Col mediaCol = Theme.Primary;
+
+        // Override Draw to apply clipping to the entire widget (including child objects)
+        public override void Draw(SKCanvas canvas)
+        {
+            int save = canvas.Save();
+            canvas.ClipRoundRect(GetRect());
+            base.Draw(canvas);
+            canvas.RestoreToCount(save);
+        }
 
         public override void DrawWidget(SKCanvas canvas)
         {
@@ -199,112 +238,19 @@ namespace DynamicWin.UI.Widgets.Big
             paint.Color = GetColor(Theme.WidgetBackground).Value();
             canvas.DrawRoundRect(GetRect(), paint);
 
-            int saveCanvas = canvas.Save();
-
-            canvas.ClipRoundRect(GetRect());
-
-            audioVisualiserBig.Alpha = 0.75f;
-            audioVisualiserBig.BlurAmount = 10f;
-            audioVisualiserBig.EnableColourTransition = true;
-            audioVisualiserBig.EnableDotWhenLow = false;
-            audioVisualiserBig.BarSpacing = 1f;
-            audioVisualiserBig.DrawCall(canvas);
-
-            canvas.RestoreToCount(saveCanvas);
-
-            if (isSpotifyAvaliable || spotifyBlur <= 24f)
+            if (isMediaAvailable)
             {
-                paint.Color = spotifyCol.Override(a: Color.a * (1f - (spotifyBlur / 25f))).Value();
-
-                var blur = SKImageFilter.CreateBlur((float)Math.Max(GetBlur(), spotifyBlur) + 0.1f, (float)Math.Max(GetBlur(), spotifyBlur) + 0.1f);
-                paint.ImageFilter = blur;
-
                 var r = GetRect();
-
-                var inward = 5;
-                var w = 25 + spotifyBlur * (isSpotifyAvaliable ? 2.5f : -0.15f);
-                var h = 25 + spotifyBlur * (isSpotifyAvaliable ? 2.5f : -0.15f);
-                var x = Position.X + r.Width - w / 2 - inward;
-                var y = Position.Y - h / 2 + inward;
-
-                try
-                {
-                    canvas.DrawBitmap(Resources.Res.Spotify, SKRect.Create(x, y, w, h), paint);
-                }catch(ArgumentNullException e)
-                {
-                    // Do nothing and don't draw
-                }
-
-                paint.Color = GetColor(spotifyCol.Override(a: 0.25f * Color.a)).Value();
+                paint = GetPaint();
+                paint.Color = GetColor(mediaCol.Override(a: 0.25f * Color.a)).Value();
                 paint.StrokeWidth = 2f;
-
-                float[] intervals = { 5, 10 };
+                float[] intervals = { 5, 8 };
                 paint.PathEffect = SKPathEffect.CreateDash(intervals, (float)-cycle * 0.1f);
-
                 paint.IsStroke = true;
                 paint.StrokeCap = SKStrokeCap.Round;
                 paint.StrokeJoin = SKStrokeJoin.Round;
-
                 canvas.DrawRoundRect(r, paint);
-
-                canvas.RestoreToCount(saveCanvas);
-
-                var shadowPaint = GetPaint();
-
-                var drop = SKImageFilter.CreateDropShadowOnly(0, 0, (25f - spotifyBlur) / 2, (25f - spotifyBlur) / 2, 
-                    spotifyCol.Override(a: (25f - spotifyBlur) / 100f).Value());
-                shadowPaint.ImageFilter = drop;
-                shadowPaint.IsStroke = true;
-                shadowPaint.StrokeWidth = 15;
-
-                int s = canvas.Save();
-                canvas.ClipRoundRect(GetRect());
-                canvas.DrawRoundRect(GetRect(), shadowPaint);
-                canvas.RestoreToCount(s);
             }
-        }
-
-        public static void GetSpotifyTrackInfo(out string title, out string artist, out string error)
-        {
-            var proc = Process.GetProcessesByName("Spotify").FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.MainWindowTitle));
-
-            if (proc == null)
-            {
-                error = "Spotify is not open!";
-                title = null;
-                artist = null;
-                return;
-            }
-
-            if (proc.MainWindowTitle.ToLower().StartsWith("spotify"))
-            {
-                error = "Paused";
-                title = null;
-                artist = null;
-                return;
-            }
-
-            string[] strings = proc.MainWindowTitle.Split(" - ");
-            
-            if(strings.Length >= 2)
-            {
-                title = strings[1];
-                artist = strings[0];
-                error = null;
-            }
-            else
-            {
-                error = null;
-                title = "Advertisement";
-                artist = "";
-                return;
-            }
-        }
-
-        public bool IsSpotifyAvaliable()
-        {
-            var processes = Process.GetProcessesByName("Spotify");
-            return processes.Any();
         }
     }
 }

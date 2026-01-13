@@ -34,6 +34,13 @@ namespace DynamicWin.Utils
             return 1 - (float)Math.Pow(1 - x, 3);
         }
 
+        public static float EaseInOutCubic(float t)
+        {
+            if (t < 0.5f) return 4f * t * t * t;
+            float f = ((2f * t) - 2f);
+            return 0.5f * f * f * f + 1f;
+        }
+
         public static float EaseInCubic(float x)
         {
             return x * x * x;

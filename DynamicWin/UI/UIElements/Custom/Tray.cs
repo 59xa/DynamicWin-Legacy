@@ -11,6 +11,8 @@ using System.Threading.Tasks;
 using System;
 using System.Linq;
 using System.Collections.Generic;
+using DynamicWin.UI.Menu.Menus;
+using DynamicWin.UI.Menu;
 
 namespace DynamicWin.UI.UIElements.Custom
 {
@@ -30,6 +32,25 @@ namespace DynamicWin.UI.UIElements.Custom
 
         public override ContextMenu? GetContextMenu()
         {
+            // Only show tray context menu when HomeMenu is active and its current mode is Tray
+            try
+            {
+                var active = MenuManager.Instance.ActiveMenu;
+                if (active is HomeMenu hm)
+                {
+                    if (hm.currentBigMenuMode != HomeMenu.BigMenuMode.Tray)
+                        return null;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
             ContextMenu contextMenu = new ContextMenu();
 
             if (selectedFiles.Count != 0)

@@ -4,7 +4,6 @@ using System.Net.Http;
 using System.Xml;
 using CsvHelper;
 using DynamicWin.Resources;
-using DynamicWin.UI.Widgets.Big;
 using Newtonsoft.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,7 +19,7 @@ using System.Collections.Generic;
 *   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          27 November 2025
+*   Last Modified:          02 January 2026
 *   
 *   TO MAINTAINERS:
 *    - When fetching weather data, the API might hallucinate, and retrieve forecast data from a different city.
@@ -33,6 +32,9 @@ namespace DynamicWin.Utils
     // Initialise weather API class
     public class WeatherAPI
     {
+        // Shared default instance for global use
+        public static readonly WeatherAPI Default = new WeatherAPI();
+
         // Reuse a single HttpClient for the app lifetime (recommended)
         private static readonly HttpClient s_httpClient = new HttpClient();
 
@@ -53,31 +55,95 @@ namespace DynamicWin.Utils
 
         public Action<WeatherData>? _OnWeatherDataReceived;
 
+        // Internal loop control
+        private CancellationTokenSource? _internalCts;
+        private int _activeClients = 0;
+        private readonly object _lock = new object();
+
+        /// <summary>
+        /// Start the background fetch loop. Multiple callers are supported via reference counting; the loop
+        /// only runs while at least one caller has started it.
+        /// </summary>
+        /// <param name="countryIndex">Index of the country (used to build city list / lat-long lookup)</param>
+        /// <param name="cityIndex">Index of the city (used for selecting a specific city when provided)</param>
+        /// <param name="type">"default" for geo IP, "city" for user-selected</param>
+        public void StartFetching(int countryIndex, int cityIndex, string? type = null)
+        {
+            lock (_lock)
+            {
+                _activeClients++;
+                if (_activeClients == 1)
+                {
+                    _internalCts = new CancellationTokenSource();
+                    // Start the loop without blocking the caller
+                    _ = Task.Run(() => Fetch(countryIndex, cityIndex, type, _internalCts.Token, _internalCts));
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] StartFetching invoked; loop started.");
+#endif
+                }
+                else
+                {
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] StartFetching invoked; already running (refcount={0}).", _activeClients);
+#endif
+                }
+            }
+        }
+
+        /// <summary>
+        /// Stop the background fetch loop for the caller that previously started it. The loop will be cancelled
+        /// only when the internal reference count reaches zero.
+        /// </summary>
+        public void StopFetching()
+        {
+            lock (_lock)
+            {
+                if (_activeClients > 0) _activeClients--;
+
+                if (_activeClients <= 0)
+                {
+                    _internalCts?.Cancel();
+                    _internalCts?.Dispose();
+                    _internalCts = null;
+                    _activeClients = 0;
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] StopFetching invoked; loop cancelled.");
+#endif
+                }
+                else
+                {
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] StopFetching invoked; remaining refcount={0}.", _activeClients);
+#endif
+                }
+            }
+        }
+
         /// <summary>
         /// Handles retrieval of forecast values from a specified city set by user.
+        /// Internal use: prefer StartFetching/StopFetching for controlling the loop lifecycle.
         /// </summary>
-        /// <param name="idx">The index that the function should use.</param>
-        /// <param name="type">Optional parameter that defines whether index value is "default" or "city"</param>
-        /// <returns>void</returns>
-        public async Task Fetch(int idx, string? type, CancellationToken token = default, CancellationTokenSource? cts = null)
+        /// <param name="countryIndex">Country index (0 for Default)</param>
+        /// <param name="cityIndex">City index (when selecting a city)</param>
+        /// <param name="type">"default" for geo IP, "city" for user-selected</param>
+        public async Task Fetch(int countryIndex, int cityIndex, string? type, CancellationToken token = default, CancellationTokenSource? cts = null)
         {
             // Load required values once; CSV parsing is cached now.
             string[] _c = (await LoadCountryNamesAsync()).ToArray();
-            string[] _ct = (await LoadCityNamesAsync(RegisterWeatherWidgetSettings.saveData.countryIndex));
+            string[] _ct = Array.Empty<string>();
+            if (countryIndex >= 0 && countryIndex < _c.Length)
+            {
+                _ct = await LoadCityNamesAsync(countryIndex);
+            }
 
             // Use shared HttpClient
             // Loop fetch: cancellation-aware
-            while (!token.IsCancellationRequested && RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen == false)
+            while (!token.IsCancellationRequested)
             {
-                if (token.IsCancellationRequested || RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen)
+                // If an explicit cancellation was requested via the provided CTS, respect it
+                if (cts != null && cts.IsCancellationRequested)
                 {
-                    Debug.WriteLine("[WEATHER API] Task disposal received inside while-loop.");
-                    throw new OperationCanceledException(token);
-                }
-                else if (cts != null && cts.IsCancellationRequested)
-                {
-                    Debug.WriteLine("[WEATHER API] Task disposal received inside while-loop.");
-                    cts.Cancel();
+                    Debug.WriteLine("[WEATHER API] Task disposal requested via provided CTS.");
                     throw new OperationCanceledException(token);
                 }
 
@@ -85,14 +151,21 @@ namespace DynamicWin.Utils
                 var lat = string.Empty; var lon = string.Empty;
                 Location location = default;
 
-                // If index is Default, fetch geo-location forecast instead
-                if (_c[RegisterWeatherWidgetSettings.saveData.countryIndex] == "Default" && type == "default")
+                // If index is Default and requested type asks for default, fetch geo-location forecast instead
+                if (_c.Length > 0 && countryIndex >= 0 && countryIndex < _c.Length && _c[countryIndex] == "Default" && type == "default")
                 {
 #if DEBUG
                     Debug.WriteLine("[WEATHER API] Forecast data request is default.");
 #endif
-                    response = await s_httpClient.GetStringAsync("https://ipinfo.io/geo").ConfigureAwait(false);
-                    location = JsonConvert.DeserializeObject<Location>(response);
+                    try
+                    {
+                        response = await s_httpClient.GetStringAsync("https://ipinfo.io/geo").ConfigureAwait(false);
+                        location = JsonConvert.DeserializeObject<Location>(response);
+                    }
+                    catch
+                    {
+                        location = new Location();
+                    }
 
                     if (location.Equals(default(Location))) // Fallback if deserialization fails
                         location = new Location();
@@ -101,15 +174,15 @@ namespace DynamicWin.Utils
                     lat = locParts.Length > 0 ? locParts[0] : "0";
                     lon = locParts.Length > 1 ? locParts[1] : "0";
                 }
-                else // Read preference set by user, then return requested values
+                else // Read preference set by caller, then return requested values
                 {
 #if DEBUG
                     Debug.WriteLine("[WEATHER API] Forecast data request is user-defined.");
 #endif
-                    string city = (_ct.Length > RegisterWeatherWidgetSettings.saveData.cityIndex && RegisterWeatherWidgetSettings.saveData.cityIndex >= 0) ? _ct[RegisterWeatherWidgetSettings.saveData.cityIndex] : string.Empty;
-                    string country = _c[RegisterWeatherWidgetSettings.saveData.countryIndex];
+                    string city = ( _ct.Length > cityIndex && cityIndex >= 0) ? _ct[cityIndex] : string.Empty;
+                    string country = (countryIndex >= 0 && countryIndex < _c.Length) ? _c[countryIndex] : string.Empty;
 
-                    var loc = LoadLatLong(RegisterWeatherWidgetSettings.saveData.countryIndex, RegisterWeatherWidgetSettings.saveData.cityIndex);
+                    var loc = LoadLatLong(countryIndex, cityIndex);
                     var locParts = (loc ?? "0,0").Split(',');
                     lat = locParts.Length > 0 ? locParts[0] : "0";
                     lon = locParts.Length > 1 ? locParts[1] : "0";
@@ -211,18 +284,36 @@ namespace DynamicWin.Utils
                 _OnWeatherDataReceived?.Invoke(_WeatherData);
 
 #if DEBUG
-                Debug.WriteLine("[WEATHER API] IDX = {0}, TYPE = {1}", idx, type);
+                Debug.WriteLine("[WEATHER API] IDX = {0}, TYPE = {1}", countryIndex, type);
 #endif
 
                 // Wait for 2 minutes or until cancelled
                 try
                 {
-                    await Task.Delay(120000, token).ConfigureAwait(false);
+                    int totalMs = 120000;
+                    int waited = 0;
+                    const int step = 1000; // check every second
+
+                    while (waited < totalMs && !token.IsCancellationRequested)
+                    {
+                        int delay = Math.Min(step, totalMs - waited);
+                        await Task.Delay(delay).ConfigureAwait(false);
+                        waited += delay;
+                    }
+
+                    if (token.IsCancellationRequested) break;
                 }
-                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[WEATHER API] Delay loop exception: " + ex);
+#endif
+                    break;
+                }
             }
 
-            if (token.IsCancellationRequested || RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen)
+            // Only throw if the provided cancellation token was signalled. Do not treat other UI flags as a cancellation.
+            if (token.IsCancellationRequested)
             {
 #if DEBUG
                 Debug.WriteLine("[WEATHER API] Task disposal received outside while-loop.");
@@ -317,8 +408,7 @@ namespace DynamicWin.Utils
                 .Order()
                 .ToArray();
 
-            RegisterWeatherWidgetSettings.saveData.totalCities = Math.Max(0, cities.Length - 1);
-
+            // Note: do not mutate external settings from here; caller should update totals if needed
             return cities;
         }
 
@@ -339,7 +429,7 @@ namespace DynamicWin.Utils
                 .OrderBy(c => c.city)
                 .ToArray();
 
-            if (RegisterWeatherWidgetSettings.saveData.cityIndex < 0 || RegisterWeatherWidgetSettings.saveData.cityIndex >= cities.Length)
+            if (idx2 < 0 || idx2 >= cities.Length)
                 return string.Empty;
 
             var city = cities[idx2];

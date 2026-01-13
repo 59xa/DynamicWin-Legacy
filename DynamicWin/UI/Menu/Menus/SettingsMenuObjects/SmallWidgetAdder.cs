@@ -212,9 +212,9 @@ namespace DynamicWin.UI.Menu.Menus.SettingsMenuObjects
             var ctx = new System.Windows.Controls.ContextMenu();
             bool anyWidgetsLeft = false;
 
-            MenuItem left = new MenuItem() { Header = "Left" };
-            MenuItem middle = new MenuItem() { Header = "Middle" };
-            MenuItem right = new MenuItem() { Header = "Right" };
+            MenuItem left = new MenuItem() { Header = "Left", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/align-left.png") };
+            MenuItem middle = new MenuItem() { Header = "Middle", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/align-centre.png") };
+            MenuItem right = new MenuItem() { Header = "Right", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/align-right.png") };
 
             foreach (var availableWidget in Res.availableSmallWidgets)
             {

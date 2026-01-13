@@ -61,13 +61,13 @@ namespace DynamicWin.UI.Menu.Menus.SettingsMenuObjects
         {
             var ctx = new System.Windows.Controls.ContextMenu();
 
-            MenuItem remove = new MenuItem() { Header = "Remove" };
+            MenuItem remove = new MenuItem() { Header = "Remove", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/trash.png") };
             remove.Click += (x, y) => onEditRemoveWidget?.Invoke();
 
-            MenuItem pL = new MenuItem() { Header = "Push Left" };
+            MenuItem pL = new MenuItem() { Header = "Push Left", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/left.png") };
             pL.Click += (x, y) => onEditMoveWidgetLeft?.Invoke();
 
-            MenuItem pR = new MenuItem() { Header = "Push Right" };
+            MenuItem pR = new MenuItem() { Header = "Push Right", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/right.png") };
             pR.Click += (x, y) => onEditMoveWidgetRight?.Invoke();
 
             ctx.Items.Add(remove);

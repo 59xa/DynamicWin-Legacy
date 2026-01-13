@@ -189,8 +189,8 @@ namespace DynamicWin.UI.Menu.Menus
                     float progress = (float)(remaining.TotalSeconds / Math.Max(1.0, duration.TotalSeconds));
                     countdownProgress = Math.Clamp(progress, 0f, 1f);
 
-                    // Update ~10 times per second
-                    try { await Task.Delay(100, token); } catch (TaskCanceledException) { break; }
+                    // Update ~10 times per second using non-cancelable delay and cooperative cancellation checks
+                    await Task.Delay(100).ConfigureAwait(false);
                 }
 
                 if (!token.IsCancellationRequested)

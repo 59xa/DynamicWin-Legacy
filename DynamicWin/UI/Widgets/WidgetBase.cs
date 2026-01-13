@@ -2,6 +2,7 @@
 using DynamicWin.Utils;
 using SkiaSharp;
 using System.Windows.Controls;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace DynamicWin.UI.Widgets
@@ -45,13 +46,13 @@ namespace DynamicWin.UI.Widgets
 
             var ctx = new System.Windows.Controls.ContextMenu();
 
-            MenuItem remove = new MenuItem() { Header = "Remove" };
+            MenuItem remove = new MenuItem() { Header = "Remove", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/trash.png") };
             remove.Click += (x, y) => onEditRemoveWidget?.Invoke();
 
-            MenuItem pL = new MenuItem() { Header = "<- Push Left" };
+            MenuItem pL = new MenuItem() { Header = "Push Left", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/left.png") };
             pL.Click += (x, y) => onEditMoveWidgetLeft?.Invoke();
 
-            MenuItem pR = new MenuItem() { Header = "Push Right ->" };
+            MenuItem pR = new MenuItem() { Header = "Push Right", Icon = ContextMenuUtils.LoadMenuIcon("Resources/icons/context/right.png") };
             pR.Click += (x, y) => onEditMoveWidgetRight?.Invoke();
             
             ctx.Items.Add(remove);
@@ -148,7 +149,7 @@ namespace DynamicWin.UI.Widgets
                         _backgroundCts = null;
                         _backgroundTask = null;
                     }
-                }, token);
+                });
             }
             else
             {
@@ -181,12 +182,18 @@ namespace DynamicWin.UI.Widgets
             // Default: nothing heavy, but keep an awaitable loop so derived classes can override without re-implementing the loop
             try
             {
+                // Use a short non-cancelable delay to avoid throwing TaskCanceledException when the token is cancelled
+                // Checking the token between delays keeps shutdown responsive without generating exceptions
                 while (!token.IsCancellationRequested)
                 {
-                    await Task.Delay(1000, token).ConfigureAwait(false);
+                    await Task.Delay(200).ConfigureAwait(false);
                 }
             }
-            catch (OperationCanceledException) { /* swallow */ }
+            catch (Exception ex) when (!(ex is OperationCanceledException))
+            {
+                // Log unexpected exceptions but avoid noisy cancellation exceptions
+                System.Diagnostics.Debug.WriteLine("[WIDGET BASE] RunBackgroundAsync exception: " + ex);
+            }
         }
 
         /// <summary>

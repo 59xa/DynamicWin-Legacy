@@ -94,7 +94,27 @@ namespace DynamicWin.UI.Menu.Menus
                 size.Y = Math.Max(size.Y, sizeTogetherBiggest + topSpacing);
             }
 
-            if (!isWidgetMode) size.Y = 250;
+            // When not in widget mode (showing tray) use fixed height
+            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Tray) size.Y = 250;
+
+            // When Media view is active, ensure the island is large enough to contain the media panel
+            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Media)
+            {
+                // Keep in sync with the size used when rendering the media UIObject in Update()
+                float desiredMediaWidth = 420f;
+                float desiredMediaHeight = 100;
+
+                // Horizontal padding to give the media panel some inset from island edges
+                float horizontalPadding = 60f;
+
+                // Top container height (approximate) used by the top buttons
+                float topContainerHeight = 30f;
+
+                size.X = Math.Max(size.X, desiredMediaWidth + horizontalPadding);
+
+                // Add bCD (bottom container offset) + topContainerHeight + topSpacing to ensure vertical space
+                size.Y = desiredMediaHeight + bCD + topContainerHeight + topSpacing;
+            }
 
             return size;
         }
@@ -108,8 +128,14 @@ namespace DynamicWin.UI.Menu.Menus
 
         DWTextImageButton widgetButton;
         DWTextImageButton trayButton;
+        DWTextImageButton mediaButton;
 
         Tray tray;
+        MediaPlayer media;
+
+        // Enum to track which big menu is active
+        public enum BigMenuMode { Widgets, Tray, Media }
+        public BigMenuMode currentBigMenuMode = BigMenuMode.Widgets;
 
         public override List<UIObject> InitializeMenu(IslandObject island)
         {
@@ -152,6 +178,8 @@ namespace DynamicWin.UI.Menu.Menus
 
             widgetButton = new DWTextImageButton(topContainer, Resources.Res.Widgets, "Widgets", new Vec2(75 / 2 + 5, 0), new Vec2(75, 20), () =>
             {
+                // Switch to widgets view
+                currentBigMenuMode = BigMenuMode.Widgets;
                 isWidgetMode = true;
             },
             UIAlignment.MiddleLeft);
@@ -167,6 +195,8 @@ namespace DynamicWin.UI.Menu.Menus
 
             trayButton = new DWTextImageButton(topContainer, Resources.Res.Tray, "Tray", new Vec2(112.5f, 0), new Vec2(57.5f, 20), () =>
             {
+                // Switch to tray view
+                currentBigMenuMode = BigMenuMode.Tray;
                 isWidgetMode = false;
             },
             UIAlignment.MiddleLeft);
@@ -180,15 +210,30 @@ namespace DynamicWin.UI.Menu.Menus
 
             bigMenuItems.Add(trayButton);
 
+            mediaButton = new DWTextImageButton(topContainer, Resources.Res.PlayPause, "Media", new Vec2(158.5f + 20, 0), new Vec2(65, 20), () =>
+            {
+                // Switch to media view
+                currentBigMenuMode = BigMenuMode.Media;
+                isWidgetMode = false;
+            },
+            UIAlignment.MiddleLeft);
+            mediaButton.Text.alignment = UIAlignment.MiddleLeft;
+            mediaButton.Text.Anchor.X = 0;
+            mediaButton.Text.Position = new Vec2(28.5f, 0);
+            mediaButton.normalColor = Col.Transparent;
+            mediaButton.hoverColor = Col.Transparent;
+            mediaButton.clickColor = Theme.Primary.Override(a: 0.35f);
+            mediaButton.roundRadius = 25;
+
+            bigMenuItems.Add(mediaButton);
+
             var settingsButton = new DWImageButton(topContainer, Resources.Res.Settings, new Vec2(-20f, 0), new Vec2(20, 20), () =>
             {
                 MenuManager.OpenMenu(new SettingsMenu());
 
+#if DEBUG
                 System.Diagnostics.Debug.WriteLine("[HOME MENU] User opened Settings menu.");
-                RegisterWeatherWidgetSettings.saveData.isSettingsMenuOpen = true;
-
-                var _w = new WeatherAPI();
-                _ = _w.Fetch(0, "null", _ctk, _cts);
+#endif
             },
             UIAlignment.MiddleRight);
             settingsButton.normalColor = Col.Transparent;
@@ -204,6 +249,14 @@ namespace DynamicWin.UI.Menu.Menus
             };
             tray.SilentSetActive(false);
             bigMenuItems.Add(tray);
+
+            // Instantiate media UIObject so media.SetActive(...) won't NRE
+            media = new MediaPlayer(island, new Vec2(0, -topSpacing * 1.5f), Vec2.zero, UIAlignment.BottomCenter)
+            {
+                Anchor = new Vec2(0.5f, 0.8f)
+            };
+            media.SilentSetActive(false);
+            bigMenuItems.Add(media);
 
             // Get all widgets
 
@@ -283,19 +336,6 @@ namespace DynamicWin.UI.Menu.Menus
                 x.SilentSetActive(false);
                 });
 
-            // Initialize next and previous images
-            next = new DWImage(island, Resources.Res.Next, new Vec2(50, 0), new Vec2(30, 30), UIAlignment.Center)
-            {
-            };
-            next.SilentSetActive(false);
-            objects.Add(next);
-            
-            previous = new DWImage(island, Resources.Res.Previous, new Vec2(-50, 0), new Vec2(30, 30), UIAlignment.Center)
-            {
-            };
-            previous.SilentSetActive(false);
-            objects.Add(previous);
-
             return objects;
         }
 
@@ -306,25 +346,22 @@ namespace DynamicWin.UI.Menu.Menus
         public float bigWidgetsSpacing = 15;
         int maxBigWidgetInOneRow = 2;
 
-        public float smallWidgetsSpacing = 10;
-        public float middleWidgetsSpacing = 35;
+        public float smallWidgetsSpacing = 15f;
+        public float middleWidgetsSpacing = 70f;
 
-        float sCD = 35;
+        float sCD = 20; // Small widget padding (horizontal)
         float bCD = 50;
 
         public bool isWidgetMode = true;
 
         int cycle = 0;
 
+        // Reusable list to avoid per-frame allocations
+        private readonly List<WidgetBase> widgetsInOneLine = new List<WidgetBase>();
+
         public override void Update()
         {
-            tray.Size = new Vec2(topContainer.Size.X, IslandSizeBig().Y - bCD - topSpacing - topContainer.Size.Y / 2);
-
-            if(cycle % 32 == 0)
-            {
-                var count = Tray.FileCount;
-                trayButton.Text.Text = "Tray      " + (count > 0 ? count : "");
-            }
+            tray.Size = new Vec2(topContainer.Size.X, IslandSizeBig().Y - bCD - topSpacing - topContainer.Size.Y);
 
             // Enable / Disable small widgets
 
@@ -332,22 +369,26 @@ namespace DynamicWin.UI.Menu.Menus
             smallCenterWidgets.ForEach(x => x.SetActive(!RendererMain.Instance.MainIsland.IsHovering));
             smallRightWidgets.ForEach(x => x.SetActive(!RendererMain.Instance.MainIsland.IsHovering));
 
-            // Enable / Disable big widgets / Tray
+            // Enable / Disable big widgets / Tray / Media based on current mode
 
-            tray.SetActive(RendererMain.Instance.MainIsland.IsHovering && !isWidgetMode);
-            bigWidgets.ForEach(x => x.SetActive(RendererMain.Instance.MainIsland.IsHovering && isWidgetMode));
+            tray.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Tray);
+            media.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Media);
+            bigWidgets.ForEach(x => x.SetActive(RendererMain.Instance.MainIsland.IsHovering && currentBigMenuMode == BigMenuMode.Widgets));
             bigMenuItems.ForEach(x =>
             {
-                if(!(x is Tray))
+                // Skip activating the Tray and Media UIObjects here; they are controlled separately above
+                if (!(x is Tray) && !(x is MediaPlayer))
                 {
                     x.SetActive(RendererMain.Instance.MainIsland.IsHovering);
                 }
             });
 
-            widgetButton.normalColor = Col.Lerp(widgetButton.normalColor, isWidgetMode ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            trayButton.normalColor = Col.Lerp(trayButton.normalColor, (!isWidgetMode) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            widgetButton.hoverColor = Col.Lerp(widgetButton.hoverColor, isWidgetMode ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            trayButton.hoverColor = Col.Lerp(trayButton.hoverColor, (!isWidgetMode) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            widgetButton.normalColor = Col.Lerp(widgetButton.normalColor, (currentBigMenuMode == BigMenuMode.Widgets) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            trayButton.normalColor = Col.Lerp(trayButton.normalColor, (currentBigMenuMode == BigMenuMode.Tray) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            mediaButton.normalColor = Col.Lerp(mediaButton.normalColor, (currentBigMenuMode == BigMenuMode.Media) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            widgetButton.hoverColor = Col.Lerp(widgetButton.hoverColor, (currentBigMenuMode == BigMenuMode.Widgets) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            trayButton.hoverColor = Col.Lerp(trayButton.hoverColor, (currentBigMenuMode == BigMenuMode.Tray) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            mediaButton.hoverColor = Col.Lerp(mediaButton.normalColor, (currentBigMenuMode == BigMenuMode.Media) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
 
             RendererMain.Instance.MainIsland.LocalPosition.X = Mathf.Lerp(RendererMain.Instance.MainIsland.LocalPosition.X,
                 songLocalPosXAddition, 2f * RendererMain.Instance.DeltaTime);
@@ -401,19 +442,43 @@ namespace DynamicWin.UI.Menu.Menus
                     }
                 }
 
-                { // Center Small Widgets
-                    float centerStackPos = 0f;
-                    foreach (var smallCenter in smallCenterWidgets)
-                    {
-                        smallCenter.Anchor.X = 1;
-                        smallCenter.LocalPosition.X = centerStackPos;
+                float requiredCenterWidth = 0f;
+                foreach (var w in smallCenterWidgets)
+                {
+                    requiredCenterWidth += w.GetWidgetSize().X;
+                }
+                requiredCenterWidth += smallWidgetsSpacing * Math.Max(0, smallCenterWidgets.Count - 1);
 
-                        centerStackPos -= smallWidgetsSpacing + smallCenter.GetWidgetSize().X;
-                    }
+                float availableWidth = smallWidgetsContainer.Size.X;
 
-                    foreach (var smallCenter in smallCenterWidgets)
+                // Minimum spacing to prevent overlap (can be 0)
+                float safeSpacing = smallWidgetsSpacing;
+
+                if (requiredCenterWidth > availableWidth)
+                {
+                    // Reduce spacing but never go negative
+                    safeSpacing = Math.Max(
+                        0f,
+                        (availableWidth - requiredCenterWidth + smallWidgetsSpacing * (smallCenterWidgets.Count - 1))
+                        / Math.Max(1, smallCenterWidgets.Count - 1)
+                    );
+                }
+
+                { // Center Small Widgets (overlap-safe)
+                    float totalWidth = 0f;
+
+                    foreach (var w in smallCenterWidgets)
+                        totalWidth += w.GetWidgetSize().X;
+
+                    totalWidth += safeSpacing * Math.Max(0, smallCenterWidgets.Count - 1);
+
+                    float startX = -totalWidth / 2f;
+
+                    foreach (var w in smallCenterWidgets)
                     {
-                        smallCenter.LocalPosition.X -= centerStackPos / 2 + smallWidgetsSpacing;
+                        w.Anchor.X = 0.5f;
+                        w.LocalPosition.X = startX + w.GetWidgetSize().X / 2f;
+                        startX += w.GetWidgetSize().X + safeSpacing;
                     }
                 }
             }
@@ -425,9 +490,29 @@ namespace DynamicWin.UI.Menu.Menus
                 bigContainerSize -= bCD;
                 bigWidgetsContainer.Size = bigContainerSize;
 
+                // Ensure media UIObject has a valid size when activated so its Draw/Update layout isn't zero-sized
+                if (media != null)
+                {
+                    if (currentBigMenuMode == BigMenuMode.Media)
+                    {
+                        // Give media panel its own dedicated size (independent from widgets layout)
+                        float mediaWidth = 430f;
+                        float mediaHeight = 140f;
+                        media.Size = new Vec2(mediaWidth, mediaHeight);
+
+                        // Centre horizontally and keep it anchored near the bottom like before
+                        media.LocalPosition.X = 0f;
+                    }
+                    else
+                    {
+                        // For non-media modes keep the previous behavior so other views still work
+                        media.Size = bigContainerSize;
+                    }
+                }
+
                 { // Big Widgets
 
-                    List<WidgetBase> widgetsInOneLine = new List<WidgetBase>();
+                    widgetsInOneLine.Clear();
 
                     float lastBiggestY = 0f;
 
@@ -449,6 +534,13 @@ namespace DynamicWin.UI.Menu.Menus
                             widgetsInOneLine.Clear();
                             line++;
                         }
+                    }
+
+                    // If there are leftover widgets in the last row, center them as well
+                    if (widgetsInOneLine.Count > 0)
+                    {
+                        CenterWidgets(widgetsInOneLine, bigWidgetsContainer);
+                        widgetsInOneLine.Clear();
                     }
                 }
             }
@@ -473,7 +565,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             float offset = fullWidth / 2 - container.Size.X / 2 + bigWidgetsSpacing / 2;
 
-            for (int i = 0; i < widgets.Count; i++)
+            for (int i = 0; i< widgets.Count; i++)
             {
                 widgets[i].LocalPosition.X -= offset;
             }

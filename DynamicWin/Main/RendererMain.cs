@@ -23,6 +23,11 @@ namespace DynamicWin.Main
         public IslandObject MainIsland => islandObject;
         private List<UIObject> objects => MenuManager.Instance.ActiveMenu.UiObjects;
 
+        // Shadow mask for island
+        private BottomMask? islandShadow;
+        private bool lastIslandShadowSetting = Settings.ToggleIslandShadow;
+        private bool lastShadowState = false; // Tracks whether shadow was active last frame
+
         public static Vec2 ScreenDimensions => new Vec2(MainForm.Instance.Width, MainForm.Instance.Height);
         public static Vec2 CursorPosition => new Vec2(Mouse.GetPosition(MainForm.Instance).X, Mouse.GetPosition(MainForm.Instance).Y);
 
@@ -54,6 +59,9 @@ namespace DynamicWin.Main
             instance = this;
             islandObject = new IslandObject();
             m.Init();
+
+            // Determine whether island shadow should exist on startup
+            UpdateIslandShadowState();
 
             initialScreenBrightness = BrightnessAdjustMenu.GetBrightness();
             KeyHandler.onKeyDown += OnKeyRegistered;
@@ -161,6 +169,14 @@ namespace DynamicWin.Main
 
             MainForm.Instance.MouseWheel -= MainForm.Instance.OnScroll;
 
+            // Dispose island shadow if present
+            try
+            {
+                islandShadow?.DestroyCall();
+                islandShadow = null;
+            }
+            catch { }
+
             instance = null;
         }
 
@@ -183,7 +199,7 @@ namespace DynamicWin.Main
             {
                 if (MenuManager.Instance.ActiveMenu is HomeMenu)
                 {
-                    MenuManager.OpenOverlayMenu(new VolumeAdjustMenu(), 2.75f, Res.HomeMenu);
+                    MenuManager.OpenOverlayMenu(new VolumeAdjustMenu(), 2.75f);
                 }
                 else if (VolumeAdjustMenu.timerUntilClose != null)
                 {
@@ -222,7 +238,7 @@ namespace DynamicWin.Main
                 initialScreenBrightness = BrightnessAdjustMenu.GetBrightness();
                 if (MenuManager.Instance.ActiveMenu is HomeMenu)
                 {
-                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu(), 2.75f, Res.HomeMenu);
+                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu());
                 }
                 else if (BrightnessAdjustMenu.timerUntilClose != null)
                 {
@@ -261,6 +277,27 @@ namespace DynamicWin.Main
 
             islandObject.UpdateCall(DeltaTime);
 
+            bool shouldRenderShadow = Settings.ToggleIslandShadow;
+
+            // Disable shadow for HomeMenu if setting is off and island not hovered
+            if (MenuManager.Instance.ActiveMenu is HomeMenu && !Settings.ToggleHomeMenuShadow && !MainIsland.IsHovering)
+            {
+                shouldRenderShadow = false;
+            }
+
+            if (shouldRenderShadow != lastShadowState)
+            {
+                lastShadowState = shouldRenderShadow;
+
+                if (shouldRenderShadow)
+                    CreateIslandShadow();
+                else
+                    DestroyIslandShadow();
+            }
+
+            // Update island shadow to follow island
+            islandShadow?.UpdateCall(DeltaTime);
+
             if (MainIsland.hidden) return;
 
             // Take a stable snapshot of the menu object list to avoid InvalidOperationException
@@ -291,6 +328,12 @@ namespace DynamicWin.Main
             canvas.Scale((float)dpiFactor, (float)dpiFactor);
 
             canvasWithoutClip = canvas.Save();
+
+            // Draw island shadow first (so it sits behind island)
+            if (Settings.ToggleIslandShadow && islandShadow != null)
+            {
+                try { islandShadow.DrawCall(canvas); } catch { }
+            }
 
             if (islandObject.maskInToIsland) Mask(canvas);
             islandObject.DrawCall(canvas);
@@ -349,6 +392,50 @@ namespace DynamicWin.Main
             if (!hasContextMenu) ContextMenu = null;
 
             canvas.Flush();
+        }
+
+        private void UpdateIslandShadowState()
+        {
+            bool shouldRenderShadow = Settings.ToggleIslandShadow;
+
+            // Disable shadow for HomeMenu if setting is off and island not hovered
+            if (MenuManager.Instance?.ActiveMenu is HomeMenu && !Settings.ToggleHomeMenuShadow && !MainIsland.IsHovering)
+            {
+                shouldRenderShadow = false;
+            }
+
+            lastShadowState = shouldRenderShadow;
+
+            if (shouldRenderShadow)
+                CreateIslandShadow();
+            else
+                DestroyIslandShadow();
+        }
+
+        private void CreateIslandShadow()
+        {
+            try
+            {
+                islandShadow = new BottomMask(null, islandObject);
+                islandShadow.shadowStrength = 20f;
+                islandShadow.padding = 2f;
+                islandShadow.alpha = 0.6f;
+                islandShadow.roundRadius = islandObject.roundRadius;
+            }
+            catch
+            {
+                islandShadow = null;
+            }
+        }
+
+        private void DestroyIslandShadow()
+        {
+            try
+            {
+                islandShadow?.DestroyCall();
+            }
+            catch { }
+            islandShadow = null;
         }
 
         private void Mask(SKCanvas canvas)

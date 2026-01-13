@@ -43,6 +43,10 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.AllowBlur = allowBlur.IsChecked;
             Settings.AllowAnimation = allowAnimation.IsChecked;
             Settings.AntiAliasing = antiAliasing.IsChecked;
+            Settings.ToggleHighRefreshRate = toggleHighRefreshRate.IsChecked;
+            Settings.LimitRefreshRateWhenIdle = limitRefreshRateWhenIdle != null && limitRefreshRateWhenIdle.IsChecked;
+            Settings.ToggleIslandShadow = toggleIslandShadow.IsChecked;
+            Settings.ToggleHomeMenuShadow = toggleHomeMenuShadow.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
 
@@ -69,6 +73,12 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox antiAliasing;
         DWCheckbox runOnStartup;
         DWCheckbox allowAutomaticUpdates;
+        DWCheckbox toggleIslandShadow;
+        DWCheckbox toggleHomeMenuShadow;
+        DWCheckbox toggleHighRefreshRate;
+        DWCheckbox limitRefreshRateWhenIdle;
+
+        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2;
 
         UIObject bottomMask;
 
@@ -121,6 +131,125 @@ namespace DynamicWin.UI.Menu.Menus
             antiAliasing.IsChecked = Settings.AntiAliasing;
             antiAliasing.Anchor.X = 0;
             objects.Add(antiAliasing);
+
+            refreshRateDisclaimer1 = new DWText(island, "Enables application to run at the highest refresh rate supported by your monitor.", new Vec2(25, 0), UIAlignment.TopLeft);
+            refreshRateDisclaimer1.Font = Res.SatoshiRegular;
+            refreshRateDisclaimer1.TextSize = 12;
+            refreshRateDisclaimer1.Anchor.X = 0;
+
+            refreshRateDisclaimer2 = new DWText(island, "This setting will cause performance degradation on some devices, proceed with caution.", new Vec2(25, 0), UIAlignment.TopLeft);
+            refreshRateDisclaimer2.Font = Res.SatoshiRegular;
+            refreshRateDisclaimer2.TextSize = 12;
+            refreshRateDisclaimer2.Anchor.X = 0;
+
+            toggleHighRefreshRate = new DWCheckbox(
+                island,
+                "Toggle high-refresh-rate mode",
+                new Vec2(25, 0),
+                new Vec2(25, 25),
+                () =>
+                {
+                    bool enabled = toggleHighRefreshRate.IsChecked;
+
+                    limitRefreshRateWhenIdle.IsEnabled = enabled;
+                    limitRefreshRateDisclaimer1.IsEnabled = enabled;
+                    limitRefreshRateDisclaimer2.IsEnabled = enabled;
+
+                    if (!enabled)
+                    {
+                        limitRefreshRateWhenIdle.IsChecked = false;
+                        Settings.LimitRefreshRateWhenIdle = false;
+                    }
+                },
+                UIAlignment.TopLeft
+            );
+            toggleHighRefreshRate.IsChecked = Settings.ToggleHighRefreshRate;
+            toggleHighRefreshRate.Anchor.X = 0;
+
+            objects.Add(refreshRateDisclaimer1);
+            objects.Add(refreshRateDisclaimer2);
+            objects.Add(toggleHighRefreshRate);
+
+            limitRefreshRateWhenIdle = new DWCheckbox(
+                island,
+                "Limit refresh rate when idle",
+                new Vec2(65, 0),
+                new Vec2(25, 25),
+                () => { },
+                UIAlignment.TopLeft
+            );
+            limitRefreshRateWhenIdle.IsChecked = Settings.LimitRefreshRateWhenIdle;
+            limitRefreshRateWhenIdle.Anchor.X = 0;
+
+            limitRefreshRateDisclaimer1 = new DWText(
+                island,
+                "Renders the application at 60 hertz when not hovered.",
+                new Vec2(65, 0),
+                UIAlignment.TopLeft
+            )
+            {
+                Font = Res.SatoshiRegular,
+                TextSize = 12,
+                Anchor = new Vec2(0, 0)
+            };
+
+            limitRefreshRateDisclaimer2 = new DWText(
+                island,
+                "Toggle this setting to improve some of the performance usage.",
+                new Vec2(65, 0),
+                UIAlignment.TopLeft
+            )
+            {
+                Font = Res.SatoshiRegular,
+                TextSize = 12,
+                Anchor = new Vec2(0, 0)
+            };
+
+            objects.Add(limitRefreshRateDisclaimer1);
+            objects.Add(limitRefreshRateDisclaimer2);
+            objects.Add(limitRefreshRateWhenIdle);
+
+            bool enableRefreshRateSubSettings = toggleHighRefreshRate.IsChecked;
+
+            limitRefreshRateWhenIdle.IsEnabled = enableRefreshRateSubSettings;
+            limitRefreshRateDisclaimer1.IsEnabled = enableRefreshRateSubSettings;
+            limitRefreshRateDisclaimer2.IsEnabled = enableRefreshRateSubSettings;
+
+            toggleIslandShadow = new DWCheckbox(
+                island, 
+                "Toggle island shadow", 
+                new Vec2(25, 0), 
+                new Vec2(25, 25), 
+                () => 
+                {
+                    bool enabled = toggleIslandShadow.IsChecked;
+
+                    toggleHomeMenuShadow.IsEnabled = enabled;
+                    if (!enabled)
+                    {
+                        toggleHomeMenuShadow.IsChecked = false;
+                        Settings.ToggleHomeMenuShadow = false;
+                    }
+                }, 
+                UIAlignment.TopLeft);
+            toggleIslandShadow.IsChecked = Settings.ToggleIslandShadow;
+            toggleIslandShadow.Anchor.X = 0;
+            objects.Add(toggleIslandShadow);
+
+            toggleHomeMenuShadow = new DWCheckbox(
+                island, 
+                "Toggle home menu shadow when idle", 
+                new Vec2(65, 0), 
+                new Vec2(25, 25), 
+                () => { }, 
+                UIAlignment.TopLeft);
+            toggleHomeMenuShadow.IsChecked = Settings.ToggleHomeMenuShadow;
+            toggleHomeMenuShadow.Anchor.X = 0;
+            objects.Add(toggleHomeMenuShadow);
+
+            bool enableIslandShadowSubSettings = toggleIslandShadow.IsChecked;
+
+            toggleHomeMenuShadow.IsEnabled = enableIslandShadowSubSettings;
 
             runOnStartup = new DWCheckbox(island, "Start application on login", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             runOnStartup.IsChecked = Settings.RunOnStartup;
@@ -325,7 +454,7 @@ namespace DynamicWin.UI.Menu.Menus
             checkForUpdateBtn.Anchor.X = 0;
             objects.Add(checkForUpdateBtn);
 
-            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream})", new Vec2(25, -15), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream.ToFriendlyString()})", new Vec2(25, -15), UIAlignment.TopLeft)
             {
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),
