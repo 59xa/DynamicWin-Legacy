@@ -79,9 +79,13 @@ namespace DynamicWin.Utils
         public float peakFallRate = 6.0f;
         public float outputBoost = 1.0f;
 
-        private volatile byte[]? cachedThumbnailBytes;
-        private SKImage? cachedThumbnailImage; // Keep decoded image cached to avoid per-frame decode/encode
-        private SKImage? previousThumbnailImage;
+        // Thumbnail data
+        private volatile byte[]? cachedThumbnailBytes; // latest encoded bytes known to the object
+        private volatile byte[]? pendingThumbnailBytes; // bytes awaiting decode (set by events)
+        private SKImage? cachedThumbnailImage; // decoded image used for drawing (owned)
+        private SKImage? previousThumbnailImage; // previous decoded image for crossfade
+        private bool thumbnailDirty = false; // indicates pendingThumbnailBytes differs from cached
+        private DateTime lastDecodeTime = DateTime.MinValue;
         private float thumbnailFade = 3f;
         public float ThumbnailFadeDuration { get; set; } = 0.35f;
         private readonly object thumbLock = new object();
@@ -153,43 +157,25 @@ namespace DynamicWin.Utils
             // Precompute FFT bin mapping
             InitBarBinMapping(capture?.WaveFormat.SampleRate ?? 44100f);
 
-            // Subscribe to central thumbnail service if using thumbnail background
+            // Subscribe to central thumbnail service. Only capture bytes in event handlers to avoid
+            // creating Skia objects on background threads which can cause native crashes.
             MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
 
-            // Prime thumbnail cache from central service instead of fetching directly
+            // Prime thumbnail cache from central service using bytes if available. Avoid creating SKImage here.
             try
             {
-                var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                if (bmp != null)
+                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                if (bytes != null && bytes.Length > 0)
                 {
                     lock (thumbLock)
                     {
-                        cachedThumbnailImage?.Dispose();
-                        // Keep an owned copy of the service bitmap for later cloning in Draw
-                        cachedThumbnailImage = SKImage.FromBitmap(bmp);
-                        cachedThumbnailBytes = null;
+                        cachedThumbnailBytes = (byte[])bytes.Clone();
+                        pendingThumbnailBytes = cachedThumbnailBytes;
+                        thumbnailDirty = true;
                         thumbnailFade = 0f;
+                        lastDecodeTime = DateTime.MinValue;
                     }
-                }
-                else
-                {
-                    // Try to get cached bytes from the central service
-                    try
-                    {
-                        var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
-                        if (bytes != null && bytes.Length > 0)
-                        {
-                            lock (thumbLock)
-                            {
-                                cachedThumbnailBytes = (byte[])bytes.Clone();
-                                cachedThumbnailImage?.Dispose();
-                                cachedThumbnailImage = null;
-                                thumbnailFade = 0f;
-                            }
-                        }
-                    }
-                    catch { }
                 }
             }
             catch { }
@@ -215,17 +201,13 @@ namespace DynamicWin.Utils
         {
             try
             {
+                // Only capture raw bytes and mark dirty. Avoid creating or disposing SKImage here.
                 lock (thumbLock)
                 {
-                    // Move current → previous
-                    if (cachedThumbnailImage != null)
-                    {
-                        previousThumbnailImage?.Dispose();
-                        previousThumbnailImage = cachedThumbnailImage;
-                    }
-
-                    cachedThumbnailBytes = m?.ThumbnailData;
-                    cachedThumbnailImage = null; // Will be recreated lazily on next Draw
+                    pendingThumbnailBytes = m?.ThumbnailData != null ? (byte[])m.ThumbnailData.Clone() : null;
+                    // Update cached bytes reference so Draw sees latest available
+                    cachedThumbnailBytes = pendingThumbnailBytes;
+                    thumbnailDirty = true;
                     thumbnailFade = 0f;
                 }
             }
@@ -241,29 +223,15 @@ namespace DynamicWin.Utils
                     // If there is no media and no bytes, clear cache to avoid showing stale images
                     if (e.Media == null && (e.ThumbnailBytes == null || e.ThumbnailBytes.Length == 0))
                     {
+                        pendingThumbnailBytes = null;
                         cachedThumbnailBytes = null;
-                        cachedThumbnailImage?.Dispose();
-                        cachedThumbnailImage = null;
+                        thumbnailDirty = true;
                         return;
                     }
 
-                    cachedThumbnailBytes = e.ThumbnailBytes;
-                    // Dispose existing image - will be recreated on UI thread in Draw
-                    cachedThumbnailImage?.Dispose();
-                    cachedThumbnailImage = null;
-
-                    // If service provides decoded bitmap, we can use it; otherwise we'll decode bytes on UI thread
-                    var bmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                    if (bmp != null)
-                    {
-                        try
-                        {
-                            // Create SKImage from bitmap clone to own it safely
-                            var img = SKImage.FromBitmap(bmp);
-                            cachedThumbnailImage = img;
-                        }
-                        catch { cachedThumbnailImage = null; }
-                    }
+                    pendingThumbnailBytes = e.ThumbnailBytes != null ? (byte[])e.ThumbnailBytes.Clone() : null;
+                    cachedThumbnailBytes = pendingThumbnailBytes;
+                    thumbnailDirty = true;
                 }
             }
             catch { }
@@ -297,6 +265,7 @@ namespace DynamicWin.Utils
                 cachedThumbnailImage?.Dispose();
                 cachedThumbnailImage = null;
                 cachedThumbnailBytes = null;
+                pendingThumbnailBytes = null;
                 previousThumbnailImage?.Dispose();
                 previousThumbnailImage = null;
             }
@@ -319,6 +288,7 @@ namespace DynamicWin.Utils
                     thumbnailFade = 1f;
                     lock (thumbLock)
                     {
+                        // previousThumbnailImage disposed after fade completes
                         previousThumbnailImage?.Dispose();
                         previousThumbnailImage = null;
                     }
@@ -495,32 +465,80 @@ namespace DynamicWin.Utils
 
             if (UseThumbnailBackground)
             {
-                // Get or create decoded image once per frame (cached)
+                // Throttle decode operations to avoid CPU spike when songs change quickly.
+                // Only decode if there's a pending change and the fetch interval has elapsed.
+                byte[]? bytesToDecode = null;
+                bool shouldDecode = false;
+                DateTime now = DateTime.UtcNow;
+
                 lock (thumbLock)
                 {
-                    if (cachedThumbnailImage != null)
+                    // If a new pending byte array exists and we haven't decoded it yet, or cached is null
+                    if (thumbnailDirty && pendingThumbnailBytes != null)
                     {
-                        thumbnailImage = cachedThumbnailImage;
+                        // Allow immediate decode only if enough time passed since last decode to avoid spikes
+                        if ((now - lastDecodeTime).TotalSeconds >= ThumbnailFetchInterval || cachedThumbnailImage == null)
+                        {
+                            bytesToDecode = (byte[])pendingThumbnailBytes.Clone();
+                            // Mark as not dirty until we actually finish decoding
+                            thumbnailDirty = false;
+                            shouldDecode = true;
+                        }
                     }
-                    else if (cachedThumbnailBytes != null && cachedThumbnailBytes.Length > 0)
+                    else if (cachedThumbnailImage == null && pendingThumbnailBytes != null && (now - lastDecodeTime).TotalSeconds >= ThumbnailFetchInterval)
                     {
-                        try
-                        {
-                            using var bmp = SKBitmap.Decode(cachedThumbnailBytes);
-                            if (bmp != null)
-                            {
-                                cachedThumbnailImage = SKImage.FromBitmap(bmp);
-                                thumbnailImage = cachedThumbnailImage;
-                                // Keep cachedThumbnailBytes intact in case service needs it; we created image once
-                            }
-                        }
-                        catch
-                        {
-                            thumbnailImage = null;
-                        }
+                        bytesToDecode = (byte[])pendingThumbnailBytes.Clone();
+                        thumbnailDirty = false;
+                        shouldDecode = true;
                     }
 
+                    // Provide references for drawing (won't be disposed here)
+                    thumbnailImage = cachedThumbnailImage;
                     prevThumb = previousThumbnailImage;
+                }
+
+                if (shouldDecode && bytesToDecode != null && bytesToDecode.Length > 0)
+                {
+                    // Decode outside lock to avoid blocking event handlers. If decode fails, keep previous image.
+                    SKImage? newImage = null;
+                    try
+                    {
+                        using var bmp = SKBitmap.Decode(bytesToDecode);
+                        if (bmp != null)
+                        {
+                            newImage = SKImage.FromBitmap(bmp);
+                        }
+                    }
+                    catch
+                    {
+                        newImage = null;
+                    }
+
+                    lock (thumbLock)
+                    {
+                        lastDecodeTime = DateTime.UtcNow;
+
+                        if (newImage != null)
+                        {
+                            // Move current cached to previous for crossfade and set new cached image
+                            if (cachedThumbnailImage != null)
+                            {
+                                previousThumbnailImage?.Dispose();
+                                previousThumbnailImage = cachedThumbnailImage;
+                            }
+
+                            cachedThumbnailImage = newImage;
+                            cachedThumbnailBytes = (byte[])bytesToDecode.Clone();
+                            thumbnailFade = 0f;
+
+                            thumbnailImage = cachedThumbnailImage;
+                            prevThumb = previousThumbnailImage;
+                        }
+                        else
+                        {
+                            // Decoding failed, nothing to do; keep existing images
+                        }
+                    }
                 }
             }
 
@@ -680,6 +698,7 @@ namespace DynamicWin.Utils
                 cachedThumbnailImage?.Dispose();
                 cachedThumbnailImage = null;
                 cachedThumbnailBytes = null;
+                pendingThumbnailBytes = null;
                 previousThumbnailImage?.Dispose();
                 previousThumbnailImage = null;
             }
