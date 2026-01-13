@@ -16,7 +16,7 @@ using Windows.Media.Control;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          11 January 2026
+ *   Last Modified:          12 January 2026
  *
  */
 
@@ -855,22 +855,39 @@ namespace DynamicWin.UI.UIElements.Custom
 
                 SKBitmap? newBmp = null;
                 ulong? newFp = null;
-                if (bytes != null && bytes.Length > 0)
+
+                // Prefer using the central service decoded bitmap if available to avoid re-decoding bytes repeatedly
+                var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                if (svcBmp != null)
+                {
+                    try
+                    {
+                        var clone = new SKBitmap(svcBmp.Info);
+                        svcBmp.CopyTo(clone);
+                        newBmp = clone;
+                        newFp = ComputeFingerprint(newBmp);
+                    }
+                    catch
+                    {
+                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } newBmp = null; }
+                        newFp = null;
+                    }
+                }
+                else if (bytes != null && bytes.Length > 0)
                 {
                     try
                     {
                         using var ms = new SKMemoryStream(bytes);
-                        newBmp = SKBitmap.Decode(ms);
-                        if (newBmp != null)
-                        {
-                            newFp = ComputeFingerprint(newBmp);
-                        }
+                        var decoded = SKBitmap.Decode(ms);
+                        newBmp = decoded;
+                        if (newBmp != null) newFp = ComputeFingerprint(newBmp);
                     }
                     catch (Exception ex)
                     {
 #if DEBUG
                         Debug.WriteLine("Thumbnail decode in service handler failed: " + ex.Message);
 #endif
+                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
                         newBmp = null;
                         newFp = null;
                     }
@@ -1091,7 +1108,20 @@ namespace DynamicWin.UI.UIElements.Custom
                             ulong? newFp = null;
                             try
                             {
-                                if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
+                                // Prefer using service-decoded bitmap to avoid duplicate decoding when thumbnail service is active
+                                var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
+                                if (svcBmp != null)
+                                {
+                                    try
+                                    {
+                                        var clone = new SKBitmap(svcBmp.Info);
+                                        svcBmp.CopyTo(clone);
+                                        newBmp = clone;
+                                        newFp = ComputeFingerprint(newBmp);
+                                    }
+                                    catch { if (newBmp != null) { try { newBmp.Dispose(); } catch { } newBmp = null; } newFp = null; }
+                                }
+                                else if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
                                 {
                                     using var ms = new MemoryStream(media.ThumbnailData);
                                     newBmp = SKBitmap.Decode(ms);
@@ -1103,6 +1133,10 @@ namespace DynamicWin.UI.UIElements.Custom
 #if DEBUG
                                 Debug.WriteLine("Thumbnail decode failed: " + ex.Message);
 #endif
+                                if (newBmp != null)
+                                {
+                                    try { newBmp.Dispose(); } catch { }
+                                }
                                 newBmp = null;
                                 newFp = null;
                             }
