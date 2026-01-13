@@ -102,7 +102,7 @@ namespace DynamicWin.Main
                     smallWidgetsRight.Add("DynamicWin.UI.Widgets.Small.RegisterSmallVisualiserWidget");
                     smallWidgetsLeft.Add("DynamicWin.UI.Widgets.Small.RegisterMediaThumbnailWidget");
                     bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterWeatherWidget");
-                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterActiveTimerWidget");
+                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterTimerWidget");
 
                     IslandMode = IslandObject.IslandMode.Island;
                     AllowBlur = true;
