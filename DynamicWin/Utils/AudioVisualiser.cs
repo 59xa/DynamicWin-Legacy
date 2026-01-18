@@ -604,7 +604,7 @@ namespace DynamicWin.Utils
                     // Create gradient placement
                     using var paintBar = new SKPaint
                     {
-                        IsAntialias = true,
+                        IsAntialias = Settings.AntiAliasing,
                         Shader = SKShader.CreateLinearGradient(
                             new SKPoint(rect.Left, rect.Bottom),
                             new SKPoint(rect.Left, rect.Top),
@@ -641,7 +641,7 @@ namespace DynamicWin.Utils
                 {
                     using var paint = new SKPaint
                     {
-                        IsAntialias = true,
+                        IsAntialias = Settings.AntiAliasing,
                         FilterQuality = SKFilterQuality.High,
                         Color = SKColors.White.WithAlpha((byte)(alpha * 255)),
                         ImageFilter = SKImageFilter.CreateBlur(ThumbnailBlurAmount, ThumbnailBlurAmount)
