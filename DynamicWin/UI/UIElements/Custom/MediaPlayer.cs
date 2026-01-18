@@ -1356,10 +1356,10 @@ namespace DynamicWin.UI.UIElements.Custom
                     // Clip to squircle
                     var localPath = BuildSuperellipsePath(localRect, n: 4f, stepsPerQuarter: 10);
                     canvas.Save();
-                    canvas.ClipPath(localPath, antialias: true);
+                    canvas.ClipPath(localPath, antialias: Settings.AntiAliasing);
 
                     var paint = GetPaint();
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
@@ -1374,7 +1374,7 @@ namespace DynamicWin.UI.UIElements.Custom
                         // Placeholder
                         using (var p = GetPaint())
                         {
-                            p.IsAntialias = true;
+                            p.IsAntialias = Settings.AntiAliasing;
                             p.IsStroke = false;
                             p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
                             p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
@@ -1392,7 +1392,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     using (var borderPaint = GetPaint())
                     {
                         borderPaint.IsStroke = true;
-                        borderPaint.IsAntialias = true;
+                        borderPaint.IsAntialias = Settings.AntiAliasing;
                         borderPaint.StrokeWidth = 1.0f;
                         borderPaint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
                         canvas.DrawPath(squirclePath, borderPaint);
@@ -1402,10 +1402,10 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     // Not flipping: draw normally clipped to squircle
                     canvas.Save();
-                    canvas.ClipPath(squirclePath, antialias: true);
+                    canvas.ClipPath(squirclePath, antialias: Settings.AntiAliasing);
 
                     var paint = GetPaint();
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
@@ -1418,7 +1418,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     {
                         using (var p = GetPaint())
                         {
-                            p.IsAntialias = true;
+                            p.IsAntialias = Settings.AntiAliasing;
                             p.IsStroke = false;
                             p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
                             p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
@@ -1434,7 +1434,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     using (var borderPaint = GetPaint())
                     {
                         borderPaint.IsStroke = true;
-                        borderPaint.IsAntialias = true;
+                        borderPaint.IsAntialias = Settings.AntiAliasing;
                         borderPaint.StrokeWidth = 1.0f;
                         borderPaint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
                         canvas.DrawPath(squirclePath, borderPaint);
@@ -1477,7 +1477,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     // Draw scrolling text
                     canvas.Save();
                     // Clip to visible width
-                    canvas.ClipRect(SKRect.Create(textX, textY, maxWidth, titlePaint.TextSize + 2f), antialias: true);
+                    canvas.ClipRect(SKRect.Create(textX, textY, maxWidth, titlePaint.TextSize + 2f), antialias: Settings.AntiAliasing);
 
                     float xPos = textX - titleScrollOffset;
                     canvas.DrawText(fullTitleText, xPos, textY + titlePaint.TextSize, titlePaint);
@@ -1519,7 +1519,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 using (var paint = GetPaint())
                 {
                     paint.IsStroke = false;
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.Color = timelineBgColor;
                     canvas.DrawRoundRect(SKRect.Create(barX, barY, barWidth, timelineHeight), timelineHeight / 2f, timelineHeight / 2f, paint);
                 }
@@ -1530,7 +1530,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 using (var paint = GetPaint())
                 {
                     paint.IsStroke = false;
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.Color = GetColor(timelineFgColor).Value();
                     float fillWidth = barWidth * displayFill;
                     canvas.DrawRoundRect(SKRect.Create(barX, barY + barYOffset, fillWidth, drawTimelineHeight), drawTimelineHeight / 2f, drawTimelineHeight / 2f, paint);
@@ -1560,7 +1560,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 using (var paint = GetPaint())
                 {
                     paint.IsStroke = false;
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.Color = GetColor(timelineTextColor).Value();
                     paint.TextSize = timelineTextSize;
                     paint.Typeface = Resources.Res.SatoshiRegular;
