@@ -12,7 +12,7 @@ namespace DynamicWin.UI.UIElements.Custom
     {
         public DropFileElement(UIObject? parent, Vec2 position, Vec2 size, string displayText = "Drop Files to Tray", int tSize = 24, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
-            roundRadius = 25;
+            roundRadius = 50;
 
             AddLocalObject(new DWText(null, displayText, Vec2.zero, UIAlignment.Center) { Font = Resources.Res.SatoshiBold, TextSize = tSize });
         }
@@ -29,7 +29,13 @@ namespace DynamicWin.UI.UIElements.Custom
         public override void Draw(SKCanvas canvas)
         {
             var paint = GetPaint();
-            var rect = GetRect();
+
+            // Stroke path (outer border)
+            var outerPath = BuildSuperellipsePath(
+                GetRawRect(),
+                radius: roundRadius,
+                t: 1.0f
+            );
 
             float[] intervals = { 10, 10 };
             paint.PathEffect = SKPathEffect.CreateDash(intervals, 0f);
@@ -40,15 +46,18 @@ namespace DynamicWin.UI.UIElements.Custom
             paint.StrokeWidth = 2f;
 
             paint.Color = GetColor(Theme.Primary).Value();
+            canvas.DrawPath(outerPath, paint);
 
-            canvas.DrawRoundRect(rect, paint);
-
-            paint.Color = GetColor(currentCol).Value();
+            // Fill path (inner content)
             paint.IsStroke = false;
+            paint.PathEffect = null;
+            paint.Color = GetColor(currentCol).Value();
 
-            rect.Deflate(10, 10);
-
-            canvas.DrawRoundRect(rect, paint);
+            // Shrink for inner path
+            var innerRect = GetRawRect();
+            innerRect.Inflate(-10, -10); // Deflate for padding
+            var innerPath = BuildSuperellipsePath(innerRect, radius: roundRadius - 10, t: 1.0f);
+            canvas.DrawPath(innerPath, paint);
         }
     }
 }

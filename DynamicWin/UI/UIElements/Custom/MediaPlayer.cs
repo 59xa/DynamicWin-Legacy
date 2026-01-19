@@ -592,7 +592,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 float btnSpacing = 8f;
                 float buttonsTotal = btnSize * 3f + btnSpacing * 2f;
                 // Place buttons directly to the right of the thumbnail (closer to thumbnail)
-                float startXLocal = thumbRect.Right - rect.Left - 25f; // 25px gap from thumbnail
+                float startXLocal = thumbRect.Right - rect.Left - 45f; // Gap from thumbnail
                 float btnY = buttonsYOffset;
 
                 if (btnPrev != null) btnPrev.LocalPosition = new Vec2(startXLocal, btnY);
@@ -1332,7 +1332,7 @@ namespace DynamicWin.UI.UIElements.Custom
             SKBitmap? prevBmp = previousBitmap;
 
             // Build squircle path for thumbnail
-            var squirclePath = BuildSuperellipsePath(thumbRect, n: 4f, stepsPerQuarter: 18);
+            var squirclePath = BuildSuperellipsePath(thumbRect, 30f, 1f);
 
             // Draw thumbnail with animation transforms
             try
@@ -1354,7 +1354,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     var localRect = SKRect.Create(-thumbSize / 2f, -thumbSize / 2f, thumbSize, thumbSize);
 
                     // Clip to squircle
-                    var localPath = BuildSuperellipsePath(localRect, n: 4f, stepsPerQuarter: 10);
+                    var localPath = BuildSuperellipsePath(localRect, 30f, 1f);
                     canvas.Save();
                     canvas.ClipPath(localPath, antialias: Settings.AntiAliasing);
 

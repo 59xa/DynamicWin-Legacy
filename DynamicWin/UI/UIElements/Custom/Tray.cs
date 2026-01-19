@@ -241,16 +241,16 @@ namespace DynamicWin.UI.UIElements.Custom
         }
 
         public override void Draw(SKCanvas canvas)
-        {            
-            var rect = GetRect();
-            rect.Inflate(25, 0);
+        {
+            SKRect rect = GetRawRect();
+            rect.Inflate(-5, -5);
 
-            if(fileObjects.Count <= 0)
+            if (fileObjects.Count <= 0)
             {
                 var paint = GetPaint();
 
-                var placeRect = new SKRoundRect(SKRect.Create(Position.X, Position.Y, Size.X, Size.Y), 25);
-                placeRect.Deflate(5, 5);
+
+                var path = BuildSuperellipsePath(rect, 45f, 1f);
 
                 float[] intervals = { 10, 10 };
                 paint.PathEffect = SKPathEffect.CreateDash(intervals, 0f);
@@ -260,19 +260,20 @@ namespace DynamicWin.UI.UIElements.Custom
                 paint.StrokeJoin = SKStrokeJoin.Round;
                 paint.StrokeWidth = 2f;
 
-                paint.Color = GetColor(Theme.IslandBackground.Inverted().Override(a: 0.1f)).Value();
+                paint.Color = GetColor(
+                    Theme.IslandBackground
+                        .Inverted()
+                        .Override(a: 0.1f)
+                ).Value();
 
-                canvas.DrawRoundRect(placeRect, paint);
-
-                /*paint.Color = GetColor(Theme.Secondary).Value();
-                paint.IsStroke = false;
-
-                placeRect.Deflate(10, 10);
-
-                canvas.DrawRoundRect(placeRect, paint);*/
+                canvas.DrawPath(path, paint);
             }
 
-            canvas.ClipRoundRect(rect, antialias: true);
+            var clipRect = GetRawRect();
+            clipRect.Inflate(25, 0);
+
+            var clipPath = BuildSuperellipsePath(clipRect, 4.5f, 28);
+            canvas.ClipPath(clipPath, antialias: true);
 
             new List<TrayFile>(fileObjects).ForEach((f) =>
             {

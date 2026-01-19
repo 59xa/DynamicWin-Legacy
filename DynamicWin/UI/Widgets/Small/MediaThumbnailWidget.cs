@@ -312,7 +312,7 @@ namespace DynamicWin.UI.Widgets.Small
             SKBitmap? bmp;
             lock (mediaLock) { bmp = thumbnailBitmap; }
 
-            var path = BuildSuperellipsePath(thumbRect, n: 4f, stepsPerQuarter: 16);
+            var path = BuildSuperellipsePath(thumbRect, 7f, 1f);
 
             try
             {
@@ -328,7 +328,7 @@ namespace DynamicWin.UI.Widgets.Small
                     canvas.Scale(flipScale, 1f);
                     var localRect = SKRect.Create(-thumbRect.Width / 2f, -thumbRect.Height / 2f, thumbRect.Width, thumbRect.Height);
 
-                    var localPath = BuildSuperellipsePath(localRect, n: 4f, stepsPerQuarter: 12);
+                    var localPath = BuildSuperellipsePath(localRect, 7f, 1f);
                     canvas.Save();
                     canvas.ClipPath(localPath, antialias: true);
 

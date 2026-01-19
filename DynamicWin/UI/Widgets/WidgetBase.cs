@@ -23,7 +23,7 @@ namespace DynamicWin.UI.Widgets
             var objs = InitializeWidget();
             objs.ForEach(obj => AddLocalObject(obj));
 
-            roundRadius = 15f;
+            roundRadius = 30f;
         }
 
         public Vec2 GetWidgetSize() { return new Vec2(GetWidgetWidth(), GetWidgetHeight()); }
@@ -70,24 +70,30 @@ namespace DynamicWin.UI.Widgets
 
             hoverProgress = Mathf.Lerp(hoverProgress, IsHovering ? 1f : 0f, 10f * RendererMain.Instance.DeltaTime);
 
-            if(hoverProgress > 0.025f)
+            if (hoverProgress > 0.025f)
             {
                 var paint = GetPaint();
-                paint.ImageFilter = SKImageFilter.CreateDropShadowOnly(0, 0, hoverProgress * 10, hoverProgress * 10, Theme.WidgetBackground.Override(a: hoverProgress / 10).Value());
+                paint.ImageFilter = SKImageFilter.CreateDropShadowOnly(
+                    0, 0,
+                    hoverProgress * 10, hoverProgress * 10,
+                    Theme.WidgetBackground.Override(a: hoverProgress / 10).Value()
+                );
 
-                // Save the canvas state for the hover transform and clip
+                // Save the canvas state for hover transform
                 int saveCount = canvas.Save();
 
                 var p = Position + Size / 2;
                 canvas.Scale(1 + hoverProgress / 60, 1 + hoverProgress / 60, p.X, p.Y);
 
-                // Use a clip to exclude the widget rect and draw shadow into difference region
+                // Build squircle path for hover shadow
+                var shadowPath = BuildSuperellipsePath(GetRawRect(), radius: roundRadius, t: 1.0f);
+
+                // Clip outside the widget rect and draw shadow
                 int clipSave = canvas.Save();
-                canvas.ClipRoundRect(GetRect(), SKClipOperation.Difference, antialias: true);
-                canvas.DrawRoundRect(GetRect(), paint);
+                canvas.ClipPath(shadowPath, SKClipOperation.Difference, antialias: true);
+                canvas.DrawPath(shadowPath, paint);
                 canvas.RestoreToCount(clipSave);
 
-                // Restore the hover transform state
                 canvas.RestoreToCount(saveCount);
             }
 
@@ -105,13 +111,13 @@ namespace DynamicWin.UI.Widgets
 
                 float expand = 10;
                 var brect = SKRect.Create(Position.X - expand / 2, Position.Y - expand / 2, Size.X + expand, Size.Y + expand);
-                var broundRect = new SKRoundRect(brect, roundRadius);
+
+                // Squircle path for edit mode border
+                var borderPath = BuildSuperellipsePath(brect, radius: roundRadius, t: 1.0f);
 
                 int noClip = canvas.Save();
-
                 paint.Color = SKColors.DimGray;
-                canvas.DrawRoundRect(broundRect, paint);
-
+                canvas.DrawPath(borderPath, paint);
                 canvas.RestoreToCount(noClip);
             }
         }
