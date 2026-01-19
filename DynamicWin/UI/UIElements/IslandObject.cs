@@ -11,7 +11,15 @@ namespace DynamicWin.UI.UIElements
         float cornerSquircleT = 0f; // 0 = round, 1 = squircle
         const float BaseCornerRadius = 80f;
 
-        // Target size for the notch curve. 
+        // Island-only tuning
+        float islandCornerRadius = 65f;
+        float islandSquircleStrength = 1.16f;
+
+        // Notch-only tuning
+        float notchCornerRadius = 80f;
+        float notchSquircleStrength = 1.08f;
+
+        // Target size for the notch curve
         // 22f is standard, but will be clamped dynamically if the island is smaller
         const float NotchFlareSize = 22f;
 
@@ -29,7 +37,12 @@ namespace DynamicWin.UI.UIElements
         public Vec2 currSize;
 
         public enum IslandMode { Island, Notch };
+
+        // This remains the target settings, but we use _morphT for the actual visual state
         public IslandMode mode = Settings.IslandMode;
+
+        // 0.0 = full island, 1.0 = full notch
+        private float _morphT = 0f;
 
         float dropShadowStrength = 0f;
         float dropShadowSize = 0f;
@@ -47,18 +60,33 @@ namespace DynamicWin.UI.UIElements
             expandInteractionRect = 20;
 
             maskInToIsland = false;
+
+            // Initialise morph state based on startup setting
+            _morphT = Settings.IslandMode == IslandMode.Notch ? 1f : 0f;
         }
 
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            float targetSquircle =
-                (IsHovering || hidden == false && Size.X > 300f)
-                    ? 1f
-                    : 0f;
+            // Determine target mode and animate MorphT
+            mode = Settings.IslandMode;
+            float targetMorph = (mode == IslandMode.Notch) ? 1f : 0f;
 
-            cornerSquircleT = Mathf.Lerp(cornerSquircleT, targetSquircle, 12f * deltaTime);
+            // Animate morphT (6f for snappy but visible transition)
+            _morphT = Mathf.Lerp(_morphT, targetMorph, 6f * deltaTime);
+
+            // Calculate blended parameters based on MorphT
+            float currentSquircleStrength = Mathf.Lerp(islandSquircleStrength, notchSquircleStrength, _morphT);
+
+            // Squircle animation logic
+            // If it's mostly notch (_morphT > 0.5), force squircle
+            // Use hover state logic otherwise
+            float targetSquircleState = (_morphT > 0.5f)
+                ? 1f
+                : (IsHovering ? 1f : (Size.Y > 20f ? 1f : 0f));
+
+            cornerSquircleT = Mathf.Lerp(cornerSquircleT, targetSquircleState, 12f * deltaTime);
 
             if (!hidden)
             {
@@ -86,7 +114,12 @@ namespace DynamicWin.UI.UIElements
                     10f * deltaTime
                 );
 
-                LocalPosition.Y = Mathf.Lerp(LocalPosition.Y, topOffset, 15f * deltaTime);
+                // Animate position
+                // IslandMode.Island sits at 15f or 7.5f while IslandMode.Notch sits at -2.5f
+                // We interpolate based on _morphT
+                float targetY = Mathf.Lerp((mode == IslandMode.Island ? 7.5f : 15f), -2.5f, _morphT);
+                topOffset = Mathf.Lerp(topOffset, targetY, 15f * deltaTime);
+                LocalPosition.Y = topOffset;
             }
             else
             {
@@ -96,8 +129,7 @@ namespace DynamicWin.UI.UIElements
             }
 
             MainForm.Instance.Opacity = hidden ? 0.85f : 1f;
-            mode = Settings.IslandMode;
-            topOffset = Mathf.Lerp(topOffset, (mode == IslandMode.Island) ? 7.5f : -2.5f, 15f * deltaTime);
+
             dropShadowStrength = Mathf.Lerp(dropShadowStrength, IsHovering ? 0.75f : 0.25f, 10f * deltaTime);
             dropShadowSize = Mathf.Lerp(dropShadowSize, IsHovering ? 35f : 7.5f, 10f * deltaTime);
             borderCol = Col.Lerp(borderCol, MenuManager.Instance.ActiveMenu.IslandBorderColor(), 10f * deltaTime);
@@ -118,11 +150,12 @@ namespace DynamicWin.UI.UIElements
             borderPaint.IsStroke = true;
             borderPaint.StrokeWidth = 1f;
 
+            // Pass the interpolated _morphT instead of the boolean mode
             var borderPath = CreateDynamicIslandPath(
                 borderRect.Rect,
                 BaseCornerRadius,
                 cornerSquircleT,
-                mode == IslandMode.Notch
+                _morphT
             );
 
             canvas.DrawPath(borderPath, borderPaint);
@@ -133,13 +166,17 @@ namespace DynamicWin.UI.UIElements
                 rect.Rect,
                 BaseCornerRadius,
                 cornerSquircleT,
-                mode == IslandMode.Notch
+                _morphT
             );
 
             canvas.DrawPath(islandPath, paint);
         }
 
-        SKPath CreateDynamicIslandPath(SKRect r, float radius, float t, bool hasNotch)
+        /// <summary>
+        /// Generates the path, smoothly morphing between Island (morphT=0) and Notch (morphT=1),
+        /// while preserving the logic that shrinks the flare if the island height is small
+        /// </summary>
+        SKPath CreateDynamicIslandPath(SKRect r, float radius, float t, float morphT)
         {
             var path = new SKPath();
             path.FillType = SKPathFillType.Winding;
@@ -149,40 +186,70 @@ namespace DynamicWin.UI.UIElements
             float y0 = r.Top;
             float y1 = r.Bottom;
 
-            // Clamp radius so it doesn't invert small shapes
+            // Define the Morph Thresholds
+            // 0.0 -> 0.85: moving up, shrinking TOP corners to 0 radius
+            // 0.85 -> 1.0: touching top, growing flares
+            const float MorphThreshold = 0.85f;
+
+            // Interpolate global radius settings
+            float effectiveRadius = Mathf.Lerp(islandCornerRadius, notchCornerRadius, morphT);
             float maxRadius = Math.Min(r.Width, r.Height) * 0.5f;
-            radius = Math.Min(radius, maxRadius - 0.01f);
+            radius = Math.Min(effectiveRadius, maxRadius - 0.01f);
+
+            // Calculate specific radii for Morphing
+            float bottomRadius = radius;
+
+            // Top radius shrinks to 0 as we approach the notch threshold
+            // map 0..0.85 to 1..0
+            float topRadiusMorph = Math.Clamp(1f - (morphT / MorphThreshold), 0f, 1f);
+            float topRadius = radius * topRadiusMorph;
 
             // Squircle math
             const float kappa = 0.55228475f;
             float easedT = t * t * (3f - 2f * t);
-            float squash = Mathf.Lerp(1f, 1.16f, easedT);
-            float ctrl = radius * kappa * squash;
 
-            if (hasNotch)
+            float targetSquash = Mathf.Lerp(islandSquircleStrength, notchSquircleStrength, morphT);
+            float squash = Mathf.Lerp(1f, targetSquash, easedT);
+
+            float bCtrl = bottomRadius * kappa * squash;
+            float tCtrl = topRadius * kappa * squash;
+
+            // Check if we are physically morphing into the flare shape
+            bool drawFlares = morphT > MorphThreshold;
+
+            if (drawFlares)
             {
+                // Notch mode (IslandMode.Notch)
+
+                // Calculate how much of the animation is complete (0.0 to 1.0)
+                float animProgress = (morphT - MorphThreshold) / (1f - MorphThreshold);
+
                 // How much vertical space we actually have for the notch
                 float availableFlareHeight = r.Height * 0.5f;
 
-                // Normalise 0..1 against the intended notch size
-                float flareT = Math.Clamp(availableFlareHeight / NotchFlareSize, 0f, 1f);
+                // Calculate flareT (0.0 to 1.0)
+                // We combine the animation progress with the physical size constraint
+                // If the box is tiny, availableFlareHeight / NotchFlareSize will be < 1.0, limiting the flare
+                float sizeRatio = Math.Clamp(availableFlareHeight / NotchFlareSize, 0f, 1f);
+                float flareT = sizeRatio * animProgress;
 
                 // Ease so small sizes shrink faster
                 flareT = flareT * flareT;
 
                 // Final flare size
-                float flareSize = NotchFlareSize * flareT;
+                float currentFlareSize = NotchFlareSize * flareT;
 
-                // If the island is very short, the bottom radius must also shrink 
-                // so it doesn't fight the flare
-                float availableHeight = r.Height - flareSize;
+                // If the island is very short, the bottom radius must also shrink so it doesn't fight the flare
+                float availableHeight = r.Height - currentFlareSize;
                 float effectiveBottomRadius = Math.Min(radius, availableHeight);
                 if (effectiveBottomRadius < 0) effectiveBottomRadius = 0;
 
                 float bottomCtrl = effectiveBottomRadius * kappa * squash;
 
-                // Bottom-left corner
+                // Bottom-left corner start
                 path.MoveTo(x0, y1 - effectiveBottomRadius);
+
+                // Bottom-left corner curve
                 path.CubicTo(
                     x0, y1 - effectiveBottomRadius + bottomCtrl,
                     x0 + effectiveBottomRadius - bottomCtrl, y1,
@@ -192,47 +259,65 @@ namespace DynamicWin.UI.UIElements
                 // Bottom edge
                 path.LineTo(x1 - effectiveBottomRadius, y1);
 
-                // Bottom-right corner
+                // Bottom-right corner curve
                 path.CubicTo(
                     x1 - effectiveBottomRadius + bottomCtrl, y1,
                     x1, y1 - effectiveBottomRadius + bottomCtrl,
                     x1, y1 - effectiveBottomRadius
                 );
 
-                // Right edge
-                // Connect bottom corner to the start of the top flare
-                path.LineTo(x1, y0 + flareSize);
+                // Line right side to flare start
+                path.LineTo(x1, y0 + currentFlareSize);
 
                 // Top-right outward flare
-                // Using square rect (flareSize * 2) to ensure 1:1 circular curvature
-                path.ArcTo(
-                    SKRect.Create(x1, y0, flareSize * 2, flareSize * 2),
-                    180, 90, false
-                );
+                if (currentFlareSize > 0.1f)
+                {
+                    path.ArcTo(
+                        SKRect.Create(x1, y0, currentFlareSize * 2, currentFlareSize * 2),
+                        180, 90, false
+                    );
+                }
+                else
+                {
+                    path.LineTo(x1, y0);
+                }
 
-                // Top-left outward flare
-                path.ArcTo(
-                    SKRect.Create(x0 - flareSize * 2, y0, flareSize * 2, flareSize * 2),
-                    270, 90, false
-                );
+                // Top edge (invisible/offscreen)
+                if (currentFlareSize > 0.1f)
+                {
+                    path.LineTo(x0 + currentFlareSize * 2, y0);
 
-                // Left edge
+                    // Top-left outward flare
+                    path.ArcTo(
+                        SKRect.Create(x0 - currentFlareSize * 2, y0, currentFlareSize * 2, currentFlareSize * 2),
+                        270, 90, false
+                    );
+                }
+                else
+                {
+                    path.LineTo(x0, y0);
+                }
+
+                // Close the shape (line down to left side)
                 path.LineTo(x0, y1 - effectiveBottomRadius);
             }
             else
             {
                 // Island mode (IslandMode.Island)
-                path.MoveTo(x0, y0 + radius);
-                path.CubicTo(x0, y0 + radius - ctrl, x0 + radius - ctrl, y0, x0 + radius, y0);
 
-                path.LineTo(x1 - radius, y0);
-                path.CubicTo(x1 - radius + ctrl, y0, x1, y0 + radius - ctrl, x1, y0 + radius);
+                path.MoveTo(x0 + topRadius, y0);
 
-                path.LineTo(x1, y1 - radius);
-                path.CubicTo(x1, y1 - radius + ctrl, x1 - radius + ctrl, y1, x1 - radius, y1);
+                path.LineTo(x1 - topRadius, y0);
+                path.CubicTo(x1 - topRadius + tCtrl, y0, x1, y0 + topRadius - tCtrl, x1, y0 + topRadius);
 
-                path.LineTo(x0 + radius, y1);
-                path.CubicTo(x0 + radius - ctrl, y1, x0, y1 - radius + ctrl, x0, y1 - radius);
+                path.LineTo(x1, y1 - bottomRadius);
+                path.CubicTo(x1, y1 - bottomRadius + bCtrl, x1 - bottomRadius + bCtrl, y1, x1 - bottomRadius, y1);
+
+                path.LineTo(x0 + bottomRadius, y1);
+                path.CubicTo(x0 + bottomRadius - bCtrl, y1, x0, y1 - bottomRadius + bCtrl, x0, y1 - bottomRadius);
+
+                path.LineTo(x0, y0 + topRadius);
+                path.CubicTo(x0, y0 + topRadius - tCtrl, x0 + topRadius - tCtrl, y0, x0 + topRadius, y0);
             }
 
             path.Close();
@@ -250,7 +335,7 @@ namespace DynamicWin.UI.UIElements
         /// <summary>
         /// Exposes the path of the dynamic island regardless of its state (island or notch)
         /// </summary>
-        /// <returns>The path of the IslandObject through <see cref="CreateDynamicIslandPath(SKRect, float, float, bool)"/></returns>
+        /// <returns>The path of the IslandObject through <see cref="CreateDynamicIslandPath(SKRect, float, float, float)"/></returns>
         public SKPath GetIslandPath()
         {
             var rect = GetRect();
@@ -258,7 +343,7 @@ namespace DynamicWin.UI.UIElements
                 rect.Rect,
                 BaseCornerRadius,
                 cornerSquircleT,
-                mode == IslandMode.Notch
+                _morphT
             );
         }
     }
