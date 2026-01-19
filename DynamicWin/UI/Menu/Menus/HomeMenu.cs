@@ -91,18 +91,21 @@ namespace DynamicWin.UI.Menu.Menus
                 sizeTogetherBiggest += bCD + (bigWidgetsSpacing * (int)Math.Floor((float)(bigWidgets.Count / maxBigWidgetInOneRow))) + topSpacing;
 
                 // Set the container height to the total height of all rows
-                size.Y = Math.Max(size.Y, sizeTogetherBiggest + topSpacing);
+                size.Y = Math.Max(size.Y, sizeTogetherBiggest);
             }
 
             // When not in widget mode (showing tray) use fixed height
-            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Tray) size.Y = 250;
+            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Tray)
+            {
+                size.Y = 250;
+            }
 
             // When Media view is active, ensure the island is large enough to contain the media panel
             if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Media)
             {
                 // Keep in sync with the size used when rendering the media UIObject in Update()
-                float desiredMediaWidth = 420f;
-                float desiredMediaHeight = 100;
+                float desiredMediaWidth = 440f;
+                float desiredMediaHeight = 110;
 
                 // Horizontal padding to give the media panel some inset from island edges
                 float horizontalPadding = 60f;
@@ -361,7 +364,7 @@ namespace DynamicWin.UI.Menu.Menus
 
         public override void Update()
         {
-            tray.Size = new Vec2(topContainer.Size.X, IslandSizeBig().Y - bCD - topSpacing - topContainer.Size.Y);
+            tray.Size = new Vec2(topContainer.Size.X - 5f, IslandSizeBig().Y - bCD - topContainer.Size.Y);
 
             // Enable / Disable small widgets
 
@@ -496,8 +499,8 @@ namespace DynamicWin.UI.Menu.Menus
                     if (currentBigMenuMode == BigMenuMode.Media)
                     {
                         // Give media panel its own dedicated size (independent from widgets layout)
-                        float mediaWidth = 430f;
-                        float mediaHeight = 140f;
+                        float mediaWidth = 450f;
+                        float mediaHeight = 160f;
                         media.Size = new Vec2(mediaWidth, mediaHeight);
 
                         // Centre horizontally and keep it anchored near the bottom like before
