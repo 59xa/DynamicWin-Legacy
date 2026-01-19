@@ -685,40 +685,69 @@ namespace DynamicWin.UI
         public virtual ContextMenu? GetContextMenu() { return contextMenu; }
 
         // Build an approximate superellipse (squircle) path by sampling points
-        public SKPath BuildSuperellipsePath(SKRect rect, float n = 4f, int stepsPerQuarter = 24)
+        public static SKPath BuildSuperellipsePath(
+            SKRect r,
+            float radius,
+            float t
+        )
         {
-            // Superellipse param: (|x/a|)^n + (|y/b|)^n = 1
-            float a = rect.Width / 2f;
-            float b = rect.Height / 2f;
-            float cx = rect.MidX;
-            float cy = rect.MidY;
+            var path = new SKPath();
+            path.FillType = SKPathFillType.Winding;
 
-            SKPath path = new SKPath();
+            float x0 = r.Left;
+            float x1 = r.Right;
+            float y0 = r.Top;
+            float y1 = r.Bottom;
 
-            bool first = true;
-            int totalSteps = stepsPerQuarter * 4;
-            for (int i = 0; i <= totalSteps; i++)
-            {
-                float theta = (float)i / totalSteps * 2f * (float)Math.PI;
-                float cos = (float)Math.Cos(theta);
-                float sin = (float)Math.Sin(theta);
+            // Clamp radius safely
+            float maxRadius = Math.Min(r.Width, r.Height) * 0.5f;
+            radius = Math.Min(radius, maxRadius - 0.01f);
 
-                float x = (float)(Math.Sign(cos) * Math.Pow(Math.Abs(cos), 2.0 / n) * a);
-                float y = (float)(Math.Sign(sin) * Math.Pow(Math.Abs(sin), 2.0 / n) * b);
+            // Match dynamic island curvature shaping
+            const float kappa = 0.55228475f;
+            float easedT = t * t * (3f - 2f * t);
+            float squash = Mathf.Lerp(1f, 1.16f, easedT);
+            float ctrl = radius * kappa * squash;
 
-                float px = cx + x;
-                float py = cy + y;
+            // Start top-left
+            path.MoveTo(x0, y0 + radius);
 
-                if (first)
-                {
-                    path.MoveTo(px, py);
-                    first = false;
-                }
-                else
-                {
-                    path.LineTo(px, py);
-                }
-            }
+            // Top-left corner
+            path.CubicTo(
+                x0, y0 + radius - ctrl,
+                x0 + radius - ctrl, y0,
+                x0 + radius, y0
+            );
+
+            // Top edge
+            path.LineTo(x1 - radius, y0);
+
+            // Top-right corner
+            path.CubicTo(
+                x1 - radius + ctrl, y0,
+                x1, y0 + radius - ctrl,
+                x1, y0 + radius
+            );
+
+            // Right edge
+            path.LineTo(x1, y1 - radius);
+
+            // Bottom-right corner
+            path.CubicTo(
+                x1, y1 - radius + ctrl,
+                x1 - radius + ctrl, y1,
+                x1 - radius, y1
+            );
+
+            // Bottom edge
+            path.LineTo(x0 + radius, y1);
+
+            // Bottom-left corner
+            path.CubicTo(
+                x0 + radius - ctrl, y1,
+                x0, y1 - radius + ctrl,
+                x0, y1 - radius
+            );
 
             path.Close();
             return path;
