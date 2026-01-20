@@ -101,14 +101,15 @@ namespace DynamicWin.UI.Widgets.Small
         {
             // Make the smoothing more responsive like the legacy meter
             this.Smoothing = 25f;
+            IsLocked = true;
         }
 
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            // Update target value
-            Value = GetMicrophoneLoudness();
+            // Update target value (use ForceSetValue so IsLocked can remain true and UI cannot modify it)
+            ForceSetValue(GetMicrophoneLoudness());
 
             // Compute colours similar to the legacy behaviour
             var colBase = (Value > 0.85f) ? new Col(1, 0, 0) : (Value > 0.65f) ? new Col(1, 1, 0) : new Col(0, 1, 0);
