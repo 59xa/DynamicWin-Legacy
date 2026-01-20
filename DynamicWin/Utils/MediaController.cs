@@ -341,6 +341,14 @@ namespace DynamicWin.Utils
         }
 
         /// <summary>
+        /// Public wrapper to reset the internal manager. Safe to call from other modules (e.g., on suspend/resume)
+        /// </summary>
+        public static void Reset(string reason = null, Exception? ex = null)
+        {
+            ResetManager(reason, ex);
+        }
+
+        /// <summary>
         /// Fetch metadata (Title, Artist) for the currently focused session. This method intentionally does NOT
         /// fetch or return the thumbnail bytes to keep it lightweight for callers that only need text metadata.
         /// </summary>
