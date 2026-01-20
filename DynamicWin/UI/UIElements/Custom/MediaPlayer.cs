@@ -597,7 +597,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 var mousePos = RendererMain.CursorPosition;
 
                 // Mouse down over timeline begins seeking
-                if (IsHovering && IsMouseDown && !mouseDownOverTimeline && barRect.Contains(mousePos.X, mousePos.Y))
+                if (IsHovering && IsMouseDown && !mouseDownOverTimeline && barRect.Contains(mousePos.X, mousePos.Y) && !timelineBar.IsLocked)
                 {
                     mouseDownOverTimeline = true;
                     userIsSeeking = true;
@@ -764,7 +764,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 if (barY2 + timelineHeight > rr2.Rect.Bottom) barY2 = rr2.Rect.Bottom - timelineHeight - timelineBarPadding;
                 var barRect2 = SKRect.Create(barX2, barY2, barWidth2, timelineHeight);
                 var mousePos2 = RendererMain.CursorPosition;
-                isHoveringOverTimeline = barRect2.Contains(mousePos2.X, mousePos2.Y) && IsHovering;
+                isHoveringOverTimeline = barRect2.Contains(mousePos2.X, mousePos2.Y) && IsHovering && !timelineBar.IsLocked;
 
                 float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
                 timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
@@ -1238,11 +1238,23 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     // Set size and local position relative to this object's rect
                     timelineBar.Size = new Vec2(barWidth, drawTimelineHeight);
-                    timelineBar.LocalPosition = new Vec2(barX - rect.Left - 40f, barY - rect.Top + 2.5f);
+                    timelineBar.LocalPosition = new Vec2(barX - rect.Left - 40f, barY - rect.Top + 3.5f);
                     timelineBar.CornerRadius = drawTimelineHeight / 2f;
-                    timelineBar.Value = displayFill;
+                    // timelineBar target value is driven from Update to respect locking; do not set Value here.
                     timelineBar.ForegroundColor = timelineFgColor.Override(a: 0.6f);
                     timelineBar.BackgroundColor = Theme.WidgetBackground.Override(a: 0.04f);
+                    // If there's no media playing, lock and force the bar to zero immediately
+                    if (currentMedia == null)
+                    {
+                        timelineBar.IsLocked = true;
+                        timelineBar.ForceSetImmediate(0f);
+                    }
+                    else
+                    {
+                        timelineBar.IsLocked = false;
+                        // Drive the target value so smoothing animates the visual
+                        timelineBar.ForceSetValue(displayFill);
+                    }
 
                     // Draw the progress bar as a child at the computed location
                     timelineBar.Draw(canvas);
