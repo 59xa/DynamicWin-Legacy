@@ -91,6 +91,7 @@ namespace DynamicWin.UI.UIElements.Custom
         private float timelineSidePadding = 40f; // space on left/right for timeline text
         private Col timelineTextColor = Theme.TextMain.Override(a: 55);
         private float timelineTextSize = 10f;
+        private DWProgressBarEx? timelineBar;
 
         // Add lastSampleKey to detect new samples
         private string? lastSampleKey = null;
@@ -121,80 +122,6 @@ namespace DynamicWin.UI.UIElements.Custom
         private bool displayedElapsedInitialized = false;
         // Extra height applied to timeline when hovering/seeking (smoothed)
         private float timelineExtraHeight = 0f;
-
-        // Lightweight fingerprint for bitmap equality: sample a few pixels and dimensions
-        private static ulong ComputeFingerprint(SKBitmap bmp)
-        {
-            if (bmp == null) return 0ul;
-            unchecked
-            {
-                ulong h = 1469598103934665603UL; // FNV offset basis
-                h ^= (ulong)bmp.Width; h *= 1099511628211UL;
-                h ^= (ulong)bmp.Height; h *= 1099511628211UL;
-
-                // Sample up to 8 points: corners, mid-edges, center. Use modulo to clamp.
-                int w = Math.Max(1, bmp.Width);
-                int hgt = Math.Max(1, bmp.Height);
-                (int x, int y)[] samples = new (int, int)[] {
-                    (0,0), (w-1,0), (0,hgt-1), (w-1,hgt-1),
-                    (w/2, hgt/2), (w/2,0), (w/2,hgt-1), (0,hgt/2)
-                };
-
-                foreach (var s in samples)
-                {
-                    try
-                    {
-                        var c = bmp.GetPixel(Math.Max(0, Math.Min(s.x, w-1)), Math.Max(0, Math.Min(s.y, hgt-1)));
-                        // Pack ARGB into ulong
-                        ulong val = ((ulong)c.Alpha << 24) | ((ulong)c.Red << 16) | ((ulong)c.Green << 8) | (ulong)c.Blue;
-                        h ^= val; h *= 1099511628211UL;
-                    }
-                    catch
-                    {
-                        // Ignore sampling errors
-                    }
-                }
-
-                return h;
-            }
-        }
-
-        // Helper: decode image bytes into an owned SKImage and compute fingerprint from a temporary SKBitmap
-        private static SKImage? DecodeBytesToImageAndFingerprint(byte[] bytes, out ulong? fingerprint)
-        {
-            fingerprint = null;
-            if (bytes == null || bytes.Length == 0) return null;
-
-            try
-            {
-                using var ms = new SKMemoryStream(bytes);
-                var bmp = SKBitmap.Decode(ms);
-                if (bmp == null) return null;
-
-                // Compute fingerprint from the decoded bitmap
-                try { fingerprint = ComputeFingerprint(bmp); } catch { fingerprint = null; }
-
-                // Create SKImage from bitmap (owned). SKImage.FromBitmap will copy pixels appropriately.
-                SKImage? img = null;
-                try
-                {
-                    img = SKImage.FromBitmap(bmp);
-                }
-                catch
-                {
-                    img = null;
-                }
-
-                // Dispose temporary bitmap (img owns its pixels)
-                try { bmp.Dispose(); } catch { }
-
-                return img;
-            }
-            catch
-            {
-                return null;
-            }
-        }
 
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
@@ -251,6 +178,18 @@ namespace DynamicWin.UI.UIElements.Custom
             };
             AddLocalObject(visualiser);
 
+            // Timeline progress bar (created as local object; size/pos updated in Update)
+            try
+            {
+                timelineBar = new DWProgressBarEx(this, new Vec2(0, 0), new Vec2(200, timelineHeight), UIAlignment.TopCenter,
+                    background: Theme.WidgetBackground.Override(a: 0.06f), foreground: timelineFgColor);
+                timelineBar.CornerRadius = timelineHeight / 2f;
+                timelineBar.Smoothing = 30f;
+                timelineBar.SetValueImmediate(0f);
+                AddLocalObject(timelineBar);
+            }
+            catch { timelineBar = null; }
+
             // Subscribe to central thumbnail service event
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
 
@@ -260,7 +199,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
                 if (bytes != null && bytes.Length > 0)
                 {
-                    var img = DecodeBytesToImageAndFingerprint(bytes, out ulong? fp);
+                    var img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(bytes, out ulong? fp);
                     if (img != null)
                     {
                         lock (mediaLock)
@@ -295,7 +234,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try
                     {
-                        var img = DecodeBytesToImageAndFingerprint(bytes, out ulong? fp);
+                        var img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(bytes, out ulong? fp);
                         if (img != null)
                         {
                             lock (mediaLock)
@@ -330,7 +269,7 @@ namespace DynamicWin.UI.UIElements.Custom
 
                             if (b != null && b.Length > 0)
                             {
-                                var img = DecodeBytesToImageAndFingerprint(b, out ulong? fp);
+                                var img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(b, out ulong? fp);
                                 if (img != null)
                                 {
                                     lock (mediaLock)
@@ -1021,7 +960,7 @@ namespace DynamicWin.UI.UIElements.Custom
                                     ulong? fp = null;
                                     try
                                     {
-                                        img = DecodeBytesToImageAndFingerprint(svcBytes, out fp);
+                                        img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(svcBytes, out fp);
                                     }
                                     catch { img = null; fp = null; }
 
@@ -1292,23 +1231,21 @@ namespace DynamicWin.UI.UIElements.Custom
                 float barY = rect.Top + 95f + timelineBarPadding;
                 if (barY + timelineHeight > rect.Bottom) barY = rect.Bottom - timelineHeight - timelineBarPadding;
 
-                using (var paint = GetPaint())
-                {
-                    paint.IsStroke = false;
-                    paint.IsAntialias = Settings.AntiAliasing;
-                    paint.Color = timelineBgColor;
-                    canvas.DrawRoundRect(SKRect.Create(barX, barY, barWidth, timelineHeight), timelineHeight / 2f, timelineHeight / 2f, paint);
-                }
-
                 float drawTimelineHeight = timelineHeight + timelineExtraHeight;
-                float barYOffset = (timelineHeight - drawTimelineHeight) / 2f;
-                using (var paint = GetPaint())
+
+                // If we have a DWProgressBarEx instance, position it and draw it
+                if (timelineBar != null)
                 {
-                    paint.IsStroke = false;
-                    paint.IsAntialias = Settings.AntiAliasing;
-                    paint.Color = GetColor(timelineFgColor).Value();
-                    float fillWidth = barWidth * displayFill;
-                    canvas.DrawRoundRect(SKRect.Create(barX, barY + barYOffset, fillWidth, drawTimelineHeight), drawTimelineHeight / 2f, drawTimelineHeight / 2f, paint);
+                    // Set size and local position relative to this object's rect
+                    timelineBar.Size = new Vec2(barWidth, drawTimelineHeight);
+                    timelineBar.LocalPosition = new Vec2(barX - rect.Left - 40f, barY - rect.Top + 2.5f);
+                    timelineBar.CornerRadius = drawTimelineHeight / 2f;
+                    timelineBar.Value = displayFill;
+                    timelineBar.ForegroundColor = timelineFgColor.Override(a: 0.6f);
+                    timelineBar.BackgroundColor = Theme.WidgetBackground.Override(a: 0.04f);
+
+                    // Draw the progress bar as a child at the computed location
+                    timelineBar.Draw(canvas);
                 }
 
                 string leftText;
