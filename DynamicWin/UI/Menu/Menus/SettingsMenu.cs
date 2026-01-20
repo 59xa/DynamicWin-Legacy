@@ -27,10 +27,11 @@ namespace DynamicWin.UI.Menu.Menus
 {
     public class SettingsMenu : BaseMenu
     {
+        private static List<IRegisterableSetting> _cachedCustomOptions;
 
         public SettingsMenu()
         {
-            MainForm.onScrollEvent += (MouseWheelEventArgs x) => 
+            MainForm.onScrollEvent += (MouseWheelEventArgs x) =>
             {
                 yScrollOffset += x.Delta * 0.50f;
             };
@@ -60,7 +61,7 @@ namespace DynamicWin.UI.Menu.Menus
                 MenuManager.OpenMenu(Res.HomeMenu);
             }
 
-            foreach (var item in customOptions)
+            foreach (var item in _cachedCustomOptions)
             {
                 item.SaveSettings();
             }
@@ -86,9 +87,9 @@ namespace DynamicWin.UI.Menu.Menus
         {
             var objects = base.InitializeMenu(island);
 
-            SettingsMenu.LoadCustomOptions();
+            LoadCustomOptions();
 
-            foreach (var item in customOptions)
+            foreach (var item in _cachedCustomOptions)
             {
                 item.LoadSettings();
             }
@@ -216,11 +217,11 @@ namespace DynamicWin.UI.Menu.Menus
             limitRefreshRateDisclaimer2.IsEnabled = enableRefreshRateSubSettings;
 
             toggleIslandShadow = new DWCheckbox(
-                island, 
-                "Toggle island shadow", 
-                new Vec2(25, 0), 
-                new Vec2(25, 25), 
-                () => 
+                island,
+                "Toggle island shadow",
+                new Vec2(25, 0),
+                new Vec2(25, 25),
+                () =>
                 {
                     bool enabled = toggleIslandShadow.IsChecked;
 
@@ -230,18 +231,18 @@ namespace DynamicWin.UI.Menu.Menus
                         toggleHomeMenuShadow.IsChecked = false;
                         Settings.ToggleHomeMenuShadow = false;
                     }
-                }, 
+                },
                 UIAlignment.TopLeft);
             toggleIslandShadow.IsChecked = Settings.ToggleIslandShadow;
             toggleIslandShadow.Anchor.X = 0;
             objects.Add(toggleIslandShadow);
 
             toggleHomeMenuShadow = new DWCheckbox(
-                island, 
-                "Toggle home menu shadow when idle", 
-                new Vec2(65, 0), 
-                new Vec2(25, 25), 
-                () => { }, 
+                island,
+                "Toggle home menu shadow when idle",
+                new Vec2(65, 0),
+                new Vec2(25, 25),
+                () => { },
                 UIAlignment.TopLeft);
             toggleHomeMenuShadow.IsChecked = Settings.ToggleHomeMenuShadow;
             toggleHomeMenuShadow.Anchor.X = 0;
@@ -268,20 +269,32 @@ namespace DynamicWin.UI.Menu.Menus
                 selectedMonitorTitle.Anchor.X = 0;
                 objects.Add(selectedMonitorTitle);
 
-                var selectedMonitors = new string[MainForm.GetMonitorCount()];
-                for(int i = 0; i < selectedMonitors.Length; i++)
+                // Get current monitor count and names
+                int monitorCount = MainForm.GetMonitorCount();
+                var selectedMonitors = new string[monitorCount];
+
+                for (int i = 0; i < monitorCount; i++)
                 {
-                    if (i == 0) selectedMonitors[i] = "Primary";
-                    else selectedMonitors[i] = "Monitor " + i;
+                    // Get the specific monitor to show resolution/friendly name if possible
+                    var screen = System.Windows.Forms.Screen.AllScreens[i];
+                    string monitorLabel = (i == 0) ? "Primary" : $"Monitor {i + 1}";
+                    selectedMonitors[i] = $"{monitorLabel} ({screen.Bounds.Width}x{screen.Bounds.Height})";
                 }
 
                 var selectedMonitor = new DWMultiSelectionButton(island, selectedMonitors, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-                selectedMonitor.SelectedIndex = Math.Clamp(Settings.ScreenIndex, 0, MainForm.GetMonitorCount() - 1);
+
+                // Clamp the index to ensure it doesn't crash if a monitor was unplugged
+                selectedMonitor.SelectedIndex = Math.Clamp(Settings.ScreenIndex, 0, monitorCount - 1);
                 selectedMonitor.Anchor.X = 0;
+
                 selectedMonitor.onClick += (index) =>
                 {
                     Settings.ScreenIndex = index;
-                    MainForm.Instance.SetMonitor(Settings.ScreenIndex);
+                    // Immediate preview: move the island to the selected monitor
+                    if (MainForm.Instance != null)
+                    {
+                        MainForm.Instance.SetMonitor(index);
+                    }
                 };
                 objects.Add(selectedMonitor);
             }
@@ -354,7 +367,7 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(widgetOptionsTitle);
 
             {
-                foreach(var option in customOptions)
+                foreach (var option in _cachedCustomOptions)
                 {
                     var wTitle = new DWText(island, option.SettingTitle, new Vec2(25, 0), UIAlignment.TopLeft);
                     wTitle.Font = Res.SatoshiBold;
@@ -362,11 +375,11 @@ namespace DynamicWin.UI.Menu.Menus
                     wTitle.Anchor.X = 0;
                     objects.Add(wTitle);
 
-                    foreach(var optionItem in option.SettingsObjects())
+                    foreach (var optionItem in option.SettingsObjects())
                     {
                         optionItem.Parent = island;
 
-                        if(optionItem.alignment == UIAlignment.TopLeft)
+                        if (optionItem.alignment == UIAlignment.TopLeft)
                         {
                             optionItem.Position = new Vec2(25, 0);
                             optionItem.Anchor.X = 0;
@@ -377,7 +390,8 @@ namespace DynamicWin.UI.Menu.Menus
                             ((DWText)optionItem).Color = Theme.TextMain;
                             ((DWText)optionItem).Font = Res.SatoshiRegular;
                             ((DWText)optionItem).TextSize = 13;
-                        }else if(optionItem is DWCheckbox)
+                        }
+                        else if (optionItem is DWCheckbox)
                         {
                             optionItem.Size = new Vec2(25, 25);
                         }
@@ -524,7 +538,7 @@ namespace DynamicWin.UI.Menu.Menus
             var yPos = 35f;
             var spacing = 15f;
 
-            for(int i = 0; i < UiObjects.Count - 2; i++)
+            for (int i = 0; i < UiObjects.Count - 2; i++)
             {
                 var uiObject = UiObjects[i];
                 if (!uiObject.IsEnabled) continue;
@@ -543,7 +557,7 @@ namespace DynamicWin.UI.Menu.Menus
         {
             var vec = new Vec2(525, 425);
 
-            if(smallWidgetAdder != null)
+            if (smallWidgetAdder != null)
             {
                 vec.X = Math.Max(vec.X, smallWidgetAdder.Size.X + 50);
             }
@@ -556,11 +570,11 @@ namespace DynamicWin.UI.Menu.Menus
             return IslandSize() + 5;
         }
 
-        static List<IRegisterableSetting> customOptions;
-
         public static List<IRegisterableSetting> LoadCustomOptions()
         {
-            customOptions = new List<IRegisterableSetting>();
+            if (_cachedCustomOptions != null) return _cachedCustomOptions;
+
+            _cachedCustomOptions = new List<IRegisterableSetting>();
 
             var registerableSettings = AppDomain.CurrentDomain.GetAssemblies()
             .SelectMany(s => s.GetTypes())
@@ -569,7 +583,7 @@ namespace DynamicWin.UI.Menu.Menus
             foreach (var option in registerableSettings)
             {
                 var optionInstance = (IRegisterableSetting)Activator.CreateInstance(option);
-                customOptions.Add(optionInstance);
+                _cachedCustomOptions.Add(optionInstance);
             }
 
             // Loading in custom DLLs
@@ -587,22 +601,21 @@ namespace DynamicWin.UI.Menu.Menus
                     if (Path.GetExtension(file).ToLower().Equals(".dll"))
                     {
                         System.Diagnostics.Debug.WriteLine(file);
-                        var DLL = new Assembly[] { Assembly.LoadFile(Path.Combine(dirPath, file)) };
+                        var DLL = Assembly.LoadFile(Path.Combine(dirPath, file));
 
-                        var dllRegisterableSettings = DLL
-                            .SelectMany(s => s.GetTypes())
+                        var dllRegisterableSettings = DLL.GetTypes()
                             .Where(p => typeof(IRegisterableSetting).IsAssignableFrom(p) && p.IsClass);
 
                         foreach (var option in dllRegisterableSettings)
                         {
                             var optionInstance = (IRegisterableSetting)Activator.CreateInstance(option);
-                            customOptions.Add(optionInstance);
+                            _cachedCustomOptions.Add(optionInstance);
                         }
                     }
                 }
             }
 
-            return customOptions;
+            return _cachedCustomOptions;
         }
 
         // Border should only be rendered if on island mode instead of notch
