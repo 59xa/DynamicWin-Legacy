@@ -71,6 +71,16 @@ namespace DynamicWin.UI.UIElements.Custom
             _value = Math.Clamp(v, 0f, 1f);
         }
 
+        /// <summary>
+        /// Forcefully set both target and displayed value immediately, ignoring the lock.
+        /// Use sparingly as this will snap the visual state.
+        /// </summary>
+        public void ForceSetImmediate(float v)
+        {
+            _value = Math.Clamp(v, 0f, 1f);
+            displayedValue = _value;
+        }
+
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
