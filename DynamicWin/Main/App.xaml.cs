@@ -99,10 +99,11 @@ namespace DynamicWin
 
             mainForm = new MainForm
             {
-                Width = 600,
-                Height = 600,
+                Width = 800,
+                Height = 400,
                 ResizeMode = ResizeMode.NoResize,
-                Topmost = true
+                Topmost = true,
+                ShowActivated = false,
             };
 
             mainForm.SizeToContent = SizeToContent.Manual;
