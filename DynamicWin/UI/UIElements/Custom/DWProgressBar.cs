@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 
 namespace DynamicWin.UI.UIElements.Custom
 {
+    [Obsolete("DWProgressBar is deprecated. Use DWProgressBarEx instead.")]
     public class DWProgressBar : UIObject
     {
         public float value = 1f;

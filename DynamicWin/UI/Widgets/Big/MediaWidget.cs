@@ -9,8 +9,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
-/* DEPRECATED */
-
 namespace DynamicWin.UI.Widgets.Big
 {
     class RegisterMediaWidget : IRegisterableWidget
@@ -24,6 +22,7 @@ namespace DynamicWin.UI.Widgets.Big
         }
     }
 
+    [Obsolete("Legacy Media Playback Control has been superseded by Media Player, and will no longer be updated.")]
     public class MediaWidget : WidgetBase
     {
         MediaController controller;
