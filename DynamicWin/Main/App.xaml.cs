@@ -126,6 +126,13 @@ namespace DynamicWin
             };
             topmostTimer.Tick += (_, _) => ForceTopMost(mainForm);
             topmostTimer.Start();
+
+            // Subscribe to system power events to handle suspend/resume gracefully
+            try
+            {
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            }
+            catch { }
         }
 
         protected override void OnExit(ExitEventArgs e)
@@ -138,6 +145,12 @@ namespace DynamicWin
             MainForm.Instance.DisposeTrayIcon();
             KeyHandler.Stop();
             GC.KeepAlive(mutex);
+
+            try
+            {
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            }
+            catch { }
         }
 
         private void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
@@ -168,8 +181,77 @@ namespace DynamicWin
 
         private void ForceTopMost(Window window)
         {
-            var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            }
+            catch { }
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            try
+            {
+                if (e.Mode == PowerModes.Suspend)
+                {
+                    HandleSuspend();
+                }
+                else if (e.Mode == PowerModes.Resume)
+                {
+                    HandleResume();
+                }
+            }
+            catch { }
+        }
+
+        private void HandleSuspend()
+        {
+            try
+            {
+                // Stop the periodic topmost enforcement timer
+                try { topmostTimer?.Stop(); } catch { }
+
+                // Pause rendering loop in main form
+                try { MainForm.Instance?.PauseRendering(); } catch { }
+
+                // Stop hardware monitoring and background services
+                try { HardwareMonitor.Stop(); } catch { }
+
+                try { MediaInfo.Reset(); } catch { }
+
+                try { WeatherAPI.Default.StopFetching(); } catch { }
+
+#if DEBUG
+                Debug.WriteLine("[SYSTEM] Suspend handled: paused timers and background workers.");
+#endif
+            }
+            catch { }
+        }
+
+        private void HandleResume()
+        {
+            try
+            {
+                // Restart topmost timer
+                try { topmostTimer?.Start(); } catch { }
+
+                // Resume main rendering loop
+                try { MainForm.Instance?.ResumeRendering(); } catch { }
+
+                // Re-initialise media manager and hardware monitor
+                try { MediaInfo.Initialize(); } catch { }
+
+                try { new HardwareMonitor(); } catch { }
+
+                // Force window to topmost once after resume
+                try { ForceTopMost(mainForm); } catch { }
+
+#if DEBUG
+                Debug.WriteLine("[SYSTEM] Resume handled: restarted timers and background workers.");
+#endif
+            }
+            catch { }
         }
     }
 }
