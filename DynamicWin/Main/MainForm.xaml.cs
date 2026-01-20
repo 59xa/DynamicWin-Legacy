@@ -36,6 +36,9 @@ namespace DynamicWin.Main
         private DateTime _lastMouseMoveTime = DateTime.MinValue;
         private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromSeconds(1.0);
 
+        // Rendering pause flag (used for suspend/hibernate)
+        private bool _renderPaused = false;
+
         #region Win32 API Definitions
 
         [DllImport("user32.dll")]
@@ -227,6 +230,9 @@ namespace DynamicWin.Main
 
         private void OnRendering(object? sender, EventArgs e)
         {
+            // Skip rendering when paused (e.g., during system suspend/hibernate)
+            if (_renderPaused) return;
+
             ForceTopMost();
             var now = DateTime.UtcNow;
 
@@ -306,6 +312,18 @@ namespace DynamicWin.Main
 
             // Ensure the new renderer is called from the centralised, throttled MainForm loop
             onMainFormRender += customControl.Frame;
+        }
+
+        // Allow external modules to pause/resume the rendering loop during suspend/hibernate
+        public void PauseRendering()
+        {
+            _renderPaused = true;
+        }
+
+        public void ResumeRendering()
+        {
+            _renderPaused = false;
+            _lastRenderTime = DateTime.Now; // Reset timing to avoid immediate large update
         }
 
         public void MainForm_DragEnter(object? sender, DragEventArgs e)
