@@ -95,24 +95,28 @@ namespace DynamicWin.UI.Widgets.Small
         }
     }
 
-    internal class LoudnessMeter : DWProgressBar
+    internal class LoudnessMeter : DWProgressBarEx
     {
         public LoudnessMeter(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
-            this.vaueSmoothing = 25f;
+            // Make the smoothing more responsive like the legacy meter
+            this.Smoothing = 25f;
         }
 
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            value = GetMicrophoneLoudness();
+            // Update target value
+            Value = GetMicrophoneLoudness();
 
-            contentColor = GetColor(
-                ((value > 0.85f) ? new Col(1, 0, 0) : (value > 0.65f) ? new Col(1, 1, 0) : new Col(0, 1, 0))
-                ) * (RegisterUsedDevicesOptions.saveData.indicatorThreshold < value ? 1f : 0.45f);
+            // Compute colours similar to the legacy behaviour
+            var colBase = (Value > 0.85f) ? new Col(1, 0, 0) : (Value > 0.65f) ? new Col(1, 1, 0) : new Col(0, 1, 0);
+            var factor = RegisterUsedDevicesOptions.saveData.indicatorThreshold < Value ? 1f : 0.45f;
 
-            Color = contentColor * 0.25f;
+            var contentCol = GetColor(colBase) * factor;
+            ForegroundColor = contentCol;
+            BackgroundColor = contentCol * 0.25f;
         }
 
         public static float GetMicrophoneLoudness()
