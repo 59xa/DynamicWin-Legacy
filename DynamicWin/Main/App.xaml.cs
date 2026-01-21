@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
+using System.Timers;
 
 namespace DynamicWin
 {
@@ -49,7 +50,7 @@ namespace DynamicWin
         }
 
         Mutex mutex;
-        private DispatcherTimer topmostTimer; // timer to keep window absolutely topmost
+        private System.Timers.Timer topmostTimer; // use System.Timers.Timer to avoid creating Win32 dispatcher timers
         private MainForm mainForm;
 
         protected override void OnStartup(StartupEventArgs e)
@@ -120,12 +121,12 @@ namespace DynamicWin
                 ForceTopMost(mainForm);
             }), DispatcherPriority.ApplicationIdle);
 
-            topmostTimer = new DispatcherTimer
+            // Use a System.Timers.Timer instead of DispatcherTimer to avoid exhausting Win32 timer handles
+            try
             {
-                Interval = TimeSpan.FromMilliseconds(500)
-            };
-            topmostTimer.Tick += (_, _) => ForceTopMost(mainForm);
-            topmostTimer.Start();
+                CreateTopmostTimer();
+            }
+            catch { }
 
             // Subscribe to system power events to handle suspend/resume gracefully
             try
@@ -139,7 +140,14 @@ namespace DynamicWin
         {
             base.OnExit(e);
 
-            topmostTimer?.Stop();
+            try
+            {
+                topmostTimer?.Stop();
+                topmostTimer?.Dispose();
+                topmostTimer = null;
+            }
+            catch { }
+
             SaveManager.SaveAll();
             HardwareMonitor.Stop();
             MainForm.Instance.DisposeTrayIcon();
@@ -209,8 +217,8 @@ namespace DynamicWin
         {
             try
             {
-                // Stop the periodic topmost enforcement timer
-                try { topmostTimer?.Stop(); } catch { }
+                // Stop and dispose the periodic topmost enforcement timer to free native handles
+                try { topmostTimer?.Stop(); topmostTimer?.Dispose(); topmostTimer = null; } catch { }
 
                 // Pause rendering loop in main form
                 try { MainForm.Instance?.PauseRendering(); } catch { }
@@ -233,8 +241,8 @@ namespace DynamicWin
         {
             try
             {
-                // Restart topmost timer
-                try { topmostTimer?.Start(); } catch { }
+                // Recreate and start topmost timer if needed
+                try { if (topmostTimer == null) CreateTopmostTimer(); else topmostTimer.Start(); } catch { }
 
                 // Resume main rendering loop
                 try { MainForm.Instance?.ResumeRendering(); } catch { }
@@ -252,6 +260,29 @@ namespace DynamicWin
 #endif
             }
             catch { }
+        }
+
+        private void CreateTopmostTimer()
+        {
+            // Ensure existing timer is cleaned up first
+            try { topmostTimer?.Stop(); topmostTimer?.Dispose(); topmostTimer = null; } catch { }
+
+            topmostTimer = new System.Timers.Timer(500);
+            topmostTimer.AutoReset = true;
+            topmostTimer.Elapsed += (s, args) =>
+            {
+                try
+                {
+                    // Marshal to UI thread to call ForceTopMost
+                    Dispatcher?.BeginInvoke(new Action(() =>
+                    {
+                        try { ForceTopMost(mainForm); } catch { }
+                    }), DispatcherPriority.Normal);
+                }
+                catch { }
+            };
+
+            topmostTimer.Start();
         }
     }
 }
