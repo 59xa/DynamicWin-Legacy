@@ -259,7 +259,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
                 else
                 {
-                    // No cached service bitmap yet – do a one-shot fetch so first-open has a thumbnail.
+                    // No cached service bitmap yet - do a one-shot fetch so first-open has a thumbnail.
                     Task.Run(async () =>
                     {
                         try
@@ -303,6 +303,19 @@ namespace DynamicWin.UI.UIElements.Custom
                             }
                             else
                             {
+                                // If no thumbnail bytes but metadata is available, adopt the metadata so title/artist and
+                                // timeline information are shown immediately even when a thumbnail hasn't been provided.
+                                // This prevents the UI from showing empty text while MediaController has already fetched metadata.
+                                if (meta != null)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        currentMedia = meta;
+                                        currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|0";
+                                        optimisticActive = false;
+                                    }
+                                }
+
                                 if (meta == null)
                                 {
                                     lock (mediaLock)
