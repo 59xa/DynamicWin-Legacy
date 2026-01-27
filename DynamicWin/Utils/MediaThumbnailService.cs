@@ -82,6 +82,11 @@ namespace DynamicWin.Utils
         // Simple guard to prevent concurrent fetches
         private int fetchRunning = 0;
 
+        // Debounce candidate metadata to avoid fetching thumbnails while rapid metadata changes occur
+        private Media? pendingMediaCandidate = null;
+        private DateTime pendingMediaCandidateAt = DateTime.MinValue;
+        private readonly TimeSpan pendingMediaStableDelay = TimeSpan.FromMilliseconds(500);
+
         private MediaThumbnailService() { }
 
         public void Subscribe(Action<Media?> callback)
@@ -188,6 +193,37 @@ namespace DynamicWin.Utils
 
             // Determine whether metadata changed compared to lastMedia (case-insensitive)
             bool metadataChanged = !AreMediaEqual(media, lastMedia);
+
+            // Debounce rapid metadata changes: if metadata changed compared to last known, hold it as a candidate
+            // and only proceed to fetch thumbnail bytes once it remains stable for pendingMediaStableDelay.
+            if (metadataChanged)
+            {
+                // If there's no pending candidate or candidate differs from current media, start debounce
+                if (pendingMediaCandidate == null || !AreMediaEqual(pendingMediaCandidate, media))
+                {
+                    pendingMediaCandidate = media;
+                    pendingMediaCandidateAt = DateTime.UtcNow;
+                    // Wait for stability window before fetching bytes
+                    return;
+                }
+
+                // If candidate exists and is same as current, check stability time
+                if ((DateTime.UtcNow - pendingMediaCandidateAt) < pendingMediaStableDelay)
+                {
+                    // Still within debounce window; skip this cycle
+                    return;
+                }
+
+                // Candidate is stable: treat as an actual metadata change
+                metadataChanged = true;
+                // Clear pending candidate
+                pendingMediaCandidate = null;
+            }
+            else
+            {
+                // No change detected; clear any pending candidate
+                pendingMediaCandidate = null;
+            }
 
             // If metadata did not change and we already have bytes cached, skip fetching thumbnail bytes entirely
             if (!metadataChanged && lastBytes != null)
