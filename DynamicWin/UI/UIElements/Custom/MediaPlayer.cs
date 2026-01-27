@@ -111,6 +111,9 @@ namespace DynamicWin.UI.UIElements.Custom
 
         private DateTime lastTimelineResync = DateTime.MinValue;
 
+        // How often to re-fetch the timeline from MediaInfo
+        private TimeSpan timelineFetchInterval = TimeSpan.FromSeconds(4);
+
         // If the user is interacting with the timeline (seeking), set this to true and update userSeekElapsed
         private bool userIsSeeking = false;
         private TimeSpan userSeekElapsed = TimeSpan.Zero;
@@ -517,8 +520,9 @@ namespace DynamicWin.UI.UIElements.Custom
 
             lock (mediaLock)
             {
-                if (lastSampleElapsed.HasValue && lastSampleDuration.HasValue && lastSampleReceivedAt != DateTime.MinValue)
+                if (lastSampleElapsed.HasValue && lastSampleReceivedAt != DateTime.MinValue)
                 {
+                    // lastSampleDuration may be null for some sessions
                     sampleDuration = lastSampleDuration;
 
                     if (userIsSeeking)
@@ -538,14 +542,17 @@ namespace DynamicWin.UI.UIElements.Custom
                         }
                     }
 
-                    // Sync external timeline object
-                    if (currentTimeline != null)
+                    // Sync external timeline object if available
+                    if (currentTimeline != null && sampleElapsed.HasValue)
                     {
-                        // Only write if values actually changed to avoid property notify overhead
-                        // (Assuming currentTimeline checks for equality, otherwise simple assignment is fine)
-                        currentTimeline.Position = currentTimeline.StartTime + sampleElapsed.Value;
-                        currentTimeline.EndTime = currentTimeline.StartTime + sampleDuration.Value;
-                        currentTimeline.PlaybackStatus = lastPlaybackStatus;
+                        try
+                        {
+                            currentTimeline.Position = currentTimeline.StartTime + sampleElapsed.Value;
+                            if (sampleDuration.HasValue)
+                                currentTimeline.EndTime = currentTimeline.StartTime + sampleDuration.Value;
+                            currentTimeline.PlaybackStatus = lastPlaybackStatus;
+                        }
+                        catch { }
                     }
                 }
                 else
@@ -556,16 +563,26 @@ namespace DynamicWin.UI.UIElements.Custom
             }
 
             // Timeline update logic
-            if (sampleElapsed.HasValue && sampleDuration.HasValue)
+            // Some sessions (browsers) do not provide EndTime; still update elapsed so the seconds advance
+            if (sampleElapsed.HasValue)
             {
                 timelinePosition = sampleElapsed.Value;
-                timelineDuration = sampleDuration.Value;
 
-                if (timelinePosition < TimeSpan.Zero) timelinePosition = TimeSpan.Zero;
+                if (sampleDuration.HasValue)
+                {
+                    timelineDuration = sampleDuration.Value;
+
+                    if (timelinePosition < TimeSpan.Zero) timelinePosition = TimeSpan.Zero;
+
+                    if (timelinePosition > timelineDuration) timelinePosition = timelineDuration;
+                }
+                else
+                {
+                    // No duration available for this session
+                    timelineDuration = null;
+                }
 
                 isPlayingFlag = (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing);
-
-                if (timelinePosition > timelineDuration) timelinePosition = timelineDuration;
             }
             else
             {
@@ -742,8 +759,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
 
             // Elapsed time display
-            // Use the values previously calculated to avoid recalculating
-            if (sampleElapsed.HasValue && sampleDuration.HasValue)
+            // Update displayed elapsed seconds when we have an elapsed sample even if duration is unknown
+            if (sampleElapsed.HasValue)
             {
                 float desired = (float)(userIsSeeking ? userSeekElapsed.TotalSeconds : sampleElapsed.Value.TotalSeconds);
 
@@ -760,6 +777,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
                     else
                     {
+                        // Smoothly advance displayed elapsed while playing
                         displayedElapsedSeconds = Mathf.Lerp(displayedElapsedSeconds, desired, Math.Min(1f, 12f * deltaTime));
                     }
                 }
@@ -910,14 +928,15 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try
                     {
-                        // Timeline fetch: only perform an initial fetch when we do not yet have a timeline sample
-                        // We intentionally avoid periodic re-syncs here so the UI advances virtually and only
-                        // Corrects itself when an explicit action forces a refresh (metadata change or play/pause)
+                        // Timeline fetch: perform an initial fetch when we do not yet have a timeline sample
+                        // and also periodically re-sync the timeline so external changes (pause/seek) are detected
                         try
                         {
-                            if (!userIsSeeking && !timelineFetchedOnce)
+                            // Timeline re-sync: perform an initial fetch if missing, then refresh at configured interval
+                            if (!userIsSeeking && (!timelineFetchedOnce || (DateTime.UtcNow - lastTimelineResync) >= timelineFetchInterval))
                             {
-                                var tl = await MediaInfo.FetchCurrentTimelineAsync().ConfigureAwait(false);
+                                // Force refresh to bypass small MediaInfo timeline cache so external changes are detected
+                                var tl = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: true).ConfigureAwait(false);
                                 if (tl != null)
                                 {
                                     lock (mediaLock)
