@@ -27,7 +27,7 @@ namespace DynamicWin.UI.Widgets.Small
         private SKBitmap? thumbnailBitmap;
         private SKBitmap? pendingBitmap;
         private SKBitmap? previousBitmap;
-        private DynamicWin.Utils.Media? pendingMedia;
+        private Media? pendingMedia;
         private string? currentMediaKey;
         private string? pendingMediaKey;
 
@@ -40,10 +40,17 @@ namespace DynamicWin.UI.Widgets.Small
         private float collapseProgress = 0f;
         private Animator? collapseAnim = null;
 
+        private DateTime lastDecodeTime = DateTime.MinValue;
+        private readonly TimeSpan minDecodeInterval = TimeSpan.FromMilliseconds(500);
+        private CancellationTokenSource? decodeWorkerCts = null;
+        private byte[]? latestBytes = null;
+        private Media? latestMedia = null;
+        private bool decodeRequested = false;
+
         public MediaThumbnailWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
-            // Subscribe to thumbnail updates
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+            StartDecodeWorker();
 
             // Try to initialise from service cache so first show has an image
             try
@@ -89,117 +96,158 @@ namespace DynamicWin.UI.Widgets.Small
 
         private void OnThumbnailChanged(object? sender, MediaChangedEventArgs e)
         {
-            // Read previous state for change detection
-            bool prevHas = hasMedia;
-
-            // Decode bytes on background thread, then queue pending swap under lock
-            Task.Run(() =>
+            lock (mediaLock)
             {
-                var bytes = e.ThumbnailBytes;
-                var media = e.Media;
+                latestBytes = e.ThumbnailBytes;
+                latestMedia = e.Media;
+                decodeRequested = true;
+            }
+        }
 
-                // If there's really no media, wipe cached thumbnails and mark hidden
-                if (media == null && (bytes == null || bytes.Length == 0))
+        private void StartDecodeWorker()
+        {
+            decodeWorkerCts = new CancellationTokenSource();
+            var cts = decodeWorkerCts;
+            Task.Run(async () =>
+            {
+                while (!cts.IsCancellationRequested)
                 {
+                    bool shouldDecode = false;
+                    byte[]? bytes = null;
+                    Media? media = null;
+                    bool prevHas = hasMedia;
+
                     lock (mediaLock)
                     {
-                        hasMedia = false;
-                        currentMediaKey = null;
-
-                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
-                        if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-
-                        pendingMedia = null;
-                        pendingMediaKey = null;
-                    }
-
-                    // Notify UI thread to start collapse animation
-                    if (prevHas != hasMedia)
-                    {
-                        BeginInvokeUI(() => StartCollapseOrExpand(false));
-                    }
-
-                    return;
-                }
-
-                SKBitmap? newBmp = null;
-                if (bytes != null && bytes.Length > 0)
-                {
-                    try
-                    {
-                        using var ms = new SKMemoryStream(bytes);
-                        newBmp = SKBitmap.Decode(ms);
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine("MediaThumbnailWidget: decode failed: " + ex.Message);
-                        newBmp = null;
-                    }
-                }
-
-                lock (mediaLock)
-                {
-                    string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
-
-                    if (key == currentMediaKey || key == pendingMediaKey)
-                    {
-                        if (newBmp != null)
+                        if (decodeRequested)
                         {
-                            try { newBmp.Dispose(); } catch { }
+                            shouldDecode = true;
+                            bytes = latestBytes;
+                            media = latestMedia;
+                            decodeRequested = false;
                         }
                     }
-                    else
+
+                    if (!shouldDecode)
                     {
-                        if (thumbnailBitmap == null && newBmp != null)
+                        await Task.Delay(50, cts.Token).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // Debounce: wait for minDecodeInterval, coalescing further changes
+                    var debounceStart = DateTime.UtcNow;
+                    while ((DateTime.UtcNow - debounceStart) < minDecodeInterval)
+                    {
+                        await Task.Delay(50, cts.Token).ConfigureAwait(false);
+                        lock (mediaLock)
                         {
-                            // Queue as pending so animator runs on first show
-                            pendingBitmap = newBmp;
-                            pendingMedia = media;
-                            pendingMediaKey = key;
-                            hasMedia = true;
+                            if (decodeRequested)
+                            {
+                                // New change arrived, restart debounce
+                                bytes = latestBytes;
+                                media = latestMedia;
+                                decodeRequested = false;
+                                debounceStart = DateTime.UtcNow;
+                            }
                         }
-                        else
+                    }
+
+                    // If cancelled, exit
+                    if (cts.IsCancellationRequested) break;
+
+                    // If no media, clear all
+                    if (media == null && (bytes == null || bytes.Length == 0))
+                    {
+                        lock (mediaLock)
+                        {
+                            hasMedia = false;
+                            currentMediaKey = null;
+                            if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                            if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                            if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                            pendingMedia = null;
+                            pendingMediaKey = null;
+                        }
+                        if (prevHas != hasMedia)
+                        {
+                            BeginInvokeUI(() => StartCollapseOrExpand(false));
+                        }
+                        continue;
+                    }
+
+                    // Decode thumbnail
+                    SKBitmap? newBmp = null;
+                    if (bytes != null && bytes.Length > 0)
+                    {
+                        try
+                        {
+                            using var ms = new SKMemoryStream(bytes);
+                            newBmp = SKBitmap.Decode(ms);
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine("MediaThumbnailWidget: decode failed: " + ex.Message);
+                            newBmp = null;
+                        }
+                    }
+
+                    lock (mediaLock)
+                    {
+                        string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
+                        if (key == currentMediaKey || key == pendingMediaKey)
                         {
                             if (newBmp != null)
                             {
-                                if (pendingBitmap != null)
-                                {
-                                    try { pendingBitmap.Dispose(); } catch { }
-                                    pendingBitmap = null;
-                                    pendingMediaKey = null;
-                                    pendingMedia = null;
-                                }
-
+                                try { newBmp.Dispose(); } catch { }
+                            }
+                        }
+                        else
+                        {
+                            if (thumbnailBitmap == null && newBmp != null)
+                            {
+                                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
                                 pendingBitmap = newBmp;
                                 pendingMedia = media;
                                 pendingMediaKey = key;
                                 hasMedia = true;
                             }
-
-                            if (newBmp == null && key != currentMediaKey && pendingMediaKey == null)
+                            else
                             {
-                                // Metadata changed only
-                                currentMediaKey = key;
-                                // If metadata indicates no media, mark hidden
-                                if (media == null)
+                                if (newBmp != null)
                                 {
-                                    hasMedia = false;
-                                    if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
-                                    if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-                                    if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                                    if (pendingBitmap != null)
+                                    {
+                                        try { pendingBitmap.Dispose(); } catch { }
+                                        pendingBitmap = null;
+                                        pendingMediaKey = null;
+                                        pendingMedia = null;
+                                    }
+                                    pendingBitmap = newBmp;
+                                    pendingMedia = media;
+                                    pendingMediaKey = key;
+                                    hasMedia = true;
+                                }
+                                if (newBmp == null && key != currentMediaKey && pendingMediaKey == null)
+                                {
+                                    currentMediaKey = key;
+                                    if (media == null)
+                                    {
+                                        hasMedia = false;
+                                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
+                                        if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
+                                    }
                                 }
                             }
                         }
                     }
+                    lastDecodeTime = DateTime.UtcNow;
+                    if (prevHas != hasMedia)
+                    {
+                        BeginInvokeUI(() => StartCollapseOrExpand(hasMedia));
+                    }
                 }
-
-                // If media presence changed, schedule UI animation
-                if (prevHas != hasMedia)
-                {
-                    BeginInvokeUI(() => StartCollapseOrExpand(hasMedia));
-                }
-            });
+            }, decodeWorkerCts.Token);
         }
 
         private void StartCollapseOrExpand(bool expand)
@@ -251,7 +299,7 @@ namespace DynamicWin.UI.Widgets.Small
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("StartCollapseOrExpand error: " + ex.Message);
+                Debug.WriteLine("MediaThumbnailWidget.StartCollapseOrExpand error: " + ex.Message);
             }
         }
 
@@ -397,6 +445,9 @@ namespace DynamicWin.UI.Widgets.Small
         {
             base.OnDestroy();
             try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged; } catch { }
+            decodeWorkerCts?.Cancel();
+            decodeWorkerCts?.Dispose();
+            decodeWorkerCts = null;
             lock (mediaLock)
             {
                 if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
