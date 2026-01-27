@@ -90,6 +90,10 @@ namespace DynamicWin.Utils
         private DateTime pendingMediaCandidateAt = DateTime.MinValue;
         private readonly TimeSpan pendingMediaStableDelay = TimeSpan.FromMilliseconds(500);
 
+        // Add playback status tracking for widgets
+        private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus = null;
+        public GlobalSystemMediaTransportControlsSessionPlaybackStatus? LastPlaybackStatus => _lastPlaybackStatus;
+
         private MediaThumbnailService() { }
 
         public void Subscribe(Action<Media?> callback)
@@ -198,6 +202,17 @@ namespace DynamicWin.Utils
                 media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: shouldForce).ConfigureAwait(false);
             }
             catch { media = null; }
+
+            // Fetch timeline/playback status
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus = null;
+            try
+            {
+                var timeline = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: false).ConfigureAwait(false);
+                if (timeline != null)
+                    playbackStatus = timeline.PlaybackStatus;
+            }
+            catch { }
+            _lastPlaybackStatus = playbackStatus;
 
             // If there is no media, clear all cached metadata and thumbnail, and notify subscribers immediately
             if (media == null)

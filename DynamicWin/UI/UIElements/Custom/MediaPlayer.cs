@@ -16,7 +16,7 @@ using Windows.Media.Control;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          26 January 2026
+ *   Last Modified:          27 January 2026
  *
  */
 
@@ -129,6 +129,10 @@ namespace DynamicWin.UI.UIElements.Custom
 
         // Track whether we are subscribed to the thumbnail service so we can unsubscribe when not enabled
         private bool isThumbnailSubscribed = false;
+
+        // Animation for thumbnail scale/dim
+        private float thumbnailAnim = 1f; // 1 = playing, 0 = paused
+        private const float thumbnailAnimSpeed = 8f;
 
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
@@ -462,6 +466,11 @@ namespace DynamicWin.UI.UIElements.Custom
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
+            // Animate thumbnail scale/dim
+            bool isPaused = false;
+            lock (mediaLock) { isPaused = !GetEffectivePlayingState(); }
+            float target = isPaused ? 0f : 1f;
+            thumbnailAnim = Mathf.Lerp(thumbnailAnim, target, Math.Min(1f, thumbnailAnimSpeed * deltaTime));
 
             // Use null checks instead, exceptions kill performance on Update()
             bool visible = false;
@@ -727,14 +736,13 @@ namespace DynamicWin.UI.UIElements.Custom
                     TimeSpan? start = currentTimeline?.StartTime;
                     if (start.HasValue)
                     {
-                        var target = start.Value + userSeekElapsed;
-
+                        var seekTarget = start.Value + userSeekElapsed;
                         // Fire and forget task
                         _ = Task.Run(async () =>
                         {
                             try
                             {
-                                var ok = await MediaInfo.SeekCurrentSessionAsync(target).ConfigureAwait(false);
+                                var ok = await MediaInfo.SeekCurrentSessionAsync(seekTarget).ConfigureAwait(false);
                                 if (ok)
                                 {
                                     lock (mediaLock)
@@ -1244,12 +1252,18 @@ namespace DynamicWin.UI.UIElements.Custom
                 bool doFlip = animator.IsFlipping;
                 int save = canvas.Save();
 
+                // Shrink and dim thumbnail if paused, animated
+                float thumbScale = 0.6f + 0.4f * thumbnailAnim; // 0.6 (paused) to 1.0 (playing)
+                float dimAlpha = (1f - thumbnailAnim) * 120f; // 0 (playing) to 120 (paused)
+                float centerX = thumbRect.MidX;
+                float centerY = thumbRect.MidY;
+
                 if (doFlip)
                 {
                     float cx = thumbRect.MidX;
                     float cy = thumbRect.MidY;
                     canvas.Translate(cx, cy);
-                    canvas.Scale(flipScale, 1f);
+                    canvas.Scale(flipScale * thumbScale, thumbScale);
                     var localRect = SKRect.Create(-thumbSize / 2f, -thumbSize / 2f, thumbSize, thumbSize);
                     var localPath = BuildSuperellipsePath(localRect, 30f, 1f);
                     canvas.Save();
@@ -1264,6 +1278,12 @@ namespace DynamicWin.UI.UIElements.Custom
                     if (displayImg != null)
                     {
                         try { canvas.DrawImage(displayImg, localRect, paint); } catch { }
+                        if (dimAlpha > 0.5f)
+                        {
+                            using var dimPaint = GetPaint();
+                            dimPaint.Color = new SKColor(0, 0, 0, (byte)dimAlpha);
+                            canvas.DrawRect(localRect, dimPaint);
+                        }
                     }
                     else
                     {
@@ -1278,17 +1298,13 @@ namespace DynamicWin.UI.UIElements.Custom
 
                     canvas.Restore();
                     canvas.RestoreToCount(save);
-
-                    using var borderPaint = GetPaint();
-                    borderPaint.IsStroke = true;
-                    borderPaint.IsAntialias = Settings.AntiAliasing;
-                    borderPaint.StrokeWidth = 1.0f;
-                    borderPaint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
-                    canvas.DrawPath(squirclePath, borderPaint);
                 }
                 else
                 {
                     canvas.Save();
+                    canvas.Translate(centerX, centerY);
+                    canvas.Scale(thumbScale, thumbScale);
+                    canvas.Translate(-centerX, -centerY);
                     canvas.ClipPath(squirclePath, antialias: Settings.AntiAliasing);
 
                     var paint = GetPaint();
@@ -1296,10 +1312,15 @@ namespace DynamicWin.UI.UIElements.Custom
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
-
                     if (displayImg != null)
                     {
                         try { canvas.DrawImage(displayImg, thumbRect, paint); } catch { }
+                        if (dimAlpha > 0.5f)
+                        {
+                            using var dimPaint = GetPaint();
+                            dimPaint.Color = new SKColor(0, 0, 0, (byte)dimAlpha);
+                            canvas.DrawRect(thumbRect, dimPaint);
+                        }
                     }
                     else
                     {
@@ -1313,13 +1334,6 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
 
                     canvas.Restore();
-
-                    using var borderPaint = GetPaint();
-                    borderPaint.IsStroke = true;
-                    borderPaint.IsAntialias = Settings.AntiAliasing;
-                    borderPaint.StrokeWidth = 1.0f;
-                    borderPaint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
-                    canvas.DrawPath(squirclePath, borderPaint);
                 }
             }
             catch { }

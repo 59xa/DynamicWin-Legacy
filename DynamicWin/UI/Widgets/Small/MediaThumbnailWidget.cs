@@ -47,6 +47,10 @@ namespace DynamicWin.UI.Widgets.Small
         private Media? latestMedia = null;
         private bool decodeRequested = false;
 
+        // Animation for thumbnail scale/dim
+        private float thumbnailAnim = 1f; // 1 = playing, 0 = paused
+        private const float thumbnailAnimSpeed = 8f;
+
         public MediaThumbnailWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
@@ -306,6 +310,19 @@ namespace DynamicWin.UI.Widgets.Small
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
+            // Animate thumbnail scale/dim
+            bool isPaused = false;
+            try
+            {
+                var status = DynamicWin.Utils.MediaThumbnailService.Instance?.LastPlaybackStatus;
+                if (status.HasValue)
+                {
+                    isPaused = status.Value != Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                }
+            }
+            catch { }
+            float target = isPaused ? 0f : 1f;
+            thumbnailAnim = Mathf.Lerp(thumbnailAnim, target, Math.Min(1f, thumbnailAnimSpeed * deltaTime));
 
             // Drive animator; check pendingBitmap under lock
             animator.Update(deltaTime, () => { lock (mediaLock) { return pendingBitmap != null; } },
@@ -367,72 +384,70 @@ namespace DynamicWin.UI.Widgets.Small
                 float flipScale = animator.GetFlipScale();
                 bool doFlip = animator.IsFlipping;
 
+                // Shrink and dim thumbnail if paused, animated
+                float thumbScale = 0.6f + 0.4f * thumbnailAnim; // 0.6 (paused) to 1.0 (playing)
+                float dimAlpha = (1f - thumbnailAnim) * 120f; // 0 (playing) to 120 (paused)
+                float centerX = thumbRect.MidX;
+                float centerY = thumbRect.MidY;
+
                 if (doFlip)
                 {
                     int save = canvas.Save();
                     float cx = thumbRect.MidX;
                     float cy = thumbRect.MidY;
                     canvas.Translate(cx, cy);
-                    canvas.Scale(flipScale, 1f);
+                    canvas.Scale(flipScale * thumbScale, thumbScale);
                     var localRect = SKRect.Create(-thumbRect.Width / 2f, -thumbRect.Height / 2f, thumbRect.Width, thumbRect.Height);
-
                     var localPath = BuildSuperellipsePath(localRect, 7f, 1f);
                     canvas.Save();
                     canvas.ClipPath(localPath, antialias: true);
-
                     var paint = GetPaint();
                     paint.IsAntialias = true;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
-
                     if (bmp != null)
                     {
                         canvas.DrawBitmap(bmp, localRect, paint);
+                        if (dimAlpha > 0.5f)
+                        {
+                            using var dimPaint = GetPaint();
+                            dimPaint.Color = new SKColor(0, 0, 0, (byte)dimAlpha);
+                            canvas.DrawRect(localRect, dimPaint);
+                        }
                     }
                     else
                     {
                         paint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
                         canvas.DrawRoundRect(new SKRoundRect(localRect, localRect.Width * 0.12f), paint);
                     }
-
                     canvas.Restore();
                     canvas.RestoreToCount(save);
-
-                    using (var border = GetPaint())
-                    {
-                        border.IsStroke = true;
-                        border.StrokeWidth = 1f;
-                        border.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
-                        canvas.DrawPath(path, border);
-                    }
                 }
                 else
                 {
                     canvas.Save();
+                    canvas.Translate(centerX, centerY);
+                    canvas.Scale(thumbScale, thumbScale);
+                    canvas.Translate(-centerX, -centerY);
                     canvas.ClipPath(path, antialias: true);
-
                     var paint = GetPaint();
                     paint.IsAntialias = true;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
-
                     if (bmp != null)
                     {
                         canvas.DrawBitmap(bmp, thumbRect, paint);
+                        if (dimAlpha > 0.5f)
+                        {
+                            using var dimPaint = GetPaint();
+                            dimPaint.Color = new SKColor(0, 0, 0, (byte)dimAlpha);
+                            canvas.DrawRect(thumbRect, dimPaint);
+                        }
                     }
                     else
                     {
                         paint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
                         canvas.DrawRoundRect(new SKRoundRect(thumbRect, thumbRect.Width * 0.12f), paint);
                     }
-
                     canvas.Restore();
-
-                    using (var border = GetPaint())
-                    {
-                        border.IsStroke = true;
-                        border.StrokeWidth = 1f;
-                        border.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
-                        canvas.DrawPath(path, border);
-                    }
                 }
             }
             catch (Exception ex)
