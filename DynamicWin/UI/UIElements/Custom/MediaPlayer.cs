@@ -127,6 +127,9 @@ namespace DynamicWin.UI.UIElements.Custom
         // Extra height applied to timeline when hovering/seeking (smoothed)
         private float timelineExtraHeight = 0f;
 
+        // Track whether we are subscribed to the thumbnail service so we can unsubscribe when not enabled
+        private bool isThumbnailSubscribed = false;
+
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
             timelineBgColor = GetColor(Theme.WidgetBackground.Override(a: 200)).Value();
@@ -265,7 +268,12 @@ namespace DynamicWin.UI.UIElements.Custom
             catch { timelineBar = null; }
 
             // Subscribe to central thumbnail service event
-            MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+            try
+            {
+                MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+                isThumbnailSubscribed = true;
+            }
+            catch { isThumbnailSubscribed = false; }
 
             // Try to initialise thumbnail from service cache so it doesn't disappear when re-opening
             try
@@ -300,6 +308,17 @@ namespace DynamicWin.UI.UIElements.Custom
 
             if (isEnabled)
             {
+                // Re-subscribe to thumbnail service if needed
+                try
+                {
+                    if (!isThumbnailSubscribed)
+                    {
+                        MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+                        isThumbnailSubscribed = true;
+                    }
+                }
+                catch { isThumbnailSubscribed = false; }
+
                 StartFetchLoop();
 
                 // If service has a cached bitmap bytes, ensure it's used (queue as pending to animate in)
@@ -412,7 +431,19 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             else
             {
-                StopFetchLoop();
+                // When disabled, stop background work and unsubscribe from service to avoid unnecessary work
+                try
+                {
+                    if (isThumbnailSubscribed)
+                    {
+                        MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged;
+                        isThumbnailSubscribed = false;
+                    }
+                }
+                catch { isThumbnailSubscribed = false; }
+
+                // Stop the fetch loop and release pending resources
+                StopFetchLoop(disposeCached: true);
             }
         }
 
@@ -449,7 +480,7 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             else
             {
-                if (cts != null) StopFetchLoop();
+                if (cts != null) StopFetchLoop(disposeCached: false);
                 return; // Skip the rest if not visible
             }
 
@@ -1105,11 +1136,38 @@ namespace DynamicWin.UI.UIElements.Custom
             }, token);
         }
 
-        private void StopFetchLoop()
+        /// <summary>
+        /// Stop the background fetch loop. If disposeCached is true, also free cached images and metadata.
+        /// </summary>
+        private void StopFetchLoop(bool disposeCached = false)
         {
-            if (cts == null) return;
-            cts.Cancel();
-            cts.Dispose();
+            if (cts == null)
+            {
+                // Still optionally free resources
+                if (disposeCached)
+                {
+                    lock (mediaLock)
+                    {
+                        if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                        if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                        if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                        pendingMediaKey = null; pendingMedia = null;
+                        currentMedia = null; currentMediaKey = null;
+                    }
+                }
+                return;
+            }
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch { }
+            try
+            {
+                cts.Dispose();
+            }
+            catch { }
             cts = null;
 
             lock (mediaLock)
@@ -1123,6 +1181,14 @@ namespace DynamicWin.UI.UIElements.Custom
 
                 pendingMediaKey = null;
                 pendingMedia = null;
+
+                if (disposeCached)
+                {
+                    if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                    if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                    currentMedia = null;
+                    currentMediaKey = null;
+                }
             }
         }
 
@@ -1379,8 +1445,9 @@ namespace DynamicWin.UI.UIElements.Custom
             base.OnDestroy();
 
             try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged; } catch { }
+            isThumbnailSubscribed = false;
 
-            StopFetchLoop();
+            StopFetchLoop(disposeCached: true);
 
             lock (mediaLock)
             {
