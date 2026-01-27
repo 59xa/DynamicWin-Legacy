@@ -99,6 +99,9 @@ namespace DynamicWin.Main
             this.Title = "DynamicWin-Legacy Island";
             this.Icon = BitmapFrame.Create(new Uri(DynamicWinMain.ReleaseStream.GetIconPath(), UriKind.Relative));
 
+            // Centre window horizontally on size change
+            this.SizeChanged += (s, e) => CenterHorizontallyOnScreen();
+
             // Setup Win32 styles and initial topmost state
             this.Loaded += (s, e) =>
             {
@@ -212,8 +215,9 @@ namespace DynamicWin.Main
 
                 this.Width = 800;
                 this.Height = 500;
-                this.Left = workingArea.Left + (workingArea.Width / 2.0) - (this.Width / 2.0);
                 this.Top = workingArea.Top;
+
+                CenterHorizontallyOnScreen();
 
                 // Re-assert WPF Topmost
                 this.Topmost = true;
@@ -221,6 +225,19 @@ namespace DynamicWin.Main
                 // Immediately Force Win32 Z-Order to the top of the new monitor
                 ForceTopMost();
             }
+        }
+
+        /// <summary>
+        /// Ensures the window is horizontally centered on the current monitor.
+        /// </summary>
+        public void CenterHorizontallyOnScreen()
+        {
+            int screenIndex = Settings.ScreenIndex;
+            var screens = Forms.Screen.AllScreens;
+            if (screenIndex < 0 || screenIndex >= screens.Length) screenIndex = 0;
+            var screen = screens[screenIndex];
+            var workingArea = screen.WorkingArea;
+            this.Left = workingArea.Left + (workingArea.Width / 2.0) - (this.Width / 2.0);
         }
 
         public static int GetMonitorCount()
