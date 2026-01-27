@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
 using Windows.Media.Control;
+using DynamicWin.Utils;
 
 namespace DynamicWin.Utils
 {
@@ -51,6 +52,8 @@ namespace DynamicWin.Utils
                     }
                     else
                     {
+                        // Notify subscriber that there is currently no media so UI can clear state immediately
+                        value?.Invoke(this, new MediaChangedEventArgs(null, null));
                         // Kick off quick fetch for new subscriber
                         _ = FetchAndUpdateAsync();
                     }
@@ -105,7 +108,10 @@ namespace DynamicWin.Utils
                         ThumbnailData = lastBytes
                     });
                 else
-                    _ = FetchAndUpdateAsync();
+                    callback(null);
+
+                // Ensure a fetch is scheduled to refresh state
+                _ = FetchAndUpdateAsync();
             }
         }
 
@@ -187,9 +193,29 @@ namespace DynamicWin.Utils
             Media? media = null;
             try
             {
-                media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: true).ConfigureAwait(false);
+                // Only force refresh if we have no cached media or if debounce is in effect
+                bool shouldForce = lastMedia == null;
+                media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: shouldForce).ConfigureAwait(false);
             }
             catch { media = null; }
+
+            // If there is no media, clear all cached metadata and thumbnail, and notify subscribers immediately
+            if (media == null)
+            {
+                DisposeCachedBitmap();
+                lastBytes = null;
+                lastMedia = null;
+
+                // Notify all subscribers (typed and legacy) that there is no media
+                _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(null, null));
+                List<Action<Media?>> snap;
+                lock (listLock) { snap = new List<Action<Media?>>(legacyListeners); }
+                foreach (var l in snap)
+                {
+                    try { l(null); } catch { }
+                }
+                return;
+            }
 
             // Determine whether metadata changed compared to lastMedia (case-insensitive)
             bool metadataChanged = !AreMediaEqual(media, lastMedia);
@@ -198,41 +224,29 @@ namespace DynamicWin.Utils
             // and only proceed to fetch thumbnail bytes once it remains stable for pendingMediaStableDelay.
             if (metadataChanged)
             {
-                // If there's no pending candidate or candidate differs from current media, start debounce
                 if (pendingMediaCandidate == null || !AreMediaEqual(pendingMediaCandidate, media))
                 {
                     pendingMediaCandidate = media;
                     pendingMediaCandidateAt = DateTime.UtcNow;
-                    // Wait for stability window before fetching bytes
                     return;
                 }
-
-                // If candidate exists and is same as current, check stability time
                 if ((DateTime.UtcNow - pendingMediaCandidateAt) < pendingMediaStableDelay)
                 {
-                    // Still within debounce window; skip this cycle
                     return;
                 }
-
-                // Candidate is stable: treat as an actual metadata change
                 metadataChanged = true;
-                // Clear pending candidate
                 pendingMediaCandidate = null;
             }
             else
             {
-                // No change detected; clear any pending candidate
                 pendingMediaCandidate = null;
             }
 
-            // If metadata did not change and we already have bytes cached, skip fetching thumbnail bytes entirely
             if (!metadataChanged && lastBytes != null)
             {
-                // Nothing to do
                 return;
             }
 
-            // Otherwise, fetch thumbnail bytes (only when metadata changed or no cached bytes)
             byte[]? bytes = null;
             try
             {
@@ -242,7 +256,6 @@ namespace DynamicWin.Utils
 
             bool bytesChanged = !AreBytesEqual(lastBytes, bytes);
 
-            // Update caches
             lastBytes = bytes == null ? null : (byte[])bytes.Clone();
             lastMedia = new Media
             {
@@ -251,22 +264,16 @@ namespace DynamicWin.Utils
                 ThumbnailData = lastBytes
             };
 
-            // Raise typed event when either metadata OR bytes changed so subscribers get metadata-only updates too
             if (bytesChanged || metadataChanged)
             {
-                // Decode bitmap once for all subscribers if bytes changed
                 if (bytesChanged)
                 {
                     UpdateBitmap(bytes);
                 }
-
-                // Raise typed event directly (no Task.Run)
                 _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
                     media == null ? null : new Media { Title = media.Title, Artist = media.Artist },
                     lastBytes
                 ));
-
-                // Notify legacy listeners directly
                 List<Action<Media?>> snap;
                 lock (listLock) { snap = new List<Action<Media?>>(legacyListeners); }
                 foreach (var l in snap)
