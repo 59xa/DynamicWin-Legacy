@@ -14,11 +14,13 @@ namespace DynamicWin.Utils
     *   Overview:
     *    - Allow user to interact with media controls inside a widget that implements it.
     *    - Provide separate APIs for metadata and thumbnail bytes to avoid fetching thumbnails when not required.
+    *    - Added: session manager event-based monitoring to raise MediaChanged events when WinRT notifies changes.
+    *    - Debounces rapid WinRT events to avoid duplicate fetches.
     *    
     *   Author:                 Florian Butz & 59xa
     *   GitHub:                 https://github.com/FlorianButz
     *   Implementation Date:    3 August 2024
-    *   Last Modified:          12 January 2026
+    *   Last Modified:          26 January 2026
     */
 
     public class MediaController
@@ -32,17 +34,50 @@ namespace DynamicWin.Utils
 
         public void PlayPause()
         {
-            keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0);
+            // Try WinRT control first, fallback to media key if unavailable
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var ok = await MediaInfo.TryTogglePlayPauseAsync().ConfigureAwait(false);
+                    if (!ok)
+                    {
+                        keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0);
+                    }
+                }
+                catch
+                {
+                    try { keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0); } catch { }
+                }
+            });
         }
 
         public void Next()
         {
-            keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, 0);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var ok = await MediaInfo.TryNextAsync().ConfigureAwait(false);
+                    if (!ok)
+                        keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, 0);
+                }
+                catch { try { keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, 0); } catch { } }
+            });
         }
 
         public void Previous()
         {
-            keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, 0);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var ok = await MediaInfo.TryPreviousAsync().ConfigureAwait(false);
+                    if (!ok)
+                        keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, 0);
+                }
+                catch { try { keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, 0); } catch { } }
+            });
         }
     }
 
@@ -56,7 +91,7 @@ namespace DynamicWin.Utils
     *   Author:                 59xa
     *   GitHub:                 https://github.com/59xa
     *   Implementation Date:    19 May 2025
-    *   Last Modified:          12 January 2026
+    *   Last Modified:          26 January 2026
     */
 
     public class MediaInfo
@@ -72,8 +107,11 @@ namespace DynamicWin.Utils
         // Dedicated small cache & lock for timeline-only fetches so UI can poll frequently
         private static readonly SemaphoreSlim _timelineLock = new SemaphoreSlim(1, 1);
         private static DateTime _lastTimelineFetch = DateTime.MinValue;
+        // Timeline is fetched once per media change; UI should progress position virtually to avoid frequent WinRT calls
         private static readonly TimeSpan _timelineCacheDuration = TimeSpan.FromMilliseconds(250);
         private static MediaTimeline? _timelineCache = null;
+        // Track last media key so we can invalidate timeline when the media changes
+        private static string? _lastMediaKey = null;
 
         // Exponential backoff parameters to avoid busy retry loops when COM service is unavailable
         private static DateTime _lastStartAttempt = DateTime.MinValue;
@@ -352,10 +390,10 @@ namespace DynamicWin.Utils
         /// Fetch metadata (Title, Artist) for the currently focused session. This method intentionally does NOT
         /// fetch or return the thumbnail bytes to keep it lightweight for callers that only need text metadata.
         /// </summary>
-        public static async Task<Media?> FetchCurrentMediaAsync()
+        public static async Task<Media?> FetchCurrentMediaAsync(bool forceRefresh = false)
         {
-            // Return cached result if recent
-            if (Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
+            // Return cached result if recent and not forcing refresh
+            if (!forceRefresh && Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
                 return Current;
 
             // Ensure manager exists and is started only once
@@ -367,8 +405,8 @@ namespace DynamicWin.Utils
             await _fetchLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                // Re-check cache after acquiring lock
-                if (Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
+                // Re-check cache after acquiring lock (unless forced)
+                if (!forceRefresh && Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
                     return Current;
 
                 try
@@ -402,6 +440,18 @@ namespace DynamicWin.Utils
                     };
 
                     Current = result;
+                    // Invalidate timeline cache when metadata (title/artist) changes so consumer fetches a fresh timeline once
+                    try
+                    {
+                        var key = (result.Title ?? string.Empty) + "|" + (result.Artist ?? string.Empty);
+                        if (!string.Equals(_lastMediaKey ?? string.Empty, key, StringComparison.Ordinal))
+                        {
+                            _timelineCache = null;
+                            _lastTimelineFetch = DateTime.MinValue;
+                            _lastMediaKey = key;
+                        }
+                    }
+                    catch { }
                     _lastFetch = DateTime.UtcNow;
 
 #if DEBUG
@@ -442,10 +492,10 @@ namespace DynamicWin.Utils
         /// This uses a small cache and separate lock to allow frequent polling (e.g. every 250ms) without impacting
         /// metadata or thumbnail fetches.
         /// </summary>
-        public static async Task<MediaTimeline?> FetchCurrentTimelineAsync()
+        public static async Task<MediaTimeline?> FetchCurrentTimelineAsync(bool forceRefresh = false)
         {
-            // Return cached timeline if recent
-            if (_timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
+            // Return cached timeline if recent unless forced
+            if (!forceRefresh && _timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
                 return _timelineCache;
 
             // Fast check to avoid heavy work when manager is unavailable
@@ -454,7 +504,7 @@ namespace DynamicWin.Utils
             await _timelineLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
+                if (!forceRefresh && _timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
                     return _timelineCache;
 
                 var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
@@ -470,10 +520,11 @@ namespace DynamicWin.Utils
                     var _t = control.GetTimelineProperties();
                     var _i = control.GetPlaybackInfo();
 
+                    // StartTime is typically 0 for most sessions; only store EndTime and Position. Consumers should progress Position virtually.
                     var tl = new MediaTimeline
                     {
                         Position = _t.Position,
-                        StartTime = _t.StartTime,
+                        StartTime = TimeSpan.Zero,
                         EndTime = _t.EndTime,
                         PlaybackStatus = _i?.PlaybackStatus ?? GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed
                     };
@@ -620,6 +671,109 @@ namespace DynamicWin.Utils
                 return false;
             }
         }
+
+        // Playback control helpers using WinRT session when possible
+        public static async Task<bool> TryTogglePlayPauseAsync()
+        {
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) return false;
+
+                try
+                {
+                    var info = control.GetPlaybackInfo();
+                    if (info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                    {
+                        var op = control.TryPauseAsync();
+                        await op.AsTask().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        var op = control.TryPlayAsync();
+                        await op.AsTask().ConfigureAwait(false);
+                    }
+
+                    return true;
+                }
+                catch { return false; }
+            }
+            catch { return false; }
+        }
+
+        public static async Task<bool> TryNextAsync()
+        {
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) return false;
+
+                try
+                {
+                    var op = control.TrySkipNextAsync();
+                    await op.AsTask().ConfigureAwait(false);
+                    return true;
+                }
+                catch { return false; }
+            }
+            catch { return false; }
+        }
+
+        public static async Task<bool> TryPreviousAsync()
+        {
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) return false;
+
+                try
+                {
+                    var op = control.TrySkipPreviousAsync();
+                    await op.AsTask().ConfigureAwait(false);
+                    return true;
+                }
+                catch { return false; }
+            }
+            catch { return false; }
+        }
+
+        public static async Task<bool> TryPlayAsync()
+        {
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) return false;
+
+                try
+                {
+                    var op = control.TryPlayAsync();
+                    await op.AsTask().ConfigureAwait(false);
+                    return true;
+                }
+                catch { return false; }
+            }
+            catch { return false; }
+        }
+
+        public static async Task<bool> TryPauseAsync()
+        {
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) return false;
+
+                try
+                {
+                    var op = control.TryPauseAsync();
+                    await op.AsTask().ConfigureAwait(false);
+                    return true;
+                }
+                catch { return false; }
+            }
+            catch { return false; }
+        }
+
+        // Note: session manager monitoring is implemented in MediaThumbnailService to centralise event handling
     }
 
     /// <summary>

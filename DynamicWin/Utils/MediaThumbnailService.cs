@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
+using Windows.Media.Control;
 
 namespace DynamicWin.Utils
 {
@@ -20,8 +21,7 @@ namespace DynamicWin.Utils
 
     /// <summary>
     /// Centralised thumbnail fetcher.
-    /// Periodically queries MediaInfo.FetchCurrentThumbnailBytesAsync and notifies subscribers when the media (thumbnail bytes) changes.
-    /// This keeps thumbnail polling in one place so multiple consumers can reuse it.
+    /// Polling-based: periodically polls WinRT for metadata/thumbnail changes, but prevents concurrent duplicate fetches.
     /// </summary>
     public class MediaThumbnailService
     {
@@ -72,11 +72,15 @@ namespace DynamicWin.Utils
 
         private CancellationTokenSource? cts;
         private readonly object listLock = new object();
-        private readonly TimeSpan interval = TimeSpan.FromSeconds(1);
+        // Poll interval when using polling mode
+        private readonly TimeSpan pollInterval = TimeSpan.FromSeconds(1);
 
         private byte[]? lastBytes;
         private Media? lastMedia;
         private SKBitmap? lastBitmap;
+
+        // Simple guard to prevent concurrent fetches
+        private int fetchRunning = 0;
 
         private MediaThumbnailService() { }
 
@@ -117,24 +121,46 @@ namespace DynamicWin.Utils
             cts = new CancellationTokenSource();
             var token = cts.Token;
 
+            // Start polling loop which periodically calls FetchAndUpdateAsync but ensures only one fetch runs at a time
             _ = Task.Run(async () =>
             {
+                // Immediate initial fetch
+                if (Interlocked.CompareExchange(ref fetchRunning, 1, 0) == 0)
+                {
+                    try { await FetchAndUpdateAsync().ConfigureAwait(false); } catch { }
+                    finally { Interlocked.Exchange(ref fetchRunning, 0); }
+                }
+
                 while (!token.IsCancellationRequested)
                 {
                     try
                     {
-                        await FetchAndUpdateAsync();
-                    }
-                    catch { /* Swallow fetch exceptions */ }
+                        // Wait poll interval (cooperative)
+                        try { await Task.Delay(pollInterval, token).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
 
-                    try { await Task.Delay(interval, token); } catch { }
+                        // If a fetch is already running, skip this cycle to avoid duplicate work
+                        if (Interlocked.CompareExchange(ref fetchRunning, 1, 0) != 0)
+                            continue;
+
+                        try
+                        {
+                            await FetchAndUpdateAsync().ConfigureAwait(false);
+                        }
+                        catch { /* Swallow */ }
+                        finally
+                        {
+                            Interlocked.Exchange(ref fetchRunning, 0);
+                        }
+                    }
+                    catch { }
                 }
 
                 // Clean up on exit
                 DisposeCachedBitmap();
                 lastBytes = null;
                 lastMedia = null;
-            });
+
+            }, token);
         }
 
         private void StopLoop()
@@ -147,17 +173,36 @@ namespace DynamicWin.Utils
 
         /// <summary>
         /// Fetch current media + thumbnail bytes and update caches.
-        /// Only raises events if bytes have changed.
+        /// Behaviour: fetch metadata first, and only fetch thumbnail bytes when metadata changed OR we have no cached bytes.
+        /// Polling ensures this is called periodically; fetchRunning guard prevents concurrent duplicate fetches.
         /// </summary>
         private async Task FetchAndUpdateAsync()
         {
-            var mediaTask = MediaInfo.FetchCurrentMediaAsync();
-            var thumbTask = MediaInfo.FetchCurrentThumbnailBytesAsync();
+            // Fetch metadata first
+            Media? media = null;
+            try
+            {
+                media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: true).ConfigureAwait(false);
+            }
+            catch { media = null; }
 
-            await Task.WhenAll(mediaTask, thumbTask).ConfigureAwait(false);
+            // Determine whether metadata changed compared to lastMedia (case-insensitive)
+            bool metadataChanged = !AreMediaEqual(media, lastMedia);
 
-            var media = mediaTask.Result;
-            var bytes = thumbTask.Result;
+            // If metadata did not change and we already have bytes cached, skip fetching thumbnail bytes entirely
+            if (!metadataChanged && lastBytes != null)
+            {
+                // Nothing to do
+                return;
+            }
+
+            // Otherwise, fetch thumbnail bytes (only when metadata changed or no cached bytes)
+            byte[]? bytes = null;
+            try
+            {
+                bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync().ConfigureAwait(false);
+            }
+            catch { bytes = null; }
 
             bool bytesChanged = !AreBytesEqual(lastBytes, bytes);
 
@@ -170,10 +215,14 @@ namespace DynamicWin.Utils
                 ThumbnailData = lastBytes
             };
 
-            if (bytesChanged)
+            // Raise typed event when either metadata OR bytes changed so subscribers get metadata-only updates too
+            if (bytesChanged || metadataChanged)
             {
-                // Decode bitmap once for all subscribers
-                UpdateBitmap(bytes);
+                // Decode bitmap once for all subscribers if bytes changed
+                if (bytesChanged)
+                {
+                    UpdateBitmap(bytes);
+                }
 
                 // Raise typed event directly (no Task.Run)
                 _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
@@ -224,6 +273,16 @@ namespace DynamicWin.Utils
                 if (a[i] != b[i]) return false;
 
             return true;
+        }
+
+        private bool AreMediaEqual(Media? a, Media? b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null && b == null) return true;
+            if (a == null || b == null) return false;
+
+            return string.Equals(a.Title ?? string.Empty, b.Title ?? string.Empty, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(a.Artist ?? string.Empty, b.Artist ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
 
         public byte[]? GetCurrentThumbnailBytes() => lastBytes == null ? null : (byte[])lastBytes.Clone();
