@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Windows.Media.Control;
 using WindowsMediaController;
 using static WindowsMediaController.MediaManager;
+using DynamicWin.Utils;
 
 namespace DynamicWin.Utils
 {
@@ -118,6 +119,11 @@ namespace DynamicWin.Utils
         private static int _failedStartAttempts = 0;
         private static readonly TimeSpan _startBackoffBase = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan _startBackoffMax = TimeSpan.FromSeconds(60);
+
+        // Thumbnail byte caching
+        private static byte[]? _thumbnailCache = null;
+        private static DateTime _lastThumbnailFetch = DateTime.MinValue;
+        private static readonly TimeSpan _thumbnailCacheDuration = TimeSpan.FromMilliseconds(500);
 
         public static MediaInfo Instance => _i ??= new MediaInfo();
 
@@ -431,6 +437,14 @@ namespace DynamicWin.Utils
 
                     var _i = control.GetPlaybackInfo();
 
+                    // Treat sessions that are Closed or Stopped as no media so UI clears metadata/thumb
+                    if (_i == null || _i.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed || _i.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped)
+                    {
+                        Current = null;
+                        _lastFetch = DateTime.UtcNow;
+                        return null;
+                    }
+
                     // Note: intentionally do not read thumbnail stream here - keep metadata-only
                     var result = new Media 
                     { 
@@ -488,9 +502,8 @@ namespace DynamicWin.Utils
         }
 
         /// <summary>
-        /// Fetches only timeline properties (position/start/end/playback status) for the currently focused session.
-        /// This uses a small cache and separate lock to allow frequent polling (e.g. every 250ms) without impacting
-        /// metadata or thumbnail fetches.
+        /// Fetches only timeline properties (position/start/end/playback status) for the currently focused session. This is a cheap separate call so
+        /// consumers can subscribe to thumbnails without forcing every metadata fetch to read binary streams.
         /// </summary>
         public static async Task<MediaTimeline?> FetchCurrentTimelineAsync(bool forceRefresh = false)
         {
@@ -508,23 +521,18 @@ namespace DynamicWin.Utils
                     return _timelineCache;
 
                 var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null)
-                {
-                    _timelineCache = null;
-                    _lastTimelineFetch = DateTime.UtcNow;
-                    return null;
-                }
+                if (control == null) { _timelineCache = null; _lastTimelineFetch = DateTime.UtcNow; return null; }
 
                 try
                 {
                     var _t = control.GetTimelineProperties();
                     var _i = control.GetPlaybackInfo();
 
-                    // StartTime is typically 0 for most sessions; only store EndTime and Position. Consumers should progress Position virtually.
+                    // Convert WinRT timeline properties to MediaTimeline
                     var tl = new MediaTimeline
                     {
                         Position = _t.Position,
-                        StartTime = TimeSpan.Zero,
+                        StartTime = _t.StartTime,
                         EndTime = _t.EndTime,
                         PlaybackStatus = _i?.PlaybackStatus ?? GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed
                     };
@@ -539,14 +547,12 @@ namespace DynamicWin.Utils
                     Debug.WriteLine("[MEDIA INFO] COM failure while fetching timeline: " + cex.Message);
 #endif
                     ResetManager("COMException in FetchCurrentTimelineAsync", cex);
-                    _timelineCache = null;
-                    _lastTimelineFetch = DateTime.UtcNow;
                     return null;
                 }
                 catch (Exception ex)
                 {
 #if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] FetchCurrentTimelineAsync error: " + ex.Message);
+                    Debug.WriteLine("[MEDIA INFO] Error while fetching timeline: " + ex.Message);
 #endif
                     return null;
                 }
@@ -554,121 +560,6 @@ namespace DynamicWin.Utils
             finally
             {
                 _timelineLock.Release();
-            }
-        }
-
-        /// <summary>
-        /// Fetches only the thumbnail bytes for the currently focused session. This is a cheap separate call so
-        /// consumers can subscribe to thumbnails without forcing every metadata fetch to read binary streams.
-        /// Returns null when there is no thumbnail available or on failure.
-        /// </summary>
-        public static async Task<byte[]?> FetchCurrentThumbnailBytesAsync()
-        {
-            // Ensure manager exists and has been started only once
-            await EnsureManagerStartedAsync().ConfigureAwait(false);
-
-            // Do not use the same _fetchLock as metadata - allow thumbnail fetches to proceed concurrently
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return null;
-
-                var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
-                if (_p == null) return null;
-
-                if (_p.Thumbnail == null) return null;
-
-                try
-                {
-                    using var streamRef = await _p.Thumbnail.OpenReadAsync().AsTask().ConfigureAwait(false);
-                    using var stream = streamRef.AsStreamForRead();
-                    using var ms = new MemoryStream();
-                    await stream.CopyToAsync(ms).ConfigureAwait(false);
-                    return ms.ToArray();
-                }
-                catch (COMException cex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail bytes: " + cex.Message);
-#endif
-                    ResetManager("COMException in FetchCurrentThumbnailBytesAsync", cex);
-                    return null;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error: " + ex.Message);
-#endif
-                    return null;
-                }
-            }
-            catch (COMException cex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail session: " + cex.Message);
-#endif
-                ResetManager("COMException in FetchCurrentThumbnailBytesAsync (session)", cex);
-                return null;
-            }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error (outer): " + ex.Message);
-#endif
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Attempts to set the playback position for the currently focused session.
-        /// Returns true when the request completes successfully.
-        /// </summary>
-        public static async Task<bool> SeekCurrentSessionAsync(TimeSpan position)
-        {
-            await EnsureManagerStartedAsync().ConfigureAwait(false);
-
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    // Use TimeSpan ticks (100-nanosecond units) if the wrapper expects a long representing ticks
-                    var op = control.TryChangePlaybackPositionAsync(position.Ticks);
-                    await op.AsTask().ConfigureAwait(false);
-                    return true;
-                }
-                catch (COMException cex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] COM failure while seeking: " + cex.Message);
-#endif
-                    ResetManager("COMException in SeekCurrentSessionAsync", cex);
-                    return false;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync failed: " + ex.Message);
-#endif
-                    return false;
-                }
-            }
-            catch (COMException cex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] COM failure while obtaining session for seek: " + cex.Message);
-#endif
-                ResetManager("COMException in SeekCurrentSessionAsync (session)", cex);
-                return false;
-            }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync error (outer): " + ex.Message);
-#endif
-                return false;
             }
         }
 
@@ -683,7 +574,7 @@ namespace DynamicWin.Utils
                 try
                 {
                     var info = control.GetPlaybackInfo();
-                    if (info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                    if (info != null && info.PlaybackStatus == Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
                     {
                         var op = control.TryPauseAsync();
                         await op.AsTask().ConfigureAwait(false);
@@ -773,24 +664,121 @@ namespace DynamicWin.Utils
             catch { return false; }
         }
 
-        // Note: session manager monitoring is implemented in MediaThumbnailService to centralise event handling
-    }
+        public static async Task<bool> SeekCurrentSessionAsync(System.TimeSpan position)
+        {
+            await EnsureManagerStartedAsync().ConfigureAwait(false);
 
-    /// <summary>
-    /// Lightweight timeline-only container used by FetchCurrentTimelineAsync.
-    /// </summary>
-    public class MediaTimeline
-    {
-        public TimeSpan Position { get; set; }
-        public TimeSpan StartTime { get; set; }
-        public TimeSpan EndTime { get; set; }
-        public GlobalSystemMediaTransportControlsSessionPlaybackStatus PlaybackStatus { get; set; }
-    }
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) return false;
 
-    public class Media
-    {
-        public string? Title { get; set; }
-        public string? Artist { get; set; }
-        public byte[]? ThumbnailData { get; set; }
+                try
+                {
+                    var op = control.TryChangePlaybackPositionAsync(position.Ticks);
+                    await op.AsTask().ConfigureAwait(false);
+                    return true;
+                }
+                catch (COMException cex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] COM failure while seeking: " + cex.Message);
+#endif
+                    ResetManager("COMException in SeekCurrentSessionAsync", cex);
+                    return false;
+                }
+                catch (Exception ex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync failed: " + ex.Message);
+#endif
+                    return false;
+                }
+            }
+            catch (COMException cex)
+            {
+#if DEBUG
+                Debug.WriteLine("[MEDIA INFO] COM failure while obtaining session for seek: " + cex.Message);
+#endif
+                ResetManager("COMException in SeekCurrentSessionAsync (session)", cex);
+                return false;
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync error (outer): " + ex.Message);
+#endif
+                return false;
+            }
+        }
+
+        public static async Task<byte[]?> FetchCurrentThumbnailBytesAsync(bool forceRefresh = false)
+        {
+            // Use cache if recent and not forcing refresh
+            if (!forceRefresh && _thumbnailCache != null && (DateTime.UtcNow - _lastThumbnailFetch) < _thumbnailCacheDuration)
+                return _thumbnailCache;
+
+            await EnsureManagerStartedAsync().ConfigureAwait(false);
+
+            try
+            {
+                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
+                if (control == null) { _thumbnailCache = null; _lastThumbnailFetch = DateTime.UtcNow; return null; }
+
+                var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
+                if (_p == null) { _thumbnailCache = null; _lastThumbnailFetch = DateTime.UtcNow; return null; }
+
+                if (_p.Thumbnail == null) { _thumbnailCache = null; _lastThumbnailFetch = DateTime.UtcNow; return null; }
+
+                try
+                {
+                    using var streamRef = await _p.Thumbnail.OpenReadAsync().AsTask().ConfigureAwait(false);
+                    using var stream = streamRef.AsStreamForRead();
+                    using var ms = new MemoryStream();
+                    await stream.CopyToAsync(ms).ConfigureAwait(false);
+                    _thumbnailCache = ms.ToArray();
+                    _lastThumbnailFetch = DateTime.UtcNow;
+                    return _thumbnailCache;
+                }
+                catch (COMException cex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail bytes: " + cex.Message);
+#endif
+                    ResetManager("COMException in FetchCurrentThumbnailBytesAsync", cex);
+                    _thumbnailCache = null;
+                    _lastThumbnailFetch = DateTime.UtcNow;
+                    return null;
+                }
+                catch (Exception ex)
+                {
+#if DEBUG
+                    Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error: " + ex.Message);
+#endif
+                    _thumbnailCache = null;
+                    _lastThumbnailFetch = DateTime.UtcNow;
+                    return null;
+                }
+            }
+            catch (COMException cex)
+            {
+#if DEBUG
+                Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail session: " + cex.Message);
+#endif
+                ResetManager("COMException in FetchCurrentThumbnailBytesAsync (session)", cex);
+                _thumbnailCache = null;
+                _lastThumbnailFetch = DateTime.UtcNow;
+                return null;
+            }
+            catch (Exception ex)
+            {
+#if DEBUG
+                Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error (outer): " + ex.Message);
+#endif
+                _thumbnailCache = null;
+                _lastThumbnailFetch = DateTime.UtcNow;
+                return null;
+            }
+        }
     }
 }
