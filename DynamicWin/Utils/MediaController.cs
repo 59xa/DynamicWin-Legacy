@@ -21,7 +21,7 @@ namespace DynamicWin.Utils
     *   Author:                 Florian Butz & 59xa
     *   GitHub:                 https://github.com/FlorianButz
     *   Implementation Date:    3 August 2024
-    *   Last Modified:          26 January 2026
+    *   Last Modified:          27 January 2026
     */
 
     public class MediaController
@@ -33,51 +33,23 @@ namespace DynamicWin.Utils
         private const byte VK_MEDIA_NEXT_TRACK = 0xB0;
         private const byte VK_MEDIA_PREV_TRACK = 0xB1;
 
-        public void PlayPause()
+        public void PlayPause() => SafeMediaAction(MediaInfo.TryTogglePlayPauseAsync, VK_MEDIA_PLAY_PAUSE);
+        public void Next() => SafeMediaAction(MediaInfo.TryNextAsync, VK_MEDIA_NEXT_TRACK);
+        public void Previous() => SafeMediaAction(MediaInfo.TryPreviousAsync, VK_MEDIA_PREV_TRACK);
+
+        private void SafeMediaAction(Func<Task<bool>> winRtAction, byte fallbackKey)
         {
-            // Try WinRT control first, fallback to media key if unavailable
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    var ok = await MediaInfo.TryTogglePlayPauseAsync().ConfigureAwait(false);
-                    if (!ok)
-                    {
-                        keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0);
-                    }
+                    if (!await winRtAction().ConfigureAwait(false))
+                        keybd_event(fallbackKey, 0, 0, 0);
                 }
                 catch
                 {
-                    try { keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0); } catch { }
+                    keybd_event(fallbackKey, 0, 0, 0);
                 }
-            });
-        }
-
-        public void Next()
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var ok = await MediaInfo.TryNextAsync().ConfigureAwait(false);
-                    if (!ok)
-                        keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, 0);
-                }
-                catch { try { keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, 0); } catch { } }
-            });
-        }
-
-        public void Previous()
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var ok = await MediaInfo.TryPreviousAsync().ConfigureAwait(false);
-                    if (!ok)
-                        keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, 0);
-                }
-                catch { try { keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, 0); } catch { } }
             });
         }
     }
@@ -92,693 +64,247 @@ namespace DynamicWin.Utils
     *   Author:                 59xa
     *   GitHub:                 https://github.com/59xa
     *   Implementation Date:    19 May 2025
-    *   Last Modified:          26 January 2026
+    *   Last Modified:          27 January 2026
     */
 
     public class MediaInfo
     {
-        private static MediaInfo? _i;
-        private static MediaManager _m;
-        private static bool _started = false;
-        private static readonly SemaphoreSlim _fetchLock = new SemaphoreSlim(1, 1);
-        private static readonly SemaphoreSlim _startLock = new SemaphoreSlim(1, 1);
-        private static DateTime _lastFetch = DateTime.MinValue;
-        private static readonly TimeSpan _cacheDuration = TimeSpan.FromSeconds(1); // Cache for 1s to reduce work
+        private static MediaInfo? _instance;
+        public static MediaInfo Instance => _instance ??= new MediaInfo();
 
-        // Dedicated small cache & lock for timeline-only fetches so UI can poll frequently
-        private static readonly SemaphoreSlim _timelineLock = new SemaphoreSlim(1, 1);
-        private static DateTime _lastTimelineFetch = DateTime.MinValue;
-        // Timeline is fetched once per media change; UI should progress position virtually to avoid frequent WinRT calls
-        private static readonly TimeSpan _timelineCacheDuration = TimeSpan.FromMilliseconds(250);
-        private static MediaTimeline? _timelineCache = null;
-        // Track last media key so we can invalidate timeline when the media changes
-        private static string? _lastMediaKey = null;
-
-        // Exponential backoff parameters to avoid busy retry loops when COM service is unavailable
-        private static DateTime _lastStartAttempt = DateTime.MinValue;
-        private static int _failedStartAttempts = 0;
-        private static readonly TimeSpan _startBackoffBase = TimeSpan.FromSeconds(1);
-        private static readonly TimeSpan _startBackoffMax = TimeSpan.FromSeconds(60);
-
-        // Thumbnail byte caching
-        private static byte[]? _thumbnailCache = null;
-        private static DateTime _lastThumbnailFetch = DateTime.MinValue;
-        private static readonly TimeSpan _thumbnailCacheDuration = TimeSpan.FromMilliseconds(500);
-
-        public static MediaInfo Instance => _i ??= new MediaInfo();
-
+        // Cached data (for consumers to read)
         public static Media? Current { get; private set; }
+        private static MediaTimeline? _timelineCache;
+        private static byte[]? _thumbnailBytesCache;
+
+        // WinRT Objects
+        // Keep these alive so we don't recreate them constantly
+        private static GlobalSystemMediaTransportControlsSessionManager? _sessionManager;
+        private static GlobalSystemMediaTransportControlsSession? _currentSession;
+
+        // Locks and state
+        private static readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
+        private static bool _isInitialized = false;
 
         /// <summary>
-        /// Compute current backoff duration based on number of recent failures (exponential, capped).
-        /// </summary>
-        private static TimeSpan GetCurrentBackoff()
-        {
-            if (_failedStartAttempts <= 0) return TimeSpan.Zero;
-            try
-            {
-                double seconds = _startBackoffBase.TotalSeconds * Math.Pow(2, Math.Min(_failedStartAttempts - 1, 10));
-                seconds = Math.Min(seconds, _startBackoffMax.TotalSeconds);
-                return TimeSpan.FromSeconds(seconds);
-            }
-            catch
-            {
-                return _startBackoffBase;
-            }
-        }
-
-        /// <summary>
-        /// Select the best WinRT session to use. Prefers Playing sessions, then any non-Closed session,
-        /// then the focused session, then the first available session. Uses the WinRT SessionManager to
-        /// enumerate sessions (works even when the wrapper MediaManager doesn't expose a session list).
-        /// </summary>
-        private static async Task<GlobalSystemMediaTransportControlsSession?> GetBestWinRTSessionAsync()
-        {
-            try
-            {
-                var mgrOp = GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-                var mgr = await mgrOp.AsTask().ConfigureAwait(false);
-                if (mgr == null) return null;
-
-                var sessions = mgr.GetSessions(); // IReadOnlyList<GlobalSystemMediaTransportControlsSession>
-                if (sessions != null && sessions.Count > 0)
-                {
-                    // Prefer Playing
-                    foreach (var s in sessions)
-                    {
-                        try
-                        {
-                            var info = s.GetPlaybackInfo();
-                            if (info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-                                return s;
-                        }
-                        catch { }
-                    }
-
-                    // Prefer any non-Closed
-                    foreach (var s in sessions)
-                    {
-                        try
-                        {
-                            var info = s.GetPlaybackInfo();
-                            if (info != null && info.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed)
-                                return s;
-                        }
-                        catch { }
-                    }
-
-                    // Focused session
-                    try
-                    {
-                        var focused = mgr.GetCurrentSession();
-                        if (focused != null) return focused;
-                    }
-                    catch { }
-
-                    // First available
-                    try { return sessions[0]; } catch { }
-                }
-
-                // Fallback to current session
-                try { return mgr.GetCurrentSession(); } catch { }
-            }
-            catch { }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Ensures the MediaManager instance exists and has been started. Returns true when ready.
-        /// This method is safe to call concurrently and will return false on failure.
-        /// </summary>
-        private static async Task<bool> EnsureManagerStartedAsync()
-        {
-            // Fast check: if recent start attempt occurred, throttle and return false quickly to avoid expensive retries
-            var backoff = GetCurrentBackoff();
-            if (!_started && (DateTime.UtcNow - _lastStartAttempt) < backoff)
-            {
-                return false;
-            }
-
-            // Record attempt time
-            _lastStartAttempt = DateTime.UtcNow;
-
-            if (_m == null)
-            {
-                try
-                {
-                    _m = new MediaManager();
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA CONTROLLER] MediaManager constructor failed: " + ex.Message);
-#endif
-                    _m = null;
-                    _started = false;
-                    _lastFetch = DateTime.UtcNow;
-                    _failedStartAttempts++;
-                    return false;
-                }
-            }
-
-            if (_started) 
-            {
-                // success path; reset failure counter if there were failures
-                if (_failedStartAttempts != 0) _failedStartAttempts = 0;
-                return true;
-            }
-
-            await _startLock.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                if (_started) 
-                {
-                    if (_failedStartAttempts != 0) _failedStartAttempts = 0;
-                    return true;
-                }
-
-                try
-                {
-                    await _m.StartAsync().ConfigureAwait(false);
-                    _started = true;
-                    // Reset failure counter on success
-                    _failedStartAttempts = 0;
-                    return true;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA CONTROLLER] MediaManager failed to start: " + ex.Message);
-#endif
-                    // On failure, avoid retrying too aggressively
-                    _lastFetch = DateTime.UtcNow;
-                    Current = null;
-                    _started = false;
-                    _failedStartAttempts++;
-                    try
-                    {
-                        // Use thread-safe exchange to set _m to null before disposing to avoid races and potential null refs
-                        var mLocal = Interlocked.Exchange(ref _m, null);
-                        if (mLocal is IDisposable disp)
-                        {
-                            try { disp.Dispose(); }
-                            catch (Exception dex)
-                            {
-#if DEBUG
-                                Debug.WriteLine("[MEDIA CONTROLLER] Dispose failed: " + dex.Message);
-#endif
-                            }
-                        }
-                    }
-                    catch { }
-                    return false;
-                }
-            }
-            finally
-            {
-                _startLock.Release();
-            }
-        }
-
-        /// <summary>
-        /// Helper to reset the internal MediaManager instance when a COM/IPC failure occurs.
-        /// This allows future calls to reinitialize the manager cleanly.
-        /// </summary>
-        private static void ResetManager(string reason = null, Exception? ex = null)
-        {
-#if DEBUG
-            try
-            {
-                Debug.WriteLine($"[MEDIA CONTROLLER] ResetManager triggered. Reason: {reason}. Exception: {ex?.Message}");
-            }
-            catch { }
-#endif
-            try
-            {
-                if (_m != null)
-                {
-                    try
-                    {
-                        // Exchange the reference with null first to avoid races where other threads try to use _m
-                        var mLocal = Interlocked.Exchange(ref _m, null);
-                        if (mLocal is IDisposable disp)
-                        {
-                            try { disp.Dispose(); } catch { }
-                        }
-                    }
-                    catch { }
-                }
-            }
-            catch { }
-
-            _m = null!;
-            _started = false;
-            // Backoff the next start attempt based on failures to avoid tight retry storms
-            _failedStartAttempts = Math.Min(_failedStartAttempts + 1, 12);
-            _lastStartAttempt = DateTime.UtcNow;
-            _lastFetch = DateTime.UtcNow; // avoid tight retry storms
-            Current = null;
-
-            // Clear timeline cache too so subsequent timeline fetches will reattempt initialization
-            _timelineCache = null;
-            _lastTimelineFetch = DateTime.MinValue;
-        }
-
-        /// <summary>
-        /// Initialise the MediaManager on a dedicated STA background thread. This helps avoid startup races
-        /// where Windows Media Controller requires STA/COM context.
-        /// This method is safe to call multiple times; it will simply start initialisation if not already started.
+        /// Initialises the connection to Windows Media controls once.
+        /// Hooks up events so we don't have to poll manually.
         /// </summary>
         public static void Initialize()
         {
+            if (_isInitialized) return;
+
+            // Run on background thread to avoid blocking UI
+            Task.Run(async () =>
+            {
+                await _initLock.WaitAsync();
+                try
+                {
+                    if (_isInitialized) return;
+
+                    // 1. Get the Manager ONCE
+                    _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+
+                    // 2. Subscribe to session changes (when user switches apps)
+                    _sessionManager.CurrentSessionChanged += OnSessionManager_CurrentSessionChanged;
+
+                    // 3. Load initial session
+                    UpdateCurrentSession();
+
+                    _isInitialized = true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[MediaInfo] Init Failed: {ex.Message}");
+                }
+                finally
+                {
+                    _initLock.Release();
+                }
+            });
+        }
+
+        /// <summary>
+        /// Handles switching focus between apps (e.g. Spotify -> Chrome)
+        /// </summary>
+        private static void OnSessionManager_CurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
+        {
+            UpdateCurrentSession();
+        }
+
+        private static void UpdateCurrentSession()
+        {
             try
             {
-                // If already started, nothing to do
-                if (_started) return;
-
-                // Start initialisation on an STA thread to satisfy COM/WinRT requirements
-                var t = new Thread(() =>
+                // Unsubscribe from old session to prevent leaks
+                if (_currentSession != null)
                 {
-                    try
-                    {
-                        // Call the private async starter synchronously on this STA thread
-                        EnsureManagerStartedAsync().GetAwaiter().GetResult();
-                    }
-                    catch (Exception ex)
-                    {
-#if DEBUG
-                        Debug.WriteLine("[MEDIA CONTROLLER] MediaInfo.Initialize STA thread failed: " + ex.Message);
-#endif
-                    }
-                });
-                t.IsBackground = true;
-                t.SetApartmentState(ApartmentState.STA);
-                t.Start();
+                    _currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
+                    _currentSession.PlaybackInfoChanged -= OnPlaybackInfoChanged;
+                    _currentSession = null;
+                }
+
+                // Get new session
+                var session = _sessionManager?.GetCurrentSession();
+                if (session != null)
+                {
+                    _currentSession = session;
+                    _currentSession.MediaPropertiesChanged += OnMediaPropertiesChanged;
+                    _currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
+
+                    // Immediate fetch of initial data
+                    RefreshMediaProperties(session);
+                    RefreshTimeline(session);
+                }
+                else
+                {
+                    // No media playing
+                    Current = null;
+                    _timelineCache = null;
+                    _thumbnailBytesCache = null;
+                }
             }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA CONTROLLER] MediaInfo.Initialize failed: " + ex.Message);
-#endif
-            }
+            catch (Exception ex) { Debug.WriteLine($"[MediaInfo] UpdateSession Error: {ex.Message}"); }
         }
 
-        /// <summary>
-        /// Public wrapper to reset the internal manager. Safe to call from other modules (e.g., on suspend/resume)
-        /// </summary>
-        public static void Reset(string reason = null, Exception? ex = null)
+        // Triggered by Windows when Song/Title changes
+        private static void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
         {
-            ResetManager(reason, ex);
+            RefreshMediaProperties(sender);
         }
 
-        /// <summary>
-        /// Fetch metadata (Title, Artist) for the currently focused session. This method intentionally does NOT
-        /// fetch or return the thumbnail bytes to keep it lightweight for callers that only need text metadata.
-        /// </summary>
+        // Triggered by Windows when Play/Pause/Position changes
+        private static void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
+        {
+            RefreshTimeline(sender);
+        }
+
+        private static void RefreshMediaProperties(GlobalSystemMediaTransportControlsSession session)
+        {
+            Task.Run(async () =>
+            {
+                try
+                {
+                    var props = await session.TryGetMediaPropertiesAsync();
+                    if (props == null) return;
+
+                    // Update Text Metadata
+                    Current = new Media
+                    {
+                        Title = props.Title,
+                        Artist = props.Artist,
+                        ThumbnailData = null // Keep null, fetch bytes only on demand
+                    };
+
+                    // Reset thumb cache on song change
+                    _thumbnailBytesCache = null;
+                }
+                catch { }
+            });
+        }
+
+        private static void RefreshTimeline(GlobalSystemMediaTransportControlsSession session)
+        {
+            try
+            {
+                var timeline = session.GetTimelineProperties();
+                var info = session.GetPlaybackInfo();
+
+                _timelineCache = new MediaTimeline
+                {
+                    Position = timeline.Position,
+                    StartTime = timeline.StartTime,
+                    EndTime = timeline.EndTime,
+                    PlaybackStatus = info?.PlaybackStatus ?? GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed
+                };
+            }
+            catch { }
+        }
+
+        // Public API
+
         public static async Task<Media?> FetchCurrentMediaAsync(bool forceRefresh = false)
         {
-            // Return cached result if recent and not forcing refresh
-            if (!forceRefresh && Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
-                return Current;
+            if (!_isInitialized) Initialize();
 
-            // Ensure manager exists and is started only once
-            if (!await EnsureManagerStartedAsync().ConfigureAwait(false))
+            // If we have a cached object, return it instantly
+            // If the user wants to force refresh, we trigger the update logic manually
+            if (forceRefresh && _currentSession != null)
             {
-                // Even if wrapper manager isn't ready, try WinRT manager directly below
+                RefreshMediaProperties(_currentSession);
             }
 
-            await _fetchLock.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                // Re-check cache after acquiring lock (unless forced)
-                if (!forceRefresh && Current != null && (DateTime.UtcNow - _lastFetch) < _cacheDuration)
-                    return Current;
-
-                try
-                {
-                    var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                    if (control == null)
-                    {
-                        Current = null;
-                        _lastFetch = DateTime.UtcNow;
-                        return null;
-                    }
-
-                    var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
-                    if (_p == null)
-                    {
-                        Current = null;
-                        _lastFetch = DateTime.UtcNow;
-                        return null;
-                    }
-
-                    var _t = control.GetTimelineProperties();
-
-                    var _i = control.GetPlaybackInfo();
-
-                    // Treat sessions that are Closed or Stopped as no media so UI clears metadata/thumb
-                    if (_i == null || _i.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed || _i.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped)
-                    {
-                        Current = null;
-                        _lastFetch = DateTime.UtcNow;
-                        return null;
-                    }
-
-                    // Note: intentionally do not read thumbnail stream here - keep metadata-only
-                    var result = new Media 
-                    { 
-                        Title = _p.Title,
-                        Artist = _p.Artist,
-                        ThumbnailData = null,
-                    };
-
-                    Current = result;
-                    // Invalidate timeline cache when metadata (title/artist) changes so consumer fetches a fresh timeline once
-                    try
-                    {
-                        var key = (result.Title ?? string.Empty) + "|" + (result.Artist ?? string.Empty);
-                        if (!string.Equals(_lastMediaKey ?? string.Empty, key, StringComparison.Ordinal))
-                        {
-                            _timelineCache = null;
-                            _lastTimelineFetch = DateTime.MinValue;
-                            _lastMediaKey = key;
-                        }
-                    }
-                    catch { }
-                    _lastFetch = DateTime.UtcNow;
-
-#if DEBUG
-                    Debug.WriteLine($"[MEDIA CONTROLLER] TITLE: {_p.Title}, ARTIST: {_p.Artist}, START: {_t.StartTime}, END: {_t.EndTime}, POSITION: {_t.Position}, PLAYBACK STATUS: {_i.PlaybackStatus}");
-#endif
-                    return result;
-                }
-                catch (COMException cex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching media: " + cex.Message);
-#endif
-                    // Reset manager so future requests will reinitialize it with backoff
-                    ResetManager("COMException in FetchCurrentMediaAsync", cex);
-                    return null;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] Error while fetching media: " + ex.Message);
-#endif
-                    // For unexpected errors, also defensively reset if it's an IPC/COM style failure
-                    if (ex is ObjectDisposedException || ex is InvalidOperationException)
-                    {
-                        ResetManager("Exception in FetchCurrentMediaAsync", ex);
-                    }
-                    return null;
-                }
-            }
-            finally
-            {
-                _fetchLock.Release();
-            }
+            return Current;
         }
 
-        /// <summary>
-        /// Fetches only timeline properties (position/start/end/playback status) for the currently focused session. This is a cheap separate call so
-        /// consumers can subscribe to thumbnails without forcing every metadata fetch to read binary streams.
-        /// </summary>
         public static async Task<MediaTimeline?> FetchCurrentTimelineAsync(bool forceRefresh = false)
         {
-            // Return cached timeline if recent unless forced
-            if (!forceRefresh && _timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
-                return _timelineCache;
+            if (!_isInitialized) Initialize();
 
-            // Fast check to avoid heavy work when manager is unavailable
-            await EnsureManagerStartedAsync().ConfigureAwait(false);
-
-            await _timelineLock.WaitAsync().ConfigureAwait(false);
-            try
+            // For timeline, we might want to poll 'Position' if the song is playing, 
+            // but for metadata, we just return the cache
+            if (forceRefresh && _currentSession != null)
             {
-                if (!forceRefresh && _timelineCache != null && (DateTime.UtcNow - _lastTimelineFetch) < _timelineCacheDuration)
-                    return _timelineCache;
-
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) { _timelineCache = null; _lastTimelineFetch = DateTime.UtcNow; return null; }
-
-                try
-                {
-                    var _t = control.GetTimelineProperties();
-                    var _i = control.GetPlaybackInfo();
-
-                    // Convert WinRT timeline properties to MediaTimeline
-                    var tl = new MediaTimeline
-                    {
-                        Position = _t.Position,
-                        StartTime = _t.StartTime,
-                        EndTime = _t.EndTime,
-                        PlaybackStatus = _i?.PlaybackStatus ?? GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed
-                    };
-
-                    _timelineCache = tl;
-                    _lastTimelineFetch = DateTime.UtcNow;
-                    return tl;
-                }
-                catch (COMException cex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching timeline: " + cex.Message);
-#endif
-                    ResetManager("COMException in FetchCurrentTimelineAsync", cex);
-                    return null;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] Error while fetching timeline: " + ex.Message);
-#endif
-                    return null;
-                }
+                RefreshTimeline(_currentSession);
             }
-            finally
-            {
-                _timelineLock.Release();
-            }
-        }
 
-        // Playback control helpers using WinRT session when possible
-        public static async Task<bool> TryTogglePlayPauseAsync()
-        {
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    var info = control.GetPlaybackInfo();
-                    if (info != null && info.PlaybackStatus == Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-                    {
-                        var op = control.TryPauseAsync();
-                        await op.AsTask().ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        var op = control.TryPlayAsync();
-                        await op.AsTask().ConfigureAwait(false);
-                    }
-
-                    return true;
-                }
-                catch { return false; }
-            }
-            catch { return false; }
-        }
-
-        public static async Task<bool> TryNextAsync()
-        {
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    var op = control.TrySkipNextAsync();
-                    await op.AsTask().ConfigureAwait(false);
-                    return true;
-                }
-                catch { return false; }
-            }
-            catch { return false; }
-        }
-
-        public static async Task<bool> TryPreviousAsync()
-        {
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    var op = control.TrySkipPreviousAsync();
-                    await op.AsTask().ConfigureAwait(false);
-                    return true;
-                }
-                catch { return false; }
-            }
-            catch { return false; }
-        }
-
-        public static async Task<bool> TryPlayAsync()
-        {
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    var op = control.TryPlayAsync();
-                    await op.AsTask().ConfigureAwait(false);
-                    return true;
-                }
-                catch { return false; }
-            }
-            catch { return false; }
-        }
-
-        public static async Task<bool> TryPauseAsync()
-        {
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    var op = control.TryPauseAsync();
-                    await op.AsTask().ConfigureAwait(false);
-                    return true;
-                }
-                catch { return false; }
-            }
-            catch { return false; }
-        }
-
-        public static async Task<bool> SeekCurrentSessionAsync(System.TimeSpan position)
-        {
-            await EnsureManagerStartedAsync().ConfigureAwait(false);
-
-            try
-            {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) return false;
-
-                try
-                {
-                    var op = control.TryChangePlaybackPositionAsync(position.Ticks);
-                    await op.AsTask().ConfigureAwait(false);
-                    return true;
-                }
-                catch (COMException cex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] COM failure while seeking: " + cex.Message);
-#endif
-                    ResetManager("COMException in SeekCurrentSessionAsync", cex);
-                    return false;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync failed: " + ex.Message);
-#endif
-                    return false;
-                }
-            }
-            catch (COMException cex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] COM failure while obtaining session for seek: " + cex.Message);
-#endif
-                ResetManager("COMException in SeekCurrentSessionAsync (session)", cex);
-                return false;
-            }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] SeekCurrentSessionAsync error (outer): " + ex.Message);
-#endif
-                return false;
-            }
+            return _timelineCache;
         }
 
         public static async Task<byte[]?> FetchCurrentThumbnailBytesAsync(bool forceRefresh = false)
         {
-            // Use cache if recent and not forcing refresh
-            if (!forceRefresh && _thumbnailCache != null && (DateTime.UtcNow - _lastThumbnailFetch) < _thumbnailCacheDuration)
-                return _thumbnailCache;
+            if (!_isInitialized) Initialize();
 
-            await EnsureManagerStartedAsync().ConfigureAwait(false);
+            // Return cached bytes if available
+            if (_thumbnailBytesCache != null && !forceRefresh)
+                return _thumbnailBytesCache;
+
+            if (_currentSession == null) return null;
 
             try
             {
-                var control = await GetBestWinRTSessionAsync().ConfigureAwait(false);
-                if (control == null) { _thumbnailCache = null; _lastThumbnailFetch = DateTime.UtcNow; return null; }
+                // We have to fetch the stream here
+                var props = await _currentSession.TryGetMediaPropertiesAsync();
+                if (props?.Thumbnail == null) return null;
 
-                var _p = await control.TryGetMediaPropertiesAsync().AsTask().ConfigureAwait(false);
-                if (_p == null) { _thumbnailCache = null; _lastThumbnailFetch = DateTime.UtcNow; return null; }
+                using var streamRef = await props.Thumbnail.OpenReadAsync();
+                using var stream = streamRef.AsStreamForRead();
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
 
-                if (_p.Thumbnail == null) { _thumbnailCache = null; _lastThumbnailFetch = DateTime.UtcNow; return null; }
-
-                try
-                {
-                    using var streamRef = await _p.Thumbnail.OpenReadAsync().AsTask().ConfigureAwait(false);
-                    using var stream = streamRef.AsStreamForRead();
-                    using var ms = new MemoryStream();
-                    await stream.CopyToAsync(ms).ConfigureAwait(false);
-                    _thumbnailCache = ms.ToArray();
-                    _lastThumbnailFetch = DateTime.UtcNow;
-                    return _thumbnailCache;
-                }
-                catch (COMException cex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail bytes: " + cex.Message);
-#endif
-                    ResetManager("COMException in FetchCurrentThumbnailBytesAsync", cex);
-                    _thumbnailCache = null;
-                    _lastThumbnailFetch = DateTime.UtcNow;
-                    return null;
-                }
-                catch (Exception ex)
-                {
-#if DEBUG
-                    Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error: " + ex.Message);
-#endif
-                    _thumbnailCache = null;
-                    _lastThumbnailFetch = DateTime.UtcNow;
-                    return null;
-                }
+                _thumbnailBytesCache = ms.ToArray();
+                return _thumbnailBytesCache;
             }
-            catch (COMException cex)
+            catch
             {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] COM failure while fetching thumbnail session: " + cex.Message);
-#endif
-                ResetManager("COMException in FetchCurrentThumbnailBytesAsync (session)", cex);
-                _thumbnailCache = null;
-                _lastThumbnailFetch = DateTime.UtcNow;
                 return null;
             }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("[MEDIA INFO] FetchCurrentThumbnailBytesAsync error (outer): " + ex.Message);
-#endif
-                _thumbnailCache = null;
-                _lastThumbnailFetch = DateTime.UtcNow;
-                return null;
-            }
+        }
+
+        // Controls
+
+        public static async Task<bool> TryTogglePlayPauseAsync()
+        {
+            if (_currentSession == null) return false;
+            return await _currentSession.TryTogglePlayPauseAsync();
+        }
+
+        public static async Task<bool> TryNextAsync()
+        {
+            if (_currentSession == null) return false;
+            return await _currentSession.TrySkipNextAsync();
+        }
+
+        public static async Task<bool> TryPreviousAsync()
+        {
+            if (_currentSession == null) return false;
+            return await _currentSession.TrySkipPreviousAsync();
+        }
+
+        public static async Task<bool> SeekCurrentSessionAsync(TimeSpan position)
+        {
+            if (_currentSession == null) return false;
+            return await _currentSession.TryChangePlaybackPositionAsync(position.Ticks);
         }
     }
 }
