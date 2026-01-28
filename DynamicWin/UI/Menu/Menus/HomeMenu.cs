@@ -218,6 +218,8 @@ namespace DynamicWin.UI.Menu.Menus
                 // Switch to media view
                 currentBigMenuMode = BigMenuMode.Media;
                 isWidgetMode = false;
+                // Force re-notify current thumbnail to all widgets after switching to Media view
+                try { MediaThumbnailService.Instance.ForceNotifyCurrentThumbnail(); } catch { }
             },
             UIAlignment.MiddleLeft);
             mediaButton.Text.alignment = UIAlignment.MiddleLeft;
