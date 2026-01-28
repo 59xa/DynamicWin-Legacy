@@ -27,7 +27,7 @@ namespace DynamicWin.UI.Menu.Menus
             overText = new DWText(island, "Timer Over!", new Utils.Vec2(0, 0), UIAlignment.Center)
             {
                 TextSize = 20,
-                Font = Resources.Res.SatoshiBold
+                Font = Resources.Res.SFProBold
             };
 
             objects.Add(overText);

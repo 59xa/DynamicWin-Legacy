@@ -95,13 +95,13 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             var generalTitle = new DWText(island, "General", new Vec2(25, 0), UIAlignment.TopLeft);
-            generalTitle.Font = Res.SatoshiBold;
+            generalTitle.Font = Res.SFProBold;
             generalTitle.Anchor.X = 0;
             objects.Add(generalTitle);
 
             {
                 var islandModesTitle = new DWText(island, "Island Mode", new Vec2(25, 0), UIAlignment.TopLeft);
-                islandModesTitle.Font = Res.SatoshiBold;
+                islandModesTitle.Font = Res.SFProBold;
                 islandModesTitle.Color = Theme.TextMain;
                 islandModesTitle.TextSize = 15;
                 islandModesTitle.Anchor.X = 0;
@@ -134,12 +134,12 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(antiAliasing);
 
             refreshRateDisclaimer1 = new DWText(island, "Enables application to run at the highest refresh rate supported by your monitor.", new Vec2(25, 0), UIAlignment.TopLeft);
-            refreshRateDisclaimer1.Font = Res.SatoshiRegular;
+            refreshRateDisclaimer1.Font = Res.SFProRegular;
             refreshRateDisclaimer1.TextSize = 12;
             refreshRateDisclaimer1.Anchor.X = 0;
 
             refreshRateDisclaimer2 = new DWText(island, "This setting will cause performance degradation on some devices, proceed with caution.", new Vec2(25, 0), UIAlignment.TopLeft);
-            refreshRateDisclaimer2.Font = Res.SatoshiRegular;
+            refreshRateDisclaimer2.Font = Res.SFProRegular;
             refreshRateDisclaimer2.TextSize = 12;
             refreshRateDisclaimer2.Anchor.X = 0;
 
@@ -189,7 +189,7 @@ namespace DynamicWin.UI.Menu.Menus
                 UIAlignment.TopLeft
             )
             {
-                Font = Res.SatoshiRegular,
+                Font = Res.SFProRegular,
                 TextSize = 12,
                 Anchor = new Vec2(0, 0)
             };
@@ -201,7 +201,7 @@ namespace DynamicWin.UI.Menu.Menus
                 UIAlignment.TopLeft
             )
             {
-                Font = Res.SatoshiRegular,
+                Font = Res.SFProRegular,
                 TextSize = 12,
                 Anchor = new Vec2(0, 0)
             };
@@ -264,7 +264,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var selectedMonitorTitle = new DWText(island, "Selected Monitor", new Vec2(25, 0), UIAlignment.TopLeft);
-                selectedMonitorTitle.Font = Res.SatoshiBold;
+                selectedMonitorTitle.Font = Res.SFProBold;
                 selectedMonitorTitle.TextSize = 15;
                 selectedMonitorTitle.Anchor.X = 0;
                 objects.Add(selectedMonitorTitle);
@@ -301,7 +301,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var themeTitle = new DWText(island, "Themes", new Vec2(25, 0), UIAlignment.TopLeft);
-                themeTitle.Font = Res.SatoshiBold;
+                themeTitle.Font = Res.SFProBold;
                 themeTitle.TextSize = 15;
                 themeTitle.Anchor.X = 0;
                 objects.Add(themeTitle);
@@ -324,14 +324,14 @@ namespace DynamicWin.UI.Menu.Menus
             });
 
             var widgetsTitle = new DWText(island, "Widgets", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetsTitle.Font = Res.SatoshiBold;
+            widgetsTitle.Font = Res.SFProBold;
             widgetsTitle.Color = Theme.TextMain;
             widgetsTitle.Anchor.X = 0;
             objects.Add(widgetsTitle);
 
             {
                 var wTitle = new DWText(island, "Small widgets (right click to add/edit)", new Vec2(25, 0), UIAlignment.TopLeft);
-                wTitle.Font = Res.SatoshiBold;
+                wTitle.Font = Res.SFProBold;
                 wTitle.Color = Theme.TextMain;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
@@ -343,7 +343,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var wTitle = new DWText(island, "Big widgets (right click to add/edit)", new Vec2(25, 15), UIAlignment.TopLeft);
-                wTitle.Font = Res.SatoshiBold;
+                wTitle.Font = Res.SFProBold;
                 wTitle.Color = Theme.TextMain;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
@@ -361,7 +361,7 @@ namespace DynamicWin.UI.Menu.Menus
             });
 
             var widgetOptionsTitle = new DWText(island, "Widget Settings", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetOptionsTitle.Font = Res.SatoshiBold;
+            widgetOptionsTitle.Font = Res.SFProBold;
             widgetOptionsTitle.Color = Theme.TextMain;
             widgetOptionsTitle.Anchor.X = 0;
             objects.Add(widgetOptionsTitle);
@@ -370,7 +370,7 @@ namespace DynamicWin.UI.Menu.Menus
                 foreach (var option in _cachedCustomOptions)
                 {
                     var wTitle = new DWText(island, option.SettingTitle, new Vec2(25, 0), UIAlignment.TopLeft);
-                    wTitle.Font = Res.SatoshiBold;
+                    wTitle.Font = Res.SFProBold;
                     wTitle.TextSize = 15;
                     wTitle.Anchor.X = 0;
                     objects.Add(wTitle);
@@ -388,7 +388,7 @@ namespace DynamicWin.UI.Menu.Menus
                         if (optionItem is DWText)
                         {
                             ((DWText)optionItem).Color = Theme.TextMain;
-                            ((DWText)optionItem).Font = Res.SatoshiRegular;
+                            ((DWText)optionItem).Font = Res.SFProRegular;
                             ((DWText)optionItem).TextSize = 13;
                         }
                         else if (optionItem is DWCheckbox)
@@ -402,20 +402,20 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             var releaseStreamTitle = new DWText(island, "Release Stream", new Vec2(25, 0), UIAlignment.TopLeft);
-            releaseStreamTitle.Font = Res.SatoshiBold;
+            releaseStreamTitle.Font = Res.SFProBold;
             releaseStreamTitle.Color = Theme.TextMain;
             releaseStreamTitle.Anchor.X = 0;
             objects.Add(releaseStreamTitle);
 
             var releaseStreamDisclaimerPt1 = new DWText(island, "Updates will be checked after you restart the application", new Vec2(25, -15), UIAlignment.TopLeft);
-            releaseStreamDisclaimerPt1.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimerPt1.Font = Res.SFProRegular;
             releaseStreamDisclaimerPt1.TextSize = 12;
             releaseStreamDisclaimerPt1.Color = Theme.TextSecond;
             releaseStreamDisclaimerPt1.Anchor.X = 0;
             objects.Add(releaseStreamDisclaimerPt1);
 
             var releaseStreamDisclaimerPt2 = new DWText(island, "or by pressing the 'Check for updates now' button.", new Vec2(25, -30), UIAlignment.TopLeft);
-            releaseStreamDisclaimerPt2.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimerPt2.Font = Res.SFProRegular;
             releaseStreamDisclaimerPt2.TextSize = 12;
             releaseStreamDisclaimerPt2.Color = Theme.TextSecond;
             releaseStreamDisclaimerPt2.Anchor.X = 0;
@@ -473,7 +473,7 @@ namespace DynamicWin.UI.Menu.Menus
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),
                 TextSize = 15,
-                Font = Res.SatoshiBold
+                Font = Res.SFProBold
             });
 
             objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, -25), UIAlignment.TopLeft)
@@ -501,7 +501,7 @@ namespace DynamicWin.UI.Menu.Menus
             {
                 roundRadius = 25
             };
-            backBtn.Text.Font = Res.SatoshiBold;
+            backBtn.Text.Font = Res.SFProBold;
 
             bottomMask = new BottomMask(island, backBtn)
             {

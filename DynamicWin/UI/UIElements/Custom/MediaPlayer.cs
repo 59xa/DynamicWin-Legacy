@@ -773,7 +773,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 // Only measure when string changes
                 var paint = GetPaint();
                 paint.TextSize = 14f;
-                paint.Typeface = Res.SatoshiBold; // Accessing Res property might be slight overhead, ensure cached if possible
+                paint.Typeface = Res.SFProBold; // Accessing Res property might be slight overhead, ensure cached if possible
                 titleTextWidth = paint.MeasureText(fullTitleText);
 
                 // Reset scroll on change
@@ -1423,13 +1423,13 @@ namespace DynamicWin.UI.UIElements.Custom
             var titlePaint = GetPaint();
             titlePaint.IsStroke = false;
             titlePaint.TextSize = 14f;
-            titlePaint.Typeface = Resources.Res.SatoshiBold;
+            titlePaint.Typeface = Resources.Res.SFProBold;
             titlePaint.Color = GetColor(Theme.TextMain).Value();
 
             var artistPaint = GetPaint();
             artistPaint.IsStroke = false;
             artistPaint.TextSize = 12f;
-            artistPaint.Typeface = Resources.Res.SatoshiRegular;
+            artistPaint.Typeface = Resources.Res.SFProRegular;
             artistPaint.Color = GetColor(Theme.TextSecond).Value();
 
             if (!string.IsNullOrEmpty(fullTitleText))
@@ -1518,7 +1518,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     paint.IsAntialias = Settings.AntiAliasing;
                     paint.Color = GetColor(timelineTextColor).Value();
                     paint.TextSize = timelineTextSize;
-                    paint.Typeface = Resources.Res.SatoshiRegular;
+                    paint.Typeface = Resources.Res.SFProRegular;
 
                     float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
                     float leftX = barX - timelineSidePadding + 4f;

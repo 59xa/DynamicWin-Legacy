@@ -98,7 +98,7 @@ namespace DynamicWin.UI.Menu.Menus
             // Title text
             var updaterText = new DWText(island, "An update is available.", new Vec2(0, -10), UIAlignment.Center)
             {
-                Font = Res.SatoshiBold,
+                Font = Res.SFProBold,
                 TextSize = 18,
                 Color = Theme.TextMain
             };
