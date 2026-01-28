@@ -226,8 +226,6 @@ namespace DynamicWin
                 // Stop hardware monitoring and background services
                 try { HardwareMonitor.Stop(); } catch { }
 
-                try { MediaInfo.Reset(); } catch { }
-
                 try { WeatherAPI.Default.StopFetching(); } catch { }
 
 #if DEBUG
