@@ -134,6 +134,11 @@ namespace DynamicWin.UI.UIElements.Custom
         private float thumbnailAnim = 1f; // 1 = playing, 0 = paused
         private const float thumbnailAnimSpeed = 8f;
 
+        // Metadata fetch throttle to populate textual metadata when thumbnail exists but metadata not set
+        private int metadataFetchRunning = 0;
+        private DateTime lastMetadataFetch = DateTime.MinValue;
+        private readonly TimeSpan metadataFetchInterval = TimeSpan.FromSeconds(1);
+
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
             timelineBgColor = GetColor(Theme.WidgetBackground.Override(a: 200)).Value();
@@ -170,11 +175,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try
                     {
-                        bool ok;
-                        if (willPlay)
-                            ok = await MediaInfo.TryPlayAsync().ConfigureAwait(false);
-                        else
-                            ok = await MediaInfo.TryPauseAsync().ConfigureAwait(false);
+                        bool ok = await MediaInfo.TryTogglePlayPauseAsync().ConfigureAwait(false);
 
                         if (!ok)
                         {
@@ -435,18 +436,17 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             else
             {
-                // When disabled, stop background work and unsubscribe from service to avoid unnecessary work
+                // When disabled, stop background work but keep subscribed to the thumbnail service so
+                // we still receive any forced notifications when the user switches to Media view.
+                // This prevents missing a ForceNotifyCurrentThumbnail() call that may happen before
+                // the MediaPlayer becomes active
                 try
                 {
-                    if (isThumbnailSubscribed)
-                    {
-                        MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged;
-                        isThumbnailSubscribed = false;
-                    }
+                    // Do not unsubscribe here; OnDestroy will unsubscribe to avoid leaks
                 }
-                catch { isThumbnailSubscribed = false; }
+                catch { }
 
-                // Stop the fetch loop and release pending resources
+                // Stop the fetch loop and release pending resources (keep subscription)
                 StopFetchLoop(disposeCached: true);
             }
         }
@@ -526,8 +526,12 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     lock (mediaLock)
                     {
-                        thumbnailImage?.Dispose();
+                        if (thumbnailImage != null)
+                        {
+                            try { thumbnailImage.Dispose(); } catch { }
+                        }
                         thumbnailImage = pendingImage;
+                        thumbnailFingerprint = pendingFingerprint; // Update fingerprint here
                         pendingImage = null;
                         pendingFingerprint = null;
 
@@ -825,130 +829,188 @@ namespace DynamicWin.UI.UIElements.Custom
             // Re-use calculation
             float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
             timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
+
+            // Ensure metadata is populated when we have an image but no metadata
+            try
+            {
+                bool needMeta = false;
+                lock (mediaLock)
+                {
+                    needMeta = (currentMedia == null) && (thumbnailImage != null || pendingImage != null);
+                }
+
+                if (needMeta && (DateTime.UtcNow - lastMetadataFetch) >= metadataFetchInterval)
+                {
+                    // Throttle and ensure only one fetch runs at a time
+                    if (System.Threading.Interlocked.CompareExchange(ref metadataFetchRunning, 1, 0) == 0)
+                    {
+                        lastMetadataFetch = DateTime.UtcNow;
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var meta = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: false).ConfigureAwait(false);
+                                if (meta != null)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        // Only adopt if we still lack metadata or keys differ
+                                        if (currentMedia == null)
+                                        {
+                                            currentMedia = meta;
+                                            try { currentMediaKey = $"{meta.Title ?? ""}|{meta.Artist ?? ""}|0"; } catch { currentMediaKey = null; }
+                                            optimisticActive = false;
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+                            finally
+                            {
+                                System.Threading.Interlocked.Exchange(ref metadataFetchRunning, 0);
+                            }
+                        });
+                    }
+                }
+            }
+            catch { }
         }
 
         private void OnThumbnailChanged(object? sender, MediaChangedEventArgs e)
         {
-            // Record the raw bytes and metadata; decoding is deferred and rate-limited in the fetch loop.
             try
             {
                 var bytes = e.ThumbnailBytes;
                 var media = e.Media;
 
+                // Adopt metadata immediately
                 lock (mediaLock)
                 {
-                    // If there's metadata, adopt it immediately so UI updates without waiting for decode
                     if (media != null)
                     {
                         currentMedia = media;
-                        currentMediaKey = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
+                        currentMediaKey = $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
                         optimisticActive = false;
                         timelineFetchedOnce = false;
                         lastTimelineResync = DateTime.MinValue;
                     }
 
-                    if ((media == null) && (bytes == null || bytes.Length == 0))
-                    {
-                        // Service indicates no media; request a delayed clear to avoid transient wipe
-                        pendingThumbnailBytesFromService = null;
-                        pendingMedia = null;
-                        mediaNeedsUpdate = true;
-                        mediaClearRequestedAt = DateTime.UtcNow;
-                    }
-                    else
-                    {
-                        // If bytes exist, prefer them for decoding; metadata is already adopted above
-                        // keep a copy in the service buffer as a fallback
-                        pendingThumbnailBytesFromService = (bytes != null && bytes.Length > 0) ? (byte[])bytes.Clone() : null;
-                        pendingMedia = media;
-                        mediaNeedsUpdate = true;
-                        mediaClearRequestedAt = DateTime.MinValue;
-                    }
+                    // Clear any one-shot pending bytes; we'll handle decoding directly below
+                    pendingThumbnailBytesFromService = null;
+                    pendingMedia = media;
+                    mediaNeedsUpdate = false;
+                    mediaClearRequestedAt = DateTime.MinValue;
                 }
 
-                // If bytes are present, decode immediately in background so thumbnail updates alongside metadata
+                // Helper to queue a background decode and set pendingImage when appropriate
+                void DecodeAndQueueBytes(byte[] bts, Media? md)
+                {
+                    _ = Task.Run(() =>
+                    {
+                        SKImage? img = null;
+                        ulong? fp = null;
+                        try
+                        {
+                            img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(bts, out fp);
+                        }
+                        catch { img = null; fp = null; }
+
+                        if (img == null) return;
+
+                        lock (mediaLock)
+                        {
+                            // If visually identical to current, adopt metadata only
+                            if (fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
+                            {
+                                if (md != null)
+                                {
+                                    currentMedia = md;
+                                    currentMediaKey = $"{md.Title ?? ""}|{md.Artist ?? ""}|{bts.Length}";
+                                }
+                                optimisticActive = false;
+                                try { img.Dispose(); } catch { }
+                                return;
+                            }
+
+                            // Replace any existing pending image
+                            if (pendingImage != null)
+                            {
+                                try { pendingImage.Dispose(); } catch { }
+                                pendingImage = null;
+                                pendingFingerprint = null;
+                                pendingMediaKey = null;
+                                pendingMedia = null;
+                            }
+
+                            pendingImage = img;
+                            pendingFingerprint = fp;
+                            pendingMedia = md;
+                            pendingMediaKey = (md == null) ? string.Empty : $"{md.Title ?? ""}|{md.Artist ?? ""}|{bts.Length}";
+                        }
+                    });
+                }
+
+                // If event provided bytes, decode them immediately
                 if (bytes != null && bytes.Length > 0)
                 {
-                    // Ensure the latest bytes are stored for the decode loop to consume
-                    // A single decode loop will coalesce rapid updates and avoid spawning many Tasks
-                    // Use Interlocked to start the loop only once
-                    // pendingThumbnailBytesFromService already set above
-                    if (Interlocked.CompareExchange(ref thumbnailDecodeRunning, 1, 0) == 0)
+                    try
                     {
+                        var cloned = (byte[])bytes.Clone();
+                        DecodeAndQueueBytes(cloned, media);
+                    }
+                    catch { }
+
+                    return;
+                }
+
+                // No bytes in event: prefer service cached bytes (fast path)
+                if (media != null)
+                {
+                    try
+                    {
+                        var svcBytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                        if (svcBytes != null && svcBytes.Length > 0)
+                        {
+                            var cloned = (byte[])svcBytes.Clone();
+                            DecodeAndQueueBytes(cloned, media);
+                            return;
+                        }
+                    }
+                    catch { }
+
+                    // If no cached bytes, trigger a one-shot fetch but do not block UI thread
+                    var now = DateTime.UtcNow;
+                    if ((now - lastMediaCheck) > TimeSpan.FromMilliseconds(500))
+                    {
+                        lastMediaCheck = now;
                         _ = Task.Run(async () =>
                         {
                             try
                             {
-                                while (true)
+                                var b = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: true).ConfigureAwait(false);
+                                if (b != null && b.Length > 0)
                                 {
-                                    byte[]? localBytes = null;
-                                    DynamicWin.Utils.Media? localMedia = null;
-
                                     lock (mediaLock)
                                     {
-                                        if (pendingThumbnailBytesFromService != null && pendingThumbnailBytesFromService.Length > 0)
-                                        {
-                                            localBytes = (byte[])pendingThumbnailBytesFromService.Clone();
-                                            localMedia = pendingMedia;
-                                            // Mark consumed - keep metadata in pendingMedia until animator swaps
-                                            pendingThumbnailBytesFromService = null;
-                                            mediaNeedsUpdate = false;
-                                        }
+                                        // stash as consumed so other loops won't duplicate work
+                                        pendingThumbnailBytesFromService = null;
+                                        pendingMedia = media;
+                                        mediaNeedsUpdate = false;
                                     }
 
-                                    if (localBytes == null)
-                                    {
-                                        // No work to do; break out and allow new loop to be started on next event
-                                        break;
-                                    }
-
-                                    SKImage? img = null;
-                                    ulong? fp = null;
-                                    try
-                                    {
-                                        img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(localBytes, out fp);
-                                    }
-                                    catch { img = null; fp = null; }
-
-                                    if (img != null)
-                                    {
-                                        lock (mediaLock)
-                                        {
-                                            string key = (localMedia == null) ? string.Empty : $"{localMedia.Title ?? ""}|{localMedia.Artist ?? ""}|{localBytes.Length}";
-
-                                            if (fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
-                                            {
-                                                // Visually identical - adopt metadata only
-                                                if (localMedia != null)
-                                                {
-                                                    currentMedia = localMedia;
-                                                    currentMediaKey = key;
-                                                }
-                                                optimisticActive = false;
-                                                try { img.Dispose(); } catch { }
-                                            }
-                                            else
-                                            {
-                                                // Queue as pending for animator; replace any existing pending
-                                                if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; pendingMediaKey = null; pendingMedia = null; }
-
-                                                pendingImage = img;
-                                                pendingFingerprint = fp;
-                                                pendingMedia = localMedia;
-                                                pendingMediaKey = key;
-                                            }
-                                        }
-                                    }
-
-                                    // Debounce window: wait a short amount to allow more rapid updates to arrive and be coalesced
-                                    try { await Task.Delay(200).ConfigureAwait(false); } catch { }
+                                    DecodeAndQueueBytes((byte[])b.Clone(), media);
                                 }
                             }
-                            finally
-                            {
-                                System.Threading.Interlocked.Exchange(ref thumbnailDecodeRunning, 0);
-                            }
+                            catch { }
                         });
+                    }
+                }
+                else
+                {
+                    // No media and no bytes: clear thumbnail after a short debounce to avoid flicker
+                    lock (mediaLock)
+                    {
+                        mediaClearRequestedAt = DateTime.UtcNow;
                     }
                 }
             }
@@ -1034,7 +1096,6 @@ namespace DynamicWin.UI.UIElements.Custom
                                 {
                                     svcBytes = (byte[])pendingThumbnailBytesFromService.Clone();
                                     svcMedia = pendingMedia; // adopt whatever metadata was provided
-                                    // mark as consumed; decoding still controlled by loop
                                     mediaNeedsUpdate = false;
                                 }
                                 else if (mediaNeedsUpdate && pendingMedia != null)
@@ -1081,35 +1142,40 @@ namespace DynamicWin.UI.UIElements.Custom
                                     }
                                     catch { img = null; fp = null; }
 
+                                    bool skipPending = false;
+                                    lock (mediaLock)
+                                    {
+                                        if (img != null && fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
+                                        {
+                                            // Visually identical - adopt metadata only
+                                            if (svcMedia != null)
+                                            {
+                                                currentMedia = svcMedia;
+                                                currentMediaKey = key;
+                                            }
+                                            optimisticActive = false;
+                                            skipPending = true;
+                                        }
+                                    }
+                                    if (skipPending)
+                                    {
+                                        if (img != null) { try { img.Dispose(); } catch { } }
+                                        continue;
+                                    }
+
                                     lock (mediaLock)
                                     {
                                         if (img != null)
                                         {
-                                            // If visually identical to displayed image by fingerprint, adopt metadata instead
-                                            if (fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
-                                            {
-                                                // If the decoded image fingerprint matches the currently displayed thumbnail,
-                                                // adopt the metadata only if it's provided. Do NOT clear currentMedia when svcMedia is null
-                                                if (svcMedia != null)
-                                                {
-                                                    currentMedia = svcMedia;
-                                                    currentMediaKey = key;
-                                                }
-                                                optimisticActive = false;
-                                                try { img.Dispose(); } catch { }
-                                            }
-                                            else
-                                            {
-                                                // Queue as pending (replace any existing pending)
-                                                if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; pendingMediaKey = null; pendingMedia = null; }
+                                            // Queue as pending (replace any existing pending)
+                                            if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; pendingMediaKey = null; pendingMedia = null; }
 
-                                                pendingImage = img;
-                                                pendingFingerprint = fp;
-                                                pendingMedia = svcMedia;
-                                                pendingMediaKey = key;
+                                            pendingImage = img;
+                                            pendingFingerprint = fp;
+                                            pendingMedia = svcMedia;
+                                            pendingMediaKey = key;
 
-                                                // Do not set thumbnailImage here; animator will swap on flip
-                                            }
+                                            // Do not set thumbnailImage here; animator will swap on flip
                                         }
                                         else
                                         {
@@ -1156,9 +1222,14 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     lock (mediaLock)
                     {
-                        if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
-                        if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
-                        if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                        // If animator is mid-animation, keep images so flip can complete when UI resumes.
+                        if (animator.State == MediaAnimator.AnimState.Idle)
+                        {
+                            if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                            if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                            if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                        }
+
                         pendingMediaKey = null; pendingMedia = null;
                         currentMedia = null; currentMediaKey = null;
                     }
@@ -1180,11 +1251,15 @@ namespace DynamicWin.UI.UIElements.Custom
 
             lock (mediaLock)
             {
-                if (pendingImage != null)
+                // Only dispose pendingImage if animator is idle; otherwise keep it so the pending swap can complete when UI resumes
+                if (animator.State == MediaAnimator.AnimState.Idle)
                 {
-                    try { pendingImage.Dispose(); } catch { }
-                    pendingImage = null;
-                    pendingFingerprint = null;
+                    if (pendingImage != null)
+                    {
+                        try { pendingImage.Dispose(); } catch { }
+                        pendingImage = null;
+                        pendingFingerprint = null;
+                    }
                 }
 
                 pendingMediaKey = null;
@@ -1192,8 +1267,11 @@ namespace DynamicWin.UI.UIElements.Custom
 
                 if (disposeCached)
                 {
-                    if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
-                    if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                    if (animator.State == MediaAnimator.AnimState.Idle)
+                    {
+                        if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                        if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                    }
                     currentMedia = null;
                     currentMediaKey = null;
                 }
