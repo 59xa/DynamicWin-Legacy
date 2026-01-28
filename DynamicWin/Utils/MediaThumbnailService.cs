@@ -49,13 +49,20 @@ namespace DynamicWin.Utils
                             snapMedia == null ? null : new Media { Title = snapMedia.Title, Artist = snapMedia.Artist },
                             snapBytes
                         ));
+
+                        // If we have metadata but no bytes cached, schedule a one-shot fetch for the thumbnail
+                        if (snapMedia != null && (snapBytes == null || snapBytes.Length == 0))
+                        {
+                            // Schedule a debounced fetch with forceRefresh
+                            RequestFetchAndUpdate(forceThumbnailRefresh: true);
+                        }
                     }
                     else
                     {
                         // Notify subscriber that there is currently no media so UI can clear state immediately
                         value?.Invoke(this, new MediaChangedEventArgs(null, null));
-                        // Kick off quick fetch for new subscriber
-                        _ = FetchAndUpdateAsync();
+                        // Kick off quick fetch for new subscriber (debounced)
+                        RequestFetchAndUpdate();
                     }
                 }
             }
@@ -81,9 +88,24 @@ namespace DynamicWin.Utils
         private byte[]? lastBytes;
         private Media? lastMedia;
         private SKBitmap? lastBitmap;
+        private ulong? lastBitmapFingerprint = null;
+
+        // Keep a cheap fingerprint of the encoded thumbnail bytes to avoid repeated decodes
+        private ulong? lastEncodedFingerprint = null;
 
         // Simple guard to prevent concurrent fetches
         private int fetchRunning = 0;
+
+        // Debounce fetch trigger
+        private int fetchRequested = 0;
+        private DateTime lastFetchRequest = DateTime.MinValue;
+        private readonly TimeSpan fetchDebounceDelay = TimeSpan.FromMilliseconds(150);
+        private Task? debounceTask = null;
+
+        // Flag to request force refresh of thumbnail bytes on next fetch
+        private int forceThumbnailRefreshFlag = 0;
+
+        public ulong? GetCurrentThumbnailFingerprint() => lastBitmapFingerprint;
 
         // Debounce candidate metadata to avoid fetching thumbnails while rapid metadata changes occur
         private Media? pendingMediaCandidate = null;
@@ -115,7 +137,13 @@ namespace DynamicWin.Utils
                     callback(null);
 
                 // Ensure a fetch is scheduled to refresh state
-                _ = FetchAndUpdateAsync();
+                RequestFetchAndUpdate();
+
+                // If we have metadata but no bytes cached, schedule a one-shot fetch for the thumbnail
+                if (lastMedia != null && (lastBytes == null || lastBytes.Length == 0))
+                {
+                    RequestFetchAndUpdate(forceThumbnailRefresh: true);
+                }
             }
         }
 
@@ -136,15 +164,11 @@ namespace DynamicWin.Utils
             cts = new CancellationTokenSource();
             var token = cts.Token;
 
-            // Start polling loop which periodically calls FetchAndUpdateAsync but ensures only one fetch runs at a time
+            // Start polling loop which periodically calls RequestFetchAndUpdate but ensures only one fetch runs at a time
             _ = Task.Run(async () =>
             {
                 // Immediate initial fetch
-                if (Interlocked.CompareExchange(ref fetchRunning, 1, 0) == 0)
-                {
-                    try { await FetchAndUpdateAsync().ConfigureAwait(false); } catch { }
-                    finally { Interlocked.Exchange(ref fetchRunning, 0); }
-                }
+                RequestFetchAndUpdate();
 
                 while (!token.IsCancellationRequested)
                 {
@@ -152,20 +176,7 @@ namespace DynamicWin.Utils
                     {
                         // Wait poll interval (cooperative)
                         try { await Task.Delay(pollInterval, token).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
-
-                        // If a fetch is already running, skip this cycle to avoid duplicate work
-                        if (Interlocked.CompareExchange(ref fetchRunning, 1, 0) != 0)
-                            continue;
-
-                        try
-                        {
-                            await FetchAndUpdateAsync().ConfigureAwait(false);
-                        }
-                        catch { /* Swallow */ }
-                        finally
-                        {
-                            Interlocked.Exchange(ref fetchRunning, 0);
-                        }
+                        RequestFetchAndUpdate();
                     }
                     catch { }
                 }
@@ -174,6 +185,7 @@ namespace DynamicWin.Utils
                 DisposeCachedBitmap();
                 lastBytes = null;
                 lastMedia = null;
+                lastEncodedFingerprint = null;
 
             }, token);
         }
@@ -191,125 +203,223 @@ namespace DynamicWin.Utils
         /// Behaviour: fetch metadata first, and only fetch thumbnail bytes when metadata changed OR we have no cached bytes.
         /// Polling ensures this is called periodically; fetchRunning guard prevents concurrent duplicate fetches.
         /// </summary>
-        private async Task FetchAndUpdateAsync()
+        private async Task FetchAndUpdateAsync(bool forceRefreshThumbnail = false)
         {
-            // Fetch metadata first
-            Media? media = null;
-            try
-            {
-                // Only force refresh if we have no cached media or if debounce is in effect
-                bool shouldForce = lastMedia == null;
-                media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: shouldForce).ConfigureAwait(false);
-            }
-            catch { media = null; }
-
-            // Fetch timeline/playback status
-            GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus = null;
-            try
-            {
-                var timeline = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: false).ConfigureAwait(false);
-                if (timeline != null)
-                    playbackStatus = timeline.PlaybackStatus;
-            }
-            catch { }
-            _lastPlaybackStatus = playbackStatus;
-
-            // If there is no media, clear all cached metadata and thumbnail, and notify subscribers immediately
-            if (media == null)
-            {
-                DisposeCachedBitmap();
-                lastBytes = null;
-                lastMedia = null;
-
-                // Notify all subscribers (typed and legacy) that there is no media
-                _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(null, null));
-                List<Action<Media?>> snap;
-                lock (listLock) { snap = new List<Action<Media?>>(legacyListeners); }
-                foreach (var l in snap)
-                {
-                    try { l(null); } catch { }
-                }
+            // Ensure only one fetch runs at a time (additional guard in Debounce loop too)
+            if (Interlocked.CompareExchange(ref fetchRunning, 1, 0) != 0)
                 return;
-            }
 
-            // Determine whether metadata changed compared to lastMedia (case-insensitive)
-            bool metadataChanged = !AreMediaEqual(media, lastMedia);
-
-            // Debounce rapid metadata changes: if metadata changed compared to last known, hold it as a candidate
-            // and only proceed to fetch thumbnail bytes once it remains stable for pendingMediaStableDelay.
-            if (metadataChanged)
+            try
             {
-                if (pendingMediaCandidate == null || !AreMediaEqual(pendingMediaCandidate, media))
+                // Fetch metadata first
+                Media? media = null;
+                try
                 {
-                    pendingMediaCandidate = media;
-                    pendingMediaCandidateAt = DateTime.UtcNow;
+                    // Only force refresh if we have no cached media
+                    bool shouldForce = lastMedia == null;
+                    media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: shouldForce).ConfigureAwait(false);
+                }
+                catch { media = null; }
+
+                // Fetch timeline/playback status
+                GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus = null;
+                try
+                {
+                    var timeline = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: false).ConfigureAwait(false);
+                    if (timeline != null)
+                        playbackStatus = timeline.PlaybackStatus;
+                }
+                catch { }
+                _lastPlaybackStatus = playbackStatus;
+
+                // If there is no media, clear all cached metadata and thumbnail, and notify subscribers immediately
+                if (media == null)
+                {
+                    DisposeCachedBitmap();
+                    lastBytes = null;
+                    lastMedia = null;
+                    lastEncodedFingerprint = null;
+
+                    // Notify all subscribers (typed and legacy) that there is no media
+                    _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(null, null));
+                    List<Action<Media?>> snap;
+                    lock (listLock) { snap = new List<Action<Media?>>(legacyListeners); }
+                    foreach (var l in snap)
+                    {
+                        try { l(null); } catch { }
+                    }
                     return;
                 }
-                if ((DateTime.UtcNow - pendingMediaCandidateAt) < pendingMediaStableDelay)
+
+                // Determine whether metadata changed compared to lastMedia (case-insensitive)
+                bool metadataChanged = !AreMediaEqual(media, lastMedia);
+
+                // Debounce rapid metadata changes: if metadata changed compared to last known, hold it as a candidate
+                // and only proceed to fetch thumbnail bytes once it remains stable for pendingMediaStableDelay.
+                if (metadataChanged)
+                {
+                    if (pendingMediaCandidate == null || !AreMediaEqual(pendingMediaCandidate, media))
+                    {
+                        pendingMediaCandidate = media;
+                        pendingMediaCandidateAt = DateTime.UtcNow;
+                        return;
+                    }
+                    if ((DateTime.UtcNow - pendingMediaCandidateAt) < pendingMediaStableDelay)
+                    {
+                        return;
+                    }
+                    metadataChanged = true;
+                    pendingMediaCandidate = null;
+                }
+                else
+                {
+                    pendingMediaCandidate = null;
+                }
+
+                if (!metadataChanged && lastBytes != null && !forceRefreshThumbnail)
                 {
                     return;
                 }
-                metadataChanged = true;
-                pendingMediaCandidate = null;
-            }
-            else
-            {
-                pendingMediaCandidate = null;
-            }
 
-            if (!metadataChanged && lastBytes != null)
-            {
-                return;
-            }
-
-            byte[]? bytes = null;
-            try
-            {
-                bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync().ConfigureAwait(false);
-            }
-            catch { bytes = null; }
-
-            bool bytesChanged = !AreBytesEqual(lastBytes, bytes);
-
-            lastBytes = bytes == null ? null : (byte[])bytes.Clone();
-            lastMedia = new Media
-            {
-                Title = media?.Title,
-                Artist = media?.Artist,
-                ThumbnailData = lastBytes
-            };
-
-            if (bytesChanged || metadataChanged)
-            {
-                if (bytesChanged)
+                byte[]? bytes = null;
+                try
                 {
-                    UpdateBitmap(bytes);
+                    bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: forceRefreshThumbnail).ConfigureAwait(false);
                 }
-                _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
-                    media == null ? null : new Media { Title = media.Title, Artist = media.Artist },
-                    lastBytes
-                ));
-                List<Action<Media?>> snap;
-                lock (listLock) { snap = new List<Action<Media?>>(legacyListeners); }
-                foreach (var l in snap)
+                catch { bytes = null; }
+
+                // Capture previous fingerprint before attempting to update
+                var prevFingerprint = lastBitmapFingerprint;
+
+                // Compute encoded-bytes fingerprint to avoid repeated decodes when bytes unchanged
+                ulong? encodedFp = null;
+                if (bytes != null && bytes.Length > 0)
                 {
-                    try { l(lastMedia); } catch { }
+                    try { encodedFp = GetEncodedFingerprint(bytes); } catch { encodedFp = null; }
                 }
+
+                // Update cached lastBytes
+                lastBytes = bytes == null ? null : (byte[])bytes.Clone();
+
+                ulong? newFingerprint = null;
+
+                // Only decode image and compute visual fingerprint if encoded bytes changed or we have no cached bitmap
+                if (encodedFp.HasValue && lastEncodedFingerprint.HasValue && encodedFp.Value == lastEncodedFingerprint.Value && lastBitmap != null)
+                {
+                    // Encoded bytes identical to previous: avoid decode
+                    newFingerprint = lastBitmapFingerprint;
+                }
+                else
+                {
+                    // Either bytes changed or we don't have a cached bitmap; attempt decode/update
+                    newFingerprint = UpdateBitmap(bytes);
+                }
+
+                // Remember encoded fingerprint when we successfully processed bytes
+                if (encodedFp.HasValue)
+                    lastEncodedFingerprint = encodedFp;
+                else
+                    lastEncodedFingerprint = null;
+
+                lastMedia = new Media
+                {
+                    Title = media?.Title,
+                    Artist = media?.Artist,
+                    ThumbnailData = lastBytes
+                };
+
+                bool bytesChanged = false;
+                if (newFingerprint.HasValue || prevFingerprint.HasValue)
+                {
+                    bytesChanged = !(newFingerprint.HasValue && prevFingerprint.HasValue && newFingerprint.Value == prevFingerprint.Value);
+                }
+                else
+                {
+                    // Both null -> no image
+                    bytesChanged = false;
+                }
+
+                if (bytesChanged || metadataChanged)
+                {
+                    // If metadata changed but visual image is identical, avoid sending bytes to prevent consumers animating; send metadata-only (null bytes)
+                    byte[]? notifyBytes = null;
+                    if (bytesChanged) notifyBytes = lastBytes;
+
+                    _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
+                        media == null ? null : new Media { Title = media.Title, Artist = media.Artist },
+                        notifyBytes
+                    ));
+
+                    List<Action<Media?>> snap;
+                    lock (listLock) { snap = new List<Action<Media?>>(legacyListeners); }
+                    foreach (var l in snap)
+                    {
+                        try { l(lastMedia); } catch { }
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref fetchRunning, 0);
             }
         }
 
-        private void UpdateBitmap(byte[]? bytes)
+        /// <summary>
+        /// Fast non-cryptographic fingerprint of encoded bytes (FNV-1a 64-bit).
+        /// </summary>
+        private static ulong GetEncodedFingerprint(byte[] bytes)
         {
-            DisposeCachedBitmap();
+            const ulong fnvOffset = 1469598103934665603UL;
+            const ulong fnvPrime = 1099511628211UL;
+            ulong hash = fnvOffset;
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                hash ^= bytes[i];
+                hash *= fnvPrime;
+            }
+            return hash;
+        }
 
-            if (bytes == null || bytes.Length == 0) return;
+        /// <summary>
+        /// Decode bytes and update canonical cached SKBitmap only when fingerprint differs.
+        /// Returns the computed fingerprint (or null on failure).
+        /// </summary>
+        private ulong? UpdateBitmap(byte[]? bytes)
+        {
+            if (bytes == null || bytes.Length == 0)
+            {
+                // Clear cached bitmap and fingerprint
+                DisposeCachedBitmap();
+                lastBitmapFingerprint = null;
+                return null;
+            }
 
+            SKBitmap? decoded = null;
             try
             {
                 using var ms = new SKMemoryStream(bytes);
-                lastBitmap = SKBitmap.Decode(ms);
+                decoded = SKBitmap.Decode(ms);
             }
-            catch { lastBitmap = null; }
+            catch { decoded = null; }
+
+            if (decoded == null) return null;
+
+            ulong? fp = null;
+            try { fp = BitmapUtils.GetBitmapFingerprint(decoded); } catch { fp = null; }
+
+            // If fingerprint equals existing, discard decoded and keep existing canonical bitmap
+            if (fp.HasValue && lastBitmapFingerprint.HasValue && fp.Value == lastBitmapFingerprint.Value)
+            {
+                try { decoded.Dispose(); } catch { }
+                return fp;
+            }
+
+            // Replace canonical bitmap
+            DisposeCachedBitmap();
+            lastBitmap = decoded;
+            lastBitmapFingerprint = fp;
+
+            return fp;
         }
 
         private void DisposeCachedBitmap()
@@ -319,18 +429,6 @@ namespace DynamicWin.Utils
                 try { lastBitmap.Dispose(); } catch { }
                 lastBitmap = null;
             }
-        }
-
-        private bool AreBytesEqual(byte[]? a, byte[]? b)
-        {
-            if (ReferenceEquals(a, b)) return true;
-            if (a == null || b == null) return false;
-            if (a.Length != b.Length) return false;
-
-            for (int i = 0; i < a.Length; i++)
-                if (a[i] != b[i]) return false;
-
-            return true;
         }
 
         private bool AreMediaEqual(Media? a, Media? b)
@@ -345,5 +443,88 @@ namespace DynamicWin.Utils
 
         public byte[]? GetCurrentThumbnailBytes() => lastBytes == null ? null : (byte[])lastBytes.Clone();
         public SKBitmap? GetCurrentThumbnailBitmap() => lastBitmap; // do not dispose externally
+
+        /// <summary>
+        /// Force re-notification of the current thumbnail and media to all subscribers.
+        /// Useful after UI/menu switches to ensure widgets re-sync.
+        /// </summary>
+        public void ForceNotifyCurrentThumbnail()
+        {
+            lock (listLock)
+            {
+                var snapMedia = lastMedia;
+                var snapBytes = lastBytes;
+                _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
+                    snapMedia == null ? null : new Media { Title = snapMedia.Title, Artist = snapMedia.Artist },
+                    snapBytes
+                ));
+                foreach (var l in legacyListeners)
+                {
+                    try { l(snapMedia); } catch { }
+                }
+
+                // If we have metadata but no bytes cached, schedule a one-shot fetch and re-notify when done
+                if (snapMedia != null && (snapBytes == null || snapBytes.Length == 0))
+                {
+                    RequestFetchAndUpdate(forceThumbnailRefresh: true);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Debounced fetch trigger. Coalesces rapid requests and ensures only one fetch runs at a time.
+        /// </summary>
+        private void RequestFetchAndUpdate(bool forceThumbnailRefresh = false)
+        {
+            // Ensure service loop is running
+            if (cts == null) StartLoop();
+
+            if (forceThumbnailRefresh)
+                Interlocked.Exchange(ref forceThumbnailRefreshFlag, 1);
+
+            // Mark a fetch as requested
+            Interlocked.Exchange(ref fetchRequested, 1);
+            lastFetchRequest = DateTime.UtcNow;
+
+            // Only one debounce task at a time
+            lock (listLock)
+            {
+                if (debounceTask != null && !debounceTask.IsCompleted)
+                    return;
+                debounceTask = DebounceFetchAsync(cts!.Token);
+            }
+        }
+
+        private async Task DebounceFetchAsync(CancellationToken token)
+        {
+            while (true)
+            {
+                // Wait for debounce delay (cancellable)
+                var now = DateTime.UtcNow;
+                var wait = fetchDebounceDelay - (now - lastFetchRequest);
+                try
+                {
+                    if (wait > TimeSpan.Zero)
+                        await Task.Delay(wait, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { break; }
+
+                if (token.IsCancellationRequested) break;
+
+                // If another fetch was requested during the wait, proceed
+                if (Interlocked.Exchange(ref fetchRequested, 0) == 1)
+                {
+                    // Invoke fetch; FetchAndUpdateAsync itself ensures only one fetch runs at a time
+                    var force = Interlocked.Exchange(ref forceThumbnailRefreshFlag, 0) == 1;
+                    try { await FetchAndUpdateAsync(force).ConfigureAwait(false); } catch { }
+
+                    // Check if another fetch was requested during the fetch
+                    if (Interlocked.CompareExchange(ref fetchRequested, 0, 0) == 1)
+                        continue;
+                }
+
+                break;
+            }
+        }
     }
 }
