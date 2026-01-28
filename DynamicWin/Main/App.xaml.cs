@@ -109,10 +109,8 @@ namespace DynamicWin
 
             mainForm.SizeToContent = SizeToContent.Manual;
 
-            var screenWidth = SystemParameters.PrimaryScreenWidth;
-            mainForm.Left = (screenWidth - mainForm.Width) / 2;
-
-            mainForm.Top = 0;
+            // Initial positioning
+            UpdateWindowPosition();
 
             mainForm.Show();
 
@@ -132,6 +130,8 @@ namespace DynamicWin
             try
             {
                 SystemEvents.PowerModeChanged += OnPowerModeChanged;
+                // Subscribe to display settings changes to re-center immediately on resolution change
+                SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
             }
             catch { }
         }
@@ -157,6 +157,7 @@ namespace DynamicWin
             try
             {
                 SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+                SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             }
             catch { }
         }
@@ -195,6 +196,46 @@ namespace DynamicWin
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             }
             catch { }
+        }
+
+        // Helper to centre window horizontally
+        private void UpdateWindowPosition()
+        {
+            try
+            {
+                if (mainForm == null) return;
+
+                // Get the target monitor chosen by the user
+                int screenIndex = Settings.ScreenIndex;
+                var screens = System.Windows.Forms.Screen.AllScreens;
+
+                // Fallback to primary if index is out of bounds
+                if (screenIndex < 0 || screenIndex >= screens.Length) screenIndex = 0;
+
+                var screen = screens[screenIndex];
+                var workingArea = screen.WorkingArea;
+
+                // Calculate the exact Center-Top for this specific monitor
+                // workingArea.Left handles the horizontal offset of secondary monitors
+                double targetLeft = workingArea.Left + (workingArea.Width / 2.0) - (mainForm.Width / 2.0);
+                double targetTop = workingArea.Top;
+
+                // Apply position only if it has drifted (prevents window jitter)
+                if (Math.Abs(mainForm.Left - targetLeft) > 1 || Math.Abs(mainForm.Top - targetTop) > 1)
+                {
+                    mainForm.Left = targetLeft;
+                    mainForm.Top = targetTop;
+                }
+            }
+            catch { }
+        }
+
+        private void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                UpdateWindowPosition();
+            }), DispatcherPriority.Normal);
         }
 
         private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
@@ -253,6 +294,9 @@ namespace DynamicWin
                 // Force window to topmost once after resume
                 try { ForceTopMost(mainForm); } catch { }
 
+                // Ensure position is correct on resume
+                try { UpdateWindowPosition(); } catch { }
+
 #if DEBUG
                 Debug.WriteLine("[SYSTEM] Resume handled: restarted timers and background workers.");
 #endif
@@ -262,7 +306,6 @@ namespace DynamicWin
 
         private void CreateTopmostTimer()
         {
-            // Ensure existing timer is cleaned up first
             try { topmostTimer?.Stop(); topmostTimer?.Dispose(); topmostTimer = null; } catch { }
 
             topmostTimer = new System.Timers.Timer(500);
@@ -271,10 +314,15 @@ namespace DynamicWin
             {
                 try
                 {
-                    // Marshal to UI thread to call ForceTopMost
                     Dispatcher?.BeginInvoke(new Action(() =>
                     {
-                        try { ForceTopMost(mainForm); } catch { }
+                        try
+                        {
+                            // Continuously enforce Z-order and correct Monitor centering
+                            ForceTopMost(mainForm);
+                            UpdateWindowPosition();
+                        }
+                        catch { }
                     }), DispatcherPriority.Normal);
                 }
                 catch { }
