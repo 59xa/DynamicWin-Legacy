@@ -227,6 +227,15 @@ namespace DynamicWin.Main
             }
         }
 
+        protected override void OnStateChanged(EventArgs e)
+        {
+            base.OnStateChanged(e);
+            if (this.WindowState == WindowState.Normal)
+            {
+                CenterHorizontallyOnScreen();
+            }
+        }
+
         /// <summary>
         /// Ensures the window is horizontally centered on the current monitor.
         /// </summary>
