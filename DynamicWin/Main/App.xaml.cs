@@ -212,8 +212,31 @@ namespace DynamicWin
                 var workingArea = screen.WorkingArea;
 
                 double windowWidth = mainForm.ActualWidth > 0 ? mainForm.ActualWidth : mainForm.Width;
-                double targetLeft = workingArea.Left + (workingArea.Width - windowWidth) / 2.0;
-                double targetTop = workingArea.Top;
+
+                // Get DPI scaling for the target monitor
+                double dpiX = 96.0, dpiY = 96.0;
+                var source = System.Windows.PresentationSource.FromVisual(mainForm);
+                if (source != null)
+                {
+                    dpiX = source.CompositionTarget.TransformToDevice.M11 * 96.0;
+                    dpiY = source.CompositionTarget.TransformToDevice.M22 * 96.0;
+                }
+                else
+                {
+                    // Fallback: use WinForms DPI
+                    using (var g = System.Drawing.Graphics.FromHwnd(IntPtr.Zero))
+                    {
+                        dpiX = g.DpiX;
+                        dpiY = g.DpiY;
+                    }
+                }
+
+                // Convert screen coordinates (pixels) to DIPs
+                double scaleX = dpiX / 96.0;
+                double scaleY = dpiY / 96.0;
+
+                double targetLeft = (workingArea.Left + (workingArea.Width - windowWidth * scaleX) / 2.0) / scaleX;
+                double targetTop = workingArea.Top / scaleY;
 
                 mainForm.Left = targetLeft;
                 mainForm.Top = targetTop;
