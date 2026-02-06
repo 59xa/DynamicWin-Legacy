@@ -182,8 +182,8 @@ namespace DynamicWin.Utils
                 // Generate a generic "Pink Noise" compensation curve (boosts highs slightly)
                 // if the manual array length doesn't match the bar count
                 bandBalance = new float[barCount];
-            for (int i = 0; i < barCount; i++)
-            {
+                for (int i = 0; i < barCount; i++)
+                {
                     bandBalance[i] = 1.0f + (0.8f * (i / (float)barCount));
                 }
             }
@@ -573,15 +573,34 @@ namespace DynamicWin.Utils
 
             for (int i = 0; i < barCount; i++)
             {
+                // Calculate the dynamic height
                 float rawHeight = barHeight[i] * visualBoost;
-                bool isDot = enableDotWhenLow && rawHeight < 0.05f;
-                float bH = isDot ? dotHeight : rawHeight * height * 0.8f;
+                float dynamicHeight = rawHeight * height * 0.8f;
 
+                float bH = dynamicHeight;
+
+                // Handle dot clamping
+                if (EnableDotWhenLow)
+                {
+                    // The dot should be a perfect circle/square, so its height equals its width
+                    // Clamp the height so it never gets smaller than the dot
+                    bH = Math.Max(dotHeight, dynamicHeight);
+                }
+
+                // Positioning
                 float x = Position.X + i * (barWidth2 + spacing2);
                 float barTopY = centerY - bH / 2;
 
                 var rect = SKRect.Create(x, barTopY, barWidth2, bH);
                 var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
+
+                // Color logic: dot must stay at the "Secondary" color until it starts growing
+                // We calculate a 'colorActivity' based on how much it has grown past the dot
+                float growthAboveDot = Math.Max(0, (bH - dotHeight) / (height * 0.5f));
+                float lerpAmount = EnableDotWhenLow ? growthAboveDot : barHeight[i];
+
+                // Slight baseline alpha for the dot so it's always subtly there
+                float activeLerp = Math.Clamp(lerpAmount, 0f, 1f);
 
                 if (UseThumbnailBackground && thumbnailImage != null)
                 {
@@ -602,25 +621,21 @@ namespace DynamicWin.Utils
                 }
                 else
                 {
-                    float lerpAmount = isDot ? 0.2f : barHeight[i];
                     Col pCol = EnableColourTransition
-                        ? Col.Lerp(Secondary, Primary, lerpAmount)
+                        ? Col.Lerp(Secondary, Primary, activeLerp)
                         : Primary;
 
                     SKColor baseColor = GetColor(pCol).Value();
-
-                    // Ensure alpha never goes below a visible threshold
-                    byte alpha = (byte)Math.Max(100, (int)baseColor.Alpha);
+                    byte alpha = (byte)Math.Max(120, (int)baseColor.Alpha); // Keep dots visible but dim
 
                     SKColor startColor = baseColor.WithAlpha(alpha);
                     SKColor endColor = new SKColor(
-                        (byte)(baseColor.Red * 0.7),
-                        (byte)(baseColor.Green * 0.7),
-                        (byte)(baseColor.Blue * 0.7),
+                        (byte)(baseColor.Red * 0.8),
+                        (byte)(baseColor.Green * 0.8),
+                        (byte)(baseColor.Blue * 0.8),
                         alpha
                     );
 
-                    // Create gradient placement
                     using var paintBar = new SKPaint
                     {
                         IsAntialias = Settings.AntiAliasing,
@@ -633,8 +648,7 @@ namespace DynamicWin.Utils
                         ),
                     };
 
-                    // If blur is active, blur the visualiser
-                    if (Settings.AllowBlur)
+                    if (Settings.AllowBlur && BlurAmount > 0)
                         paintBar.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurAmount);
 
                     canvas.DrawRoundRect(roundRect, paintBar);
