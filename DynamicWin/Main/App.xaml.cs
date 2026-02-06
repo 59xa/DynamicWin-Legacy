@@ -20,7 +20,7 @@ namespace DynamicWin
         public static MMDevice defaultDevice;
         public static MMDevice defaultMicrophone;
 
-        public static string Version => "v1.5.1b4";
+        public static string Version => "v1.5.1b5";
         public static Channel ReleaseStream => Channel.Canary;
 
         [STAThread]
@@ -198,34 +198,25 @@ namespace DynamicWin
             catch { }
         }
 
-        // Helper to centre window horizontally
+        // Helper to centre window horizontally on any monitor
         private void UpdateWindowPosition()
         {
             try
             {
                 if (mainForm == null) return;
 
-                // Get the target monitor chosen by the user
                 int screenIndex = Settings.ScreenIndex;
                 var screens = System.Windows.Forms.Screen.AllScreens;
-
-                // Fallback to primary if index is out of bounds
                 if (screenIndex < 0 || screenIndex >= screens.Length) screenIndex = 0;
-
                 var screen = screens[screenIndex];
                 var workingArea = screen.WorkingArea;
 
-                // Calculate the exact Center-Top for this specific monitor
-                // workingArea.Left handles the horizontal offset of secondary monitors
-                double targetLeft = workingArea.Left + (workingArea.Width / 2.0) - (mainForm.Width / 2.0);
+                double windowWidth = mainForm.ActualWidth > 0 ? mainForm.ActualWidth : mainForm.Width;
+                double targetLeft = workingArea.Left + (workingArea.Width - windowWidth) / 2.0;
                 double targetTop = workingArea.Top;
 
-                // Apply position only if it has drifted (prevents window jitter)
-                if (Math.Abs(mainForm.Left - targetLeft) > 1 || Math.Abs(mainForm.Top - targetTop) > 1)
-                {
-                    mainForm.Left = targetLeft;
-                    mainForm.Top = targetTop;
-                }
+                mainForm.Left = targetLeft;
+                mainForm.Top = targetTop;
             }
             catch { }
         }
