@@ -41,16 +41,6 @@ namespace DynamicWin.Utils
 
         private float[] bandBalance = new float[] { 1f, 0.75f, 1.15f, 1.10f, 1.25f, 1.35f };
 
-        private readonly float[][] freqRanges = new float[][]
-        {
-            new float[]{ 20f,   120f },
-            new float[]{ 120f,  400f },
-            new float[]{ 400f,  1200f },
-            new float[]{ 1200f, 5000f },
-            new float[]{ 5000f, 12000f },
-            new float[]{ 12000f, 20000f }
-        };
-
         private WasapiLoopbackCapture capture;
         private readonly object fftLock = new object();
 
@@ -185,13 +175,48 @@ namespace DynamicWin.Utils
         {
             barBinIndices = new int[barCount][];
             barBinCounts = new int[barCount];
+
+            // Safety: Ensure bandBalance matches barCount if the amount is changed for later
+            if (bandBalance.Length != barCount)
+            {
+                // Generate a generic "Pink Noise" compensation curve (boosts highs slightly)
+                // if the manual array length doesn't match the bar count
+                bandBalance = new float[barCount];
             for (int i = 0; i < barCount; i++)
             {
-                int lowIndex = Math.Max(0, (int)(freqRanges[i][0] / sampleRate * fftLength));
-                int highIndex = Math.Min((int)(freqRanges[i][1] / sampleRate * fftLength), fftMagnitudes.Length - 1);
-                int len = Math.Max(0, highIndex - lowIndex + 1);
+                    bandBalance[i] = 1.0f + (0.8f * (i / (float)barCount));
+                }
+            }
+
+            double minFreq = 20.0;  // 20Hz - human hearing start
+            double maxFreq = 12000.0; // 12kHz - frequency end
+
+            // Use Logarithmic scale for natural frequency distribution
+            double logMin = Math.Log10(minFreq);
+            double logMax = Math.Log10(maxFreq);
+            double range = logMax - logMin;
+
+            for (int i = 0; i < barCount; i++)
+            {
+                // Calculate the frequency range for this specific bar
+                double valStart = logMin + (i * range / barCount);
+                double valEnd = logMin + ((i + 1) * range / barCount);
+
+                float lowFreq = (float)Math.Pow(10, valStart);
+                float highFreq = (float)Math.Pow(10, valEnd);
+
+                // Map Frequency to FFT Bin Indices
+                int lowIndex = Math.Max(0, (int)(lowFreq / sampleRate * fftLength));
+                int highIndex = Math.Min((int)(highFreq / sampleRate * fftLength), fftMagnitudes.Length - 1);
+
+                // Ensure we capture at least one bin per bar
+                if (highIndex < lowIndex) highIndex = lowIndex;
+
+                // Store the indices
+                int len = highIndex - lowIndex + 1;
                 var arr = new int[len];
                 for (int j = 0; j < len; j++) arr[j] = lowIndex + j;
+
                 barBinIndices[i] = arr;
                 barBinCounts[i] = len;
             }
@@ -300,38 +325,32 @@ namespace DynamicWin.Utils
 
             lock (fftLock)
             {
+                // Define specific weights 
+                // Bar 0: Sub (1.2x) -> Strongest
+                // Bar 1: Bass (0.8x) -> Dipped to let bar 0 lead
+                // Bar 5: Highs (2.5x) -> Extreme boost for hi-hat visibility
+                float[] barWeights = { 1.0f, 0.85f, 1.15f, 1.5f, 2.0f, 2.5f };
+
                 for (int i = 0; i < barCount; i++)
                 {
                     float rms = MathF.Sqrt(barSumSquares[i] / Math.Max(barBinCounts[i], 1));
-                    float riseAlpha = 1f - MathF.Exp(-noiseEstimateRiseRate * deltaTime);
-                    float fallAlpha = 1f - MathF.Exp(-noiseEstimateFallRate * deltaTime);
-                    float maxNoiseFraction = 0.35f;
-                    float noiseCeiling = rms * maxNoiseFraction;
 
-                    if (rms > bandNoiseEstimate[i])
-                        bandNoiseEstimate[i] += (MathF.Min(rms, noiseCeiling) - bandNoiseEstimate[i]) * riseAlpha;
-                    else
-                        bandNoiseEstimate[i] += (rms - bandNoiseEstimate[i]) * fallAlpha;
+                    // Sensitive floor: using -70dB ensures quiet tail-end of high frequencies are caught
+                    float db = 20f * MathF.Log10(Math.Max(rms, 1e-7f));
+                    float normalized = Math.Clamp((db + 70f) / 60f, 0f, 1f);
 
-                    float localGateMultiplier = i switch { 0 => 1.15f, 1 => 1.3f, _ => gateMultiplier };
-                    float gateThreshold = Math.Max(minGateThreshold, bandNoiseEstimate[i] * localGateMultiplier);
-                    float val = Math.Max(0f, rms - gateThreshold);
+                    // Apply the specific weights
+                    normalized *= barWeights[i];
 
-                    float peakRiseA = 1f - MathF.Exp(-peakRiseRate * deltaTime);
-                    float peakFallA = 1f - MathF.Exp(-peakFallRate * deltaTime);
-                    if (val > bandPeakEstimate[i]) bandPeakEstimate[i] += (val - bandPeakEstimate[i]) * peakRiseA;
-                    else bandPeakEstimate[i] *= MathF.Exp(-peakFallRate * deltaTime);
+                    // Apply individual gain from array
+                    normalized *= barGain[i];
 
-                    float valLin = val * barGain[i] * bandBalance[i] * outputBoost;
-                    if (valLin < 1e-5f) { targetHeights[i] = 0f; continue; }
+                    // Punch correction (gamma)
+                    // Lower power (1.4) is used for highs so they are more "reactive"
+                    // and a higher power (2.2) for bass so it feels "sturdy"
+                    float power = (i < 2) ? 2.2f : 1.4f;
+                    normalized = MathF.Pow(normalized, power);
 
-                    float db = 20f * MathF.Log10(Math.Max(valLin, 1e-12f));
-                    float normalizedDb = Math.Clamp((db + 64f) / 58f, 0f, 1f);
-
-                    float dynamicScale = Math.Clamp(val / Math.Max(bandPeakEstimate[i], 1e-12f), 0f, 1f);
-                    float normalized = MathF.Max(normalizedDb, dynamicScale) * bandBalance[i];
-                    normalized = MathF.Pow(normalized, 0.75f);
-                    normalized *= 1.0f - i * 0.05f;
                     targetHeights[i] = Math.Clamp(normalized, 0f, 1f);
                 }
             }
