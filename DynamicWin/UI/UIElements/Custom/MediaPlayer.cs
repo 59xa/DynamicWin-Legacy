@@ -448,6 +448,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
                 // Stop the fetch loop and release pending resources (keep subscription)
                 StopFetchLoop(disposeCached: true);
+                // Reset thumbnail/animation state 
+                ResetThumbnailState();
             }
         }
 
@@ -1278,6 +1280,39 @@ namespace DynamicWin.UI.UIElements.Custom
             }
         }
 
+        // Reset thumbnail/animation state for menu close/deactivation
+        private void ResetThumbnailState()
+        {
+            lock (mediaLock)
+            {
+                // Reset animator to idle
+                animatorReset();
+                // Dispose and clear all images and fingerprints
+                if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                currentMedia = null;
+                currentMediaKey = null;
+                pendingMedia = null;
+                pendingMediaKey = null;
+                optimisticActive = false;
+                timelineFetchedOnce = false;
+                lastTimelineResync = DateTime.MinValue;
+            }
+        }
+
+        // Helper to reset animator state
+        private void animatorReset()
+        {
+            // MediaAnimator does not have a Reset method, so forcibly set state
+            var field = typeof(MediaAnimator).GetField("State", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (field != null) field.SetValue(animator, MediaAnimator.AnimState.Idle);
+            var timerField = typeof(MediaAnimator).GetField("AnimTimer", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (timerField != null) timerField.SetValue(animator, 0f);
+            var blurField = typeof(MediaAnimator).GetField("BlurAmount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (blurField != null) blurField.SetValue(animator, 0f);
+        }
+
         public override void Draw(SKCanvas canvas)
         {
             // Extra visibility guard
@@ -1540,13 +1575,8 @@ namespace DynamicWin.UI.UIElements.Custom
             isThumbnailSubscribed = false;
 
             StopFetchLoop(disposeCached: true);
-
-            lock (mediaLock)
-            {
-                if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
-                if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
-                if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
-            }
+            // Reset thumbnail/animation state 
+            ResetThumbnailState();
         }
 
     }
