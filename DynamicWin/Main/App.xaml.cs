@@ -10,12 +10,12 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
+using System.Windows.Forms;
 using System.Windows.Threading;
-using System.Timers;
 
 namespace DynamicWin
 {
-    public partial class DynamicWinMain : Application
+    public partial class DynamicWinMain : System.Windows.Application
     {
         public static MMDevice defaultDevice;
         public static MMDevice defaultMicrophone;
@@ -45,7 +45,7 @@ namespace DynamicWin
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Failed to add application to startup: {ex.Message}");
+                System.Windows.MessageBox.Show($"Failed to add application to startup: {ex.Message}");
             }
         }
 
@@ -58,7 +58,7 @@ namespace DynamicWin
             base.OnStartup(e);
 
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
-            Dispatcher.UnhandledException += Dispatcher_UnhandledException;
+            Current.Dispatcher.UnhandledException += Dispatcher_UnhandledException;
 
             bool result;
             mutex = new Mutex(true, "59xa.DynamicWin", out result);
@@ -109,31 +109,26 @@ namespace DynamicWin
 
             mainForm.SizeToContent = SizeToContent.Manual;
 
-            // Initial positioning
-            UpdateWindowPosition();
+            int screenIndex = Settings.ScreenIndex;
+            WindowPositionHelper.CenterWindowOnMonitor(mainForm, screenIndex);
 
             mainForm.Show();
 
-            Dispatcher.BeginInvoke(new Action(() =>
+            Current.Dispatcher.BeginInvoke(new Action(() =>
             {
                 ForceTopMost(mainForm);
             }), DispatcherPriority.ApplicationIdle);
 
-            // Use a System.Timers.Timer instead of DispatcherTimer to avoid exhausting Win32 timer handles
-            try
+            topmostTimer = new System.Timers.Timer(500); // milliseconds
+            topmostTimer.AutoReset = true;
+            topmostTimer.Elapsed += (_, _) =>
             {
-                CreateTopmostTimer();
-            }
-            catch { }
-
-            // Subscribe to system power events to handle suspend/resume gracefully
-            try
-            {
-                SystemEvents.PowerModeChanged += OnPowerModeChanged;
-                // Subscribe to display settings changes to re-center immediately on resolution change
-                SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
-            }
-            catch { }
+                // Switch back to UI thread
+                Dispatcher.CurrentDispatcher.Invoke(() =>
+                {
+                    ForceTopMost(mainForm);
+                });
+            };
         }
 
         protected override void OnExit(ExitEventArgs e)
@@ -164,12 +159,12 @@ namespace DynamicWin
 
         private void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
-            MessageBox.Show($"Unhandled exception: {e.ExceptionObject}");
+            System.Windows.MessageBox.Show($"Unhandled exception: {e.ExceptionObject}");
         }
 
         private void Dispatcher_UnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
-            MessageBox.Show($"Unhandled exception: {e.Exception}");
+            System.Windows.MessageBox.Show($"Unhandled exception: {e.Exception}");
             e.Handled = true;
         }
 
@@ -204,42 +199,7 @@ namespace DynamicWin
             try
             {
                 if (mainForm == null) return;
-
-                int screenIndex = Settings.ScreenIndex;
-                var screens = System.Windows.Forms.Screen.AllScreens;
-                if (screenIndex < 0 || screenIndex >= screens.Length) screenIndex = 0;
-                var screen = screens[screenIndex];
-                var workingArea = screen.WorkingArea;
-
-                double windowWidth = mainForm.ActualWidth > 0 ? mainForm.ActualWidth : mainForm.Width;
-
-                // Get DPI scaling for the target monitor
-                double dpiX = 96.0, dpiY = 96.0;
-                var source = System.Windows.PresentationSource.FromVisual(mainForm);
-                if (source != null)
-                {
-                    dpiX = source.CompositionTarget.TransformToDevice.M11 * 96.0;
-                    dpiY = source.CompositionTarget.TransformToDevice.M22 * 96.0;
-                }
-                else
-                {
-                    // Fallback: use WinForms DPI
-                    using (var g = System.Drawing.Graphics.FromHwnd(IntPtr.Zero))
-                    {
-                        dpiX = g.DpiX;
-                        dpiY = g.DpiY;
-                    }
-                }
-
-                // Convert screen coordinates (pixels) to DIPs
-                double scaleX = dpiX / 96.0;
-                double scaleY = dpiY / 96.0;
-
-                double targetLeft = (workingArea.Left + (workingArea.Width - windowWidth * scaleX) / 2.0) / scaleX;
-                double targetTop = workingArea.Top / scaleY;
-
-                mainForm.Left = targetLeft;
-                mainForm.Top = targetTop;
+                WindowPositionHelper.CenterWindowOnMonitor(mainForm, Settings.ScreenIndex);
             }
             catch { }
         }
@@ -343,6 +303,12 @@ namespace DynamicWin
             };
 
             topmostTimer.Start();
+        }
+
+        public void MoveToMonitor(int monitorIndex)
+        {
+            if (mainForm == null) return;
+            WindowPositionHelper.CenterWindowOnMonitor(mainForm, monitorIndex);
         }
     }
 }

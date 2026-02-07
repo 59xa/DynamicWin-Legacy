@@ -25,6 +25,7 @@ namespace DynamicWin.Main
 
         internal Forms.ToolStripMenuItem _settingsTrayItem;
 
+
         private DateTime _lastRenderTime;
         // Target interval driven by monitor refresh rate (set in ctor)
         private TimeSpan _targetElapsedTime;
@@ -92,17 +93,16 @@ namespace DynamicWin.Main
             instance = this;
 
             this.WindowStyle = WindowStyle.None;
+            this.WindowState = WindowState.Maximized;
             this.ResizeMode = ResizeMode.NoResize;
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
-            this.Title = "DynamicWin-Legacy Island";
+            this.Title = "DynamicWin-Legacy Overlay";
             this.Icon = BitmapFrame.Create(new Uri(DynamicWinMain.ReleaseStream.GetIconPath(), UriKind.Relative));
 
-            // Centre window horizontally on size change
-            this.SizeChanged += (s, e) => CenterHorizontallyOnScreen();
+            // Loaded event to ensure that this does not show the application on the Alt+Tab switcher
 
-            // Setup Win32 styles and initial topmost state
             this.Loaded += (s, e) =>
             {
                 IntPtr handle = new WindowInteropHelper(this).Handle;
@@ -111,14 +111,10 @@ namespace DynamicWin.Main
                 // Apply WS_EX_TOOLWINDOW and remove WS_EX_APPWINDOW
                 winStyle = (winStyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
                 SetWindowLong(handle, GWL_EXSTYLE, winStyle);
-
-                // Placement happens after style is set
-                SetMonitor(Settings.ScreenIndex);
-                ForceTopMost();
             };
 
-            // Re-assert Topmost if the user clicks away, ensuring it stays on top of other apps
-            this.Deactivated += (s, e) => { ForceTopMost(); };
+            // Placement happens after style is set
+            SetMonitor(Settings.ScreenIndex);
 
             AddRenderer();
 
@@ -140,13 +136,13 @@ namespace DynamicWin.Main
             _trayIcon.ContextMenuStrip.Closing += (s, e) =>
             {
                 this.Topmost = true;
-                ForceTopMost();
             };
 
             _trayIcon.ContextMenuStrip.Items.Add("Restart Control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
             {
                 if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
                 this.Content = new Grid();
+
                 AddRenderer();
             });
 
@@ -168,20 +164,6 @@ namespace DynamicWin.Main
             _trayIcon.Visible = true;
         }
 
-        /// <summary>
-        /// Forcefully sets the window to the top of the Z-order using Win32
-        /// Call this on load, monitor change, or focus loss
-        /// </summary>
-        public void ForceTopMost()
-        {
-            IntPtr handle = new WindowInteropHelper(this).Handle;
-            if (handle != IntPtr.Zero)
-            {
-                SetWindowPos(handle, HWND_TOPMOST, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            }
-        }
-
         public void UpdateTrayButtons()
         {
             if (MenuManager.Instance.ActiveMenu is UpdaterMenu)
@@ -196,70 +178,33 @@ namespace DynamicWin.Main
 
         public void SetMonitor(int monitorIndex)
         {
-            int screenCount = GetMonitorCount();
-            int validatedIndex = Math.Clamp(monitorIndex, 0, screenCount - 1);
-            Settings.ScreenIndex = validatedIndex;
+            var screens = System.Windows.Forms.Screen.AllScreens;
+            int clampedIndex = Math.Clamp(monitorIndex, 0, screens.Length - 1);
+            Settings.ScreenIndex = clampedIndex;
 
-            var screen = Forms.Screen.AllScreens[validatedIndex];
+            if (!this.IsLoaded)
+                this.WindowStartupLocation = WindowStartupLocation.Manual;
 
-            if (screen != null)
+            this.WindowState = WindowState.Normal;
+            this.ResizeMode = ResizeMode.CanResize;
+
+            WindowPositionHelper.CenterWindowOnMonitor(this, clampedIndex);
+            this.ResizeMode = ResizeMode.NoResize;
+
+            // Move the window in App.xaml.cs as well
+            if (System.Windows.Application.Current is DynamicWinMain app)
             {
-                // Temporarily drop Topmost to allow the OS to move the window freely
-                this.Topmost = false;
-
-                if (!this.IsLoaded)
-                    this.WindowStartupLocation = WindowStartupLocation.Manual;
-
-                this.WindowState = WindowState.Normal;
-                var workingArea = screen.WorkingArea;
-
-                this.Width = 800;
-                this.Height = 500;
-                this.Top = workingArea.Top;
-
-                CenterHorizontallyOnScreen();
-
-                // Re-assert WPF Topmost
-                this.Topmost = true;
-
-                // Immediately Force Win32 Z-Order to the top of the new monitor
-                ForceTopMost();
+                app.MoveToMonitor(clampedIndex);
             }
-        }
-
-        protected override void OnStateChanged(EventArgs e)
-        {
-            base.OnStateChanged(e);
-            if (this.WindowState == WindowState.Normal)
-            {
-                CenterHorizontallyOnScreen();
-            }
-        }
-
-        /// <summary>
-        /// Ensures the window is horizontally centered on the current monitor.
-        /// </summary>
-        public void CenterHorizontallyOnScreen()
-        {
-            int screenIndex = Settings.ScreenIndex;
-            var screens = Forms.Screen.AllScreens;
-            if (screenIndex < 0 || screenIndex >= screens.Length) screenIndex = 0;
-            var screen = screens[screenIndex];
-            var workingArea = screen.WorkingArea;
-            this.Left = workingArea.Left + (workingArea.Width / 2.0) - (this.Width / 2.0);
         }
 
         public static int GetMonitorCount()
         {
-            return Forms.Screen.AllScreens.Length;
+            return System.Windows.Forms.Screen.AllScreens.Length;
         }
 
         private void OnRendering(object? sender, EventArgs e)
         {
-            // Skip rendering when paused (e.g., during system suspend/hibernate)
-            if (_renderPaused) return;
-
-            ForceTopMost();
             var now = DateTime.UtcNow;
 
             // Track mouse movement to detect idle while hovering the island
