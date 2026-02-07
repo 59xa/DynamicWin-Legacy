@@ -86,6 +86,12 @@ namespace DynamicWin.Utils
         private static readonly SemaphoreSlim _initLock = new SemaphoreSlim(1, 1);
         private static bool _isInitialized = false;
 
+        // Debounce timer for rapid WinRT events
+        private static System.Timers.Timer? _debounceTimer = null;
+        private static bool _debouncePending = false;
+        private static GlobalSystemMediaTransportControlsSession? _debounceSession = null;
+        private const double DebounceIntervalMs = 120; // 120ms debounce
+
         /// <summary>
         /// Initialises the connection to Windows Media controls once.
         /// Hooks up events so we don't have to poll manually.
@@ -153,7 +159,7 @@ namespace DynamicWin.Utils
                     _currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
 
                     // Immediate fetch of initial data
-                    RefreshMediaProperties(session);
+                    RefreshMediaPropertiesAsync(session);
                     RefreshTimeline(session);
                 }
                 else
@@ -170,7 +176,44 @@ namespace DynamicWin.Utils
         // Triggered by Windows when Song/Title changes
         private static void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
         {
-            RefreshMediaProperties(sender);
+            // Debounce rapid events, but always update immediately on first event
+            lock (typeof(MediaInfo))
+            {
+                if (_debounceTimer == null)
+                {
+                    _debounceTimer = new System.Timers.Timer(DebounceIntervalMs);
+                    _debounceTimer.AutoReset = false;
+                    _debounceTimer.Elapsed += (s, e) =>
+                    {
+                        lock (typeof(MediaInfo))
+                        {
+                            if (_debouncePending && _debounceSession != null)
+                            {
+                                RefreshMediaPropertiesAsync(_debounceSession);
+                                _debouncePending = false;
+                                _debounceSession = null;
+                            }
+                        }
+                    };
+                }
+
+                if (!_debouncePending)
+                {
+                    // First event: update immediately
+                    RefreshMediaPropertiesAsync(sender);
+                    _debouncePending = true;
+                    _debounceSession = sender;
+                    _debounceTimer.Stop();
+                    _debounceTimer.Start();
+                }
+                else
+                {
+                    // Another event during debounce: just reset timer and remember session
+                    _debounceSession = sender;
+                    _debounceTimer.Stop();
+                    _debounceTimer.Start();
+                }
+            }
         }
 
         // Triggered by Windows when Play/Pause/Position changes
@@ -179,28 +222,26 @@ namespace DynamicWin.Utils
             RefreshTimeline(sender);
         }
 
-        private static void RefreshMediaProperties(GlobalSystemMediaTransportControlsSession session)
+        // Now async void, called directly from event handler
+        private static async void RefreshMediaPropertiesAsync(GlobalSystemMediaTransportControlsSession session)
         {
-            Task.Run(async () =>
+            try
             {
-                try
+                var props = await session.TryGetMediaPropertiesAsync();
+                if (props == null) return;
+
+                // Update Text Metadata
+                Current = new Media
                 {
-                    var props = await session.TryGetMediaPropertiesAsync();
-                    if (props == null) return;
+                    Title = props.Title,
+                    Artist = props.Artist,
+                    ThumbnailData = null // Keep null, fetch bytes only on demand
+                };
 
-                    // Update Text Metadata
-                    Current = new Media
-                    {
-                        Title = props.Title,
-                        Artist = props.Artist,
-                        ThumbnailData = null // Keep null, fetch bytes only on demand
-                    };
-
-                    // Reset thumb cache on song change
-                    _thumbnailBytesCache = null;
-                }
-                catch { }
-            });
+                // Reset thumb cache on song change
+                _thumbnailBytesCache = null;
+            }
+            catch { }
         }
 
         private static void RefreshTimeline(GlobalSystemMediaTransportControlsSession session)
@@ -231,7 +272,7 @@ namespace DynamicWin.Utils
             // If the user wants to force refresh, we trigger the update logic manually
             if (forceRefresh && _currentSession != null)
             {
-                RefreshMediaProperties(_currentSession);
+                RefreshMediaPropertiesAsync(_currentSession);
             }
 
             return Current;
