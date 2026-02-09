@@ -16,7 +16,7 @@ using Windows.Media.Control;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          12 January 2026
+ *   Last Modified:          27 January 2026
  *
  */
 
@@ -26,14 +26,26 @@ namespace DynamicWin.UI.UIElements.Custom
     {
         private CancellationTokenSource? cts;
         private DynamicWin.Utils.Media? currentMedia;
-        private SKBitmap? thumbnailBitmap; // Currently cached decoded bitmap (owned by this object)
-        private ulong? thumbnailFingerprint; // Cached fingerprint for thumbnailBitmap
-        private SKBitmap? pendingBitmap; // Newly decoded bitmap waiting to animate in
+        // Use SKImage for owned renderable images to avoid drawing shared/disposed SKBitmap
+        private SKImage? thumbnailImage; // Currently cached decoded image (owned by this object)
+        private ulong? thumbnailFingerprint; // Cached fingerprint for image (computed from a temporary SKBitmap during decode)
+        private SKImage? pendingImage; // Newly decoded image waiting to animate in
         private ulong? pendingFingerprint;
         private DynamicWin.Utils.Media? pendingMedia; // Pending metadata object
         private readonly object mediaLock = new object();
+        // Guard to ensure only one decode loop runs at a time
+        private int thumbnailDecodeRunning = 0;
         // How often the background loop waits between iterations (cooperative wait broken into steps)
         private TimeSpan fetchInterval = TimeSpan.FromMilliseconds(250); // faster timeline updates
+
+        // Rate-limited service bytes and flags to make thumbnail processing
+        private volatile byte[]? pendingThumbnailBytesFromService = null; // bytes handed to us by service events
+        private volatile bool mediaNeedsUpdate = false; // set by service event when thumbnail changed
+        private DateTime lastMediaCheck = DateTime.MinValue;
+        private TimeSpan mediaCheckInterval = TimeSpan.FromSeconds(2); // only decode/check media every 2s
+        // Debounce short-lived 'no media' signals to avoid flicker when service emits transient nulls
+        private DateTime mediaClearRequestedAt = DateTime.MinValue;
+        private readonly TimeSpan mediaClearDelay = TimeSpan.FromSeconds(1);
 
         // Keys to detect duplicates
         private string? currentMediaKey;
@@ -46,13 +58,12 @@ namespace DynamicWin.UI.UIElements.Custom
         private float titleScrollTimer = 0f;  // Timer for delay
         private bool isTitleScrolling = false;
         private string? fullTitleText = null;
-        private string? prevFullTitleText = null; // Track previous to avoid re-measuring
         private float titleTextWidth = 0f;
         private const int titleScrollCharThreshold = 35;
 
         // Animation state handled by MediaAnimator
         private readonly MediaAnimator animator = new MediaAnimator();
-        private SKBitmap? previousBitmap = null; // Bitmap that is being replaced
+        private SKImage? previousImage = null; // Image that is being replaced
 
         // Playback controls and progress
         private MediaController controller;
@@ -75,12 +86,13 @@ namespace DynamicWin.UI.UIElements.Custom
         private float displayFill = 0f;
 
         private float timelineHeight = 6f; // Thickness of the bar
-        private SKColor timelineBgColor; // subtle background
+        private readonly SKColor timelineBgColor; // subtle background
         private Col timelineFgColor = Theme.TextMain; // active fill
         private float timelineBarPadding = 12f; // vertical padding below buttons
         private float timelineSidePadding = 40f; // space on left/right for timeline text
         private Col timelineTextColor = Theme.TextMain.Override(a: 55);
         private float timelineTextSize = 10f;
+        private DWProgressBarEx? timelineBar;
 
         // Add lastSampleKey to detect new samples
         private string? lastSampleKey = null;
@@ -99,6 +111,9 @@ namespace DynamicWin.UI.UIElements.Custom
 
         private DateTime lastTimelineResync = DateTime.MinValue;
 
+        // How often to re-fetch the timeline from MediaInfo
+        private TimeSpan timelineFetchInterval = TimeSpan.FromSeconds(4);
+
         // If the user is interacting with the timeline (seeking), set this to true and update userSeekElapsed
         private bool userIsSeeking = false;
         private TimeSpan userSeekElapsed = TimeSpan.Zero;
@@ -112,42 +127,17 @@ namespace DynamicWin.UI.UIElements.Custom
         // Extra height applied to timeline when hovering/seeking (smoothed)
         private float timelineExtraHeight = 0f;
 
-        // Lightweight fingerprint for bitmap equality: sample a few pixels and dimensions
-        private static ulong ComputeFingerprint(SKBitmap bmp)
-        {
-            if (bmp == null) return 0ul;
-            unchecked
-            {
-                ulong h = 1469598103934665603UL; // FNV offset basis
-                h ^= (ulong)bmp.Width; h *= 1099511628211UL;
-                h ^= (ulong)bmp.Height; h *= 1099511628211UL;
+        // Track whether we are subscribed to the thumbnail service so we can unsubscribe when not enabled
+        private bool isThumbnailSubscribed = false;
 
-                // Sample up to 8 points: corners, mid-edges, center. Use modulo to clamp.
-                int w = Math.Max(1, bmp.Width);
-                int hgt = Math.Max(1, bmp.Height);
-                (int x, int y)[] samples = new (int, int)[] {
-                    (0,0), (w-1,0), (0,hgt-1), (w-1,hgt-1),
-                    (w/2, hgt/2), (w/2,0), (w/2,hgt-1), (0,hgt/2)
-                };
+        // Animation for thumbnail scale/dim
+        private float thumbnailAnim = 1f; // 1 = playing, 0 = paused
+        private const float thumbnailAnimSpeed = 8f;
 
-                foreach (var s in samples)
-                {
-                    try
-                    {
-                        var c = bmp.GetPixel(Math.Max(0, Math.Min(s.x, w-1)), Math.Max(0, Math.Min(s.y, hgt-1)));
-                        // Pack ARGB into ulong
-                        ulong val = ((ulong)c.Alpha << 24) | ((ulong)c.Red << 16) | ((ulong)c.Green << 8) | (ulong)c.Blue;
-                        h ^= val; h *= 1099511628211UL;
-                    }
-                    catch
-                    {
-                        // Ignore sampling errors
-                    }
-                }
-
-                return h;
-            }
-        }
+        // Metadata fetch throttle to populate textual metadata when thumbnail exists but metadata not set
+        private int metadataFetchRunning = 0;
+        private DateTime lastMetadataFetch = DateTime.MinValue;
+        private readonly TimeSpan metadataFetchInterval = TimeSpan.FromSeconds(1);
 
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
@@ -167,17 +157,83 @@ namespace DynamicWin.UI.UIElements.Custom
 
             // Hook play/pause button to also toggle optimistic UI state
             btnPlay = new DWImageButton(this, Res.Play, new Vec2(0, 0), new Vec2(32, 32), () => {
-                // Optimistic toggle
-                optimisticState = !GetEffectivePlayingState();
+                // Determine desired action (play or pause)
+                bool currentlyPlaying = GetEffectivePlayingState();
+                bool willPlay = !currentlyPlaying;
+
+                optimisticState = willPlay;
                 optimisticActive = true;
-                // Send play/pause command
-                controller.PlayPause();
+
                 // Update icon immediately
                 if (btnPlay != null)
                 {
                     btnPlay.Image.Image = optimisticState ? (Res.Pause ?? Res.Stop) : Res.Play;
                 }
-            }, alignment: UIAlignment.TopLeft)
+
+                // Try WinRT play/pause separately (Play vs Pause) and force a timeline refresh afterwards
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        bool ok = await MediaInfo.TryTogglePlayPauseAsync().ConfigureAwait(false);
+
+                        if (!ok)
+                        {
+                            // Fallback toggle if specific call isn't supported
+                            controller.PlayPause();
+                        }
+
+                        // Immediately update local timeline/playback state optimistically so UI responds fast
+                        try
+                        {
+                            lock (mediaLock)
+                            {
+                                var now = DateTime.UtcNow;
+                                if (willPlay)
+                                {
+                                    // Resume: mark as playing and record reference time so virtual progression continues from lastSampleElapsed
+                                    if (!lastSampleElapsed.HasValue)
+                                    {
+                                        // If there's no sample, set to zero
+                                        lastSampleElapsed = TimeSpan.Zero;
+                                    }
+                                    lastSampleReceivedAt = now;
+                                    lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                                    optimisticActive = false;
+                                    timelineFetchedOnce = true;
+                                }
+                                else
+                                {
+                                    // Pause: capture current elapsed and mark paused so virtual progression stops
+                                    if (!lastSampleElapsed.HasValue)
+                                    {
+                                        lastSampleElapsed = TimeSpan.Zero;
+                                    }
+
+                                    if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing && lastSampleReceivedAt != DateTime.MinValue)
+                                    {
+                                        try
+                                        {
+                                            lastSampleElapsed = lastSampleElapsed.Value + (now - lastSampleReceivedAt);
+                                        }
+                                        catch { }
+                                    }
+
+                                    lastSampleReceivedAt = now;
+                                    lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused;
+                                    optimisticActive = false;
+                                    timelineFetchedOnce = true;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    catch
+                    {
+                        try { controller.PlayPause(); } catch { }
+                    }
+                });
+             }, alignment: UIAlignment.TopLeft)
             {
                 roundRadius = 16f,
                 normalColor = Col.Transparent,
@@ -204,29 +260,41 @@ namespace DynamicWin.UI.UIElements.Custom
             };
             AddLocalObject(visualiser);
 
+            // Timeline progress bar (created as local object; size/pos updated in Update)
+            try
+            {
+                timelineBar = new DWProgressBarEx(this, new Vec2(0, 0), new Vec2(200, timelineHeight), UIAlignment.TopCenter,
+                    background: Theme.WidgetBackground.Override(a: 0.06f), foreground: timelineFgColor);
+                timelineBar.CornerRadius = timelineHeight / 2f;
+                timelineBar.Smoothing = 30f;
+                timelineBar.SetValueImmediate(0f);
+                AddLocalObject(timelineBar);
+            }
+            catch { timelineBar = null; }
+
             // Subscribe to central thumbnail service event
-            MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+            try
+            {
+                MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+                isThumbnailSubscribed = true;
+            }
+            catch { isThumbnailSubscribed = false; }
 
             // Try to initialise thumbnail from service cache so it doesn't disappear when re-opening
             try
             {
-                var serviceBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                if (serviceBmp != null)
+                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                if (bytes != null && bytes.Length > 0)
                 {
-                    // Clone into our own SKBitmap
-                    try
+                    var img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(bytes, out ulong? fp);
+                    if (img != null)
                     {
-                        // Prefer a safe pixel copy to avoid sharing ownership
-                        var bmp = new SKBitmap(serviceBmp.Info);
-                        serviceBmp.CopyTo(bmp);
                         lock (mediaLock)
                         {
-                            thumbnailBitmap = bmp;
-                            thumbnailFingerprint = ComputeFingerprint(bmp);
-                            // No currentMedia metadata here
+                            thumbnailImage = img;
+                            thumbnailFingerprint = fp;
                         }
                     }
-                    catch { }
                 }
             }
             catch { }
@@ -245,32 +313,43 @@ namespace DynamicWin.UI.UIElements.Custom
 
             if (isEnabled)
             {
+                // Re-subscribe to thumbnail service if needed
+                try
+                {
+                    if (!isThumbnailSubscribed)
+                    {
+                        MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
+                        isThumbnailSubscribed = true;
+                    }
+                }
+                catch { isThumbnailSubscribed = false; }
+
                 StartFetchLoop();
 
-                // If service has a cached bitmap, ensure it's used (queue as pending to animate in)
-                var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                if (svcBmp != null)
+                // If service has a cached bitmap bytes, ensure it's used (queue as pending to animate in)
+                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                if (bytes != null && bytes.Length > 0)
                 {
                     try
                     {
-                        var clone = new SKBitmap(svcBmp.Info);
-                        svcBmp.CopyTo(clone);
-                        lock (mediaLock)
+                        var img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(bytes, out ulong? fp);
+                        if (img != null)
                         {
-                            // Queue as pending to trigger animator
-                            if (thumbnailBitmap == null)
+                            lock (mediaLock)
                             {
-                                pendingBitmap = clone;
-                                pendingFingerprint = ComputeFingerprint(clone);
-                                pendingMedia = null;
-                                pendingMediaKey = null;
-                            }
-                            else
-                            {
-                                // Replace directly
-                                try { thumbnailBitmap.Dispose(); } catch { }
-                                thumbnailBitmap = clone;
-                                thumbnailFingerprint = ComputeFingerprint(clone);
+                                if (thumbnailImage == null)
+                                {
+                                    pendingImage = img;
+                                    pendingFingerprint = fp;
+                                    pendingMedia = null;
+                                    pendingMediaKey = null;
+                                }
+                                else
+                                {
+                                    try { thumbnailImage.Dispose(); } catch { }
+                                    thumbnailImage = img;
+                                    thumbnailFingerprint = fp;
+                                }
                             }
                         }
                     }
@@ -278,60 +357,43 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
                 else
                 {
-                    // No cached service bitmap yet – do a one-shot fetch so first-open has a thumbnail.
+                    // No cached service bitmap yet - do a one-shot fetch so first-open has a thumbnail.
                     Task.Run(async () =>
                     {
                         try
                         {
-                            var bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync().ConfigureAwait(false);
+                            var b = await MediaInfo.FetchCurrentThumbnailBytesAsync().ConfigureAwait(false);
                             var meta = await MediaInfo.FetchCurrentMediaAsync().ConfigureAwait(false);
 
-                            if (bytes != null && bytes.Length > 0)
+                            if (b != null && b.Length > 0)
                             {
-                                SKBitmap? newBmp = null;
-                                try
+                                var img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(b, out ulong? fp);
+                                if (img != null)
                                 {
-                                    using var ms = new SKMemoryStream(bytes);
-                                    newBmp = SKBitmap.Decode(ms);
-                                }
-                                catch { newBmp = null; }
-
-                                if (newBmp != null)
-                                {
-                                    ulong fp = ComputeFingerprint(newBmp);
                                     lock (mediaLock)
                                     {
-                                        // Queue as pending so animator will run even on first show
-                                        // If the decoded bitmap is visually identical to current thumbnail (fingerprint), adopt metadata and skip animation
-                                        if (thumbnailBitmap != null && thumbnailFingerprint.HasValue && thumbnailFingerprint.Value == fp)
+                                        if (thumbnailImage != null && thumbnailFingerprint.HasValue && thumbnailFingerprint.Value == fp)
                                         {
                                             currentMedia = meta;
-                                            currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
-
-                                            // Fresh timeline sample arrived -> cancel optimistic UI
+                                            currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{b.Length}";
                                             optimisticActive = false;
                                         }
                                         else
                                         {
-                                            if (thumbnailBitmap == null && pendingBitmap == null)
+                                            if (thumbnailImage == null && pendingImage == null)
                                             {
-                                                pendingBitmap = newBmp;
+                                                pendingImage = img;
                                                 pendingFingerprint = fp;
                                                 pendingMedia = meta;
-                                                pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                                pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{b.Length}";
                                             }
                                             else
                                             {
-                                                // If thumbnail already exists, set as pending to animate
-                                                if (pendingBitmap != null)
-                                                {
-                                                    try { pendingBitmap.Dispose(); } catch { }
-                                                }
-
-                                                pendingBitmap = newBmp;
+                                                if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } }
+                                                pendingImage = img;
                                                 pendingFingerprint = fp;
                                                 pendingMedia = meta;
-                                                pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{bytes.Length}";
+                                                pendingMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|{b.Length}";
                                             }
                                         }
                                     }
@@ -339,19 +401,30 @@ namespace DynamicWin.UI.UIElements.Custom
                             }
                             else
                             {
-                                // If there really is no media (no bytes and no metadata), ensure we wipe any cached thumbnails
+                                // If no thumbnail bytes but metadata is available, adopt the metadata so title/artist and
+                                // timeline information are shown immediately even when a thumbnail hasn't been provided.
+                                // This prevents the UI from showing empty text while MediaController has already fetched metadata.
+                                if (meta != null)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        currentMedia = meta;
+                                        currentMediaKey = (meta == null) ? string.Empty : $"{meta.Title ?? ""}|{meta.Artist ?? ""}|0";
+                                        optimisticActive = false;
+                                    }
+                                }
+
                                 if (meta == null)
                                 {
                                     lock (mediaLock)
                                     {
-                                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
-                                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
-                                        if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                                        if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                                        if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                                        if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
                                         currentMediaKey = null;
                                         pendingMediaKey = null;
                                         currentMedia = null;
 
-                                        // Fresh timeline sample (none) -> cancel optimistic UI
                                         optimisticActive = false;
                                     }
                                 }
@@ -363,7 +436,20 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             else
             {
-                StopFetchLoop();
+                // When disabled, stop background work but keep subscribed to the thumbnail service so
+                // we still receive any forced notifications when the user switches to Media view.
+                // This prevents missing a ForceNotifyCurrentThumbnail() call that may happen before
+                // the MediaPlayer becomes active
+                try
+                {
+                    // Do not unsubscribe here; OnDestroy will unsubscribe to avoid leaks
+                }
+                catch { }
+
+                // Stop the fetch loop and release pending resources (keep subscription)
+                StopFetchLoop(disposeCached: true);
+                // Reset thumbnail/animation state 
+                ResetThumbnailState();
             }
         }
 
@@ -382,52 +468,73 @@ namespace DynamicWin.UI.UIElements.Custom
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
+            // Animate thumbnail scale/dim
+            bool isPaused = false;
+            lock (mediaLock) { isPaused = !GetEffectivePlayingState(); }
+            float target = isPaused ? 0f : 1f;
+            thumbnailAnim = Mathf.Lerp(thumbnailAnim, target, Math.Min(1f, thumbnailAnimSpeed * deltaTime));
 
-            // Ensure fetch loop only runs while media UI is actually visible in HomeMenu Media tab
+            // Use null checks instead, exceptions kill performance on Update()
             bool visible = false;
-            try
+            var home = Res.HomeMenu;
+            if (home != null &&
+                home.currentBigMenuMode == HomeMenu.BigMenuMode.Media &&
+                RendererMain.Instance?.MainIsland != null && // Null check Instance
+                RendererMain.Instance.MainIsland.IsHovering)
             {
-                var home = Res.HomeMenu;
-                visible = (home != null && home.currentBigMenuMode == HomeMenu.BigMenuMode.Media && RendererMain.Instance.MainIsland.IsHovering);
+                visible = true;
             }
-            catch { visible = false; }
 
             if (visible)
             {
-                if (cts == null)
-                    StartFetchLoop();
+                if (cts == null) StartFetchLoop();
             }
             else
             {
-                if (cts != null)
-                    StopFetchLoop();
-
-                // If not visible, skip the rest of Update to avoid changing child visibility/layout
-                return;
+                if (cts != null) StopFetchLoop(disposeCached: false);
+                return; // Skip the rest if not visible
             }
 
-            // Drive animator
-            animator.Update(deltaTime, () => { lock (mediaLock) { return pendingBitmap != null; } },
-                onStart: () =>
-                {
-                    // Owner should capture previousBitmap
-                    lock (mediaLock)
-                    {
-                        previousBitmap = thumbnailBitmap;
-                    }
-                },
+            // Geometry and caching step
+            // Calculate these ONCE per frame to reuse in Layout, Seek, and Hover logic
+            var widgetBounds = GetRect().Rect; // Call GetRect only once
+
+            // Pre-calculate bar geometry used for both seeking and hovering
+            float barWidth = widgetBounds.Width - 2 * timelineSidePadding;
+            // Safety check for negative width
+            if (barWidth < 1f) barWidth = 1f;
+
+            float barX = widgetBounds.Left + (widgetBounds.Width - barWidth) / 2f;
+
+            // Determine button bottom safely
+            float btnBottom = (btnPrev != null)
+                ? (btnPrev.LocalPosition.Y + btnPrev.Size.Y)
+                : (widgetBounds.Bottom - 20f);
+
+            float barY = widgetBounds.Top + btnBottom + timelineBarPadding;
+            if (barY + timelineHeight > widgetBounds.Bottom)
+                barY = widgetBounds.Bottom - timelineHeight - timelineBarPadding;
+
+            var timelineBarRect = SKRect.Create(barX, barY, barWidth, timelineHeight);
+            var mousePos = RendererMain.CursorPosition;
+
+
+            // Animator step
+            // (If possible, cache these delegates as fields to avoid per-frame GC allocation)
+            animator.Update(deltaTime,
+                () => { lock (mediaLock) { return pendingImage != null; } },
+                onStart: () => { lock (mediaLock) { previousImage = thumbnailImage; } },
                 onMidFlip: () =>
                 {
-                    // Swap bitmaps/metadata mid-flip
                     lock (mediaLock)
                     {
-                        if (thumbnailBitmap != null)
+                        if (thumbnailImage != null)
                         {
-                            try { thumbnailBitmap.Dispose(); } catch { }
+                            try { thumbnailImage.Dispose(); } catch { }
                         }
-                        thumbnailBitmap = pendingBitmap;
-                        thumbnailFingerprint = pendingFingerprint;
-                        pendingBitmap = null;
+                        thumbnailImage = pendingImage;
+                        thumbnailFingerprint = pendingFingerprint; // Update fingerprint here
+                        pendingImage = null;
                         pendingFingerprint = null;
 
                         currentMediaKey = pendingMediaKey;
@@ -437,11 +544,7 @@ namespace DynamicWin.UI.UIElements.Custom
                         {
                             currentMedia = pendingMedia;
                             pendingMedia = null;
-
-                            // Fresh timeline sample arrived -> cancel optimistic UI
                             optimisticActive = false;
-
-                            // Media changed -> we should fetch a fresh timeline next loop
                             timelineFetchedOnce = false;
                             lastTimelineResync = DateTime.MinValue;
                         }
@@ -449,26 +552,24 @@ namespace DynamicWin.UI.UIElements.Custom
                 },
                 onFinish: () =>
                 {
-                    // Dispose previousBitmap
-                    if (previousBitmap != null)
+                    if (previousImage != null)
                     {
-                        try { previousBitmap.Dispose(); } catch { }
-                        previousBitmap = null;
+                        try { previousImage.Dispose(); } catch { }
+                        previousImage = null;
                     }
                 });
 
-            // Snapshot currentMedia under lock so Update/Draw see consistent values
+
+            // Timeline snapshot logic
             TimeSpan? sampleElapsed = null;
             TimeSpan? sampleDuration = null;
-            GlobalSystemMediaTransportControlsSessionPlaybackStatus samplePlayback = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
-            string sampleKey = null; // left unused for now
 
             lock (mediaLock)
             {
-                if (lastSampleElapsed.HasValue && lastSampleDuration.HasValue && lastSampleReceivedAt != DateTime.MinValue)
+                if (lastSampleElapsed.HasValue && lastSampleReceivedAt != DateTime.MinValue)
                 {
-                    // Compute elapsed since sample received
-                    var since = DateTime.UtcNow - lastSampleReceivedAt;
+                    // lastSampleDuration may be null for some sessions
+                    sampleDuration = lastSampleDuration;
 
                     if (userIsSeeking)
                     {
@@ -476,10 +577,10 @@ namespace DynamicWin.UI.UIElements.Custom
                     }
                     else
                     {
-                        // If playback was Playing at sample time, advance; otherwise keep snapshot
+                        // Only do the DateTime math if we are actually playing
                         if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
                         {
-                            sampleElapsed = lastSampleElapsed.Value + since;
+                            sampleElapsed = lastSampleElapsed.Value + (DateTime.UtcNow - lastSampleReceivedAt);
                         }
                         else
                         {
@@ -487,15 +588,14 @@ namespace DynamicWin.UI.UIElements.Custom
                         }
                     }
 
-                    sampleDuration = lastSampleDuration;
-
-                    // Keep currentTimeline in sync for UI consumers (text metadata remains in currentMedia)
-                    if (currentTimeline != null)
+                    // Sync external timeline object if available
+                    if (currentTimeline != null && sampleElapsed.HasValue)
                     {
                         try
                         {
                             currentTimeline.Position = currentTimeline.StartTime + sampleElapsed.Value;
-                            currentTimeline.EndTime = currentTimeline.StartTime + sampleDuration.Value;
+                            if (sampleDuration.HasValue)
+                                currentTimeline.EndTime = currentTimeline.StartTime + sampleDuration.Value;
                             currentTimeline.PlaybackStatus = lastPlaybackStatus;
                         }
                         catch { }
@@ -504,33 +604,31 @@ namespace DynamicWin.UI.UIElements.Custom
                 else
                 {
                     optimisticActive = false;
-                    // No timeline snapshot available -> clear currentTimeline so UI hides
                     currentTimeline = null;
                 }
             }
 
-            // Update timeline info using snapshot 
-            if (sampleElapsed.HasValue && sampleDuration.HasValue)
+            // Timeline update logic
+            // Some sessions (browsers) do not provide EndTime; still update elapsed so the seconds advance
+            if (sampleElapsed.HasValue)
             {
                 timelinePosition = sampleElapsed.Value;
-                timelineDuration = sampleDuration.Value;
 
-                if (timelinePosition < TimeSpan.Zero) timelinePosition = TimeSpan.Zero;
+                if (sampleDuration.HasValue)
+                {
+                    timelineDuration = sampleDuration.Value;
 
-                // Determine play state from lastPlaybackStatus (snapshot)
+                    if (timelinePosition < TimeSpan.Zero) timelinePosition = TimeSpan.Zero;
+
+                    if (timelinePosition > timelineDuration) timelinePosition = timelineDuration;
+                }
+                else
+                {
+                    // No duration available for this session
+                    timelineDuration = null;
+                }
+
                 isPlayingFlag = (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing);
-
-                // If not playing, do not advance timelinePosition further; it was computed above using snapshot
-                if (!isPlayingFlag)
-                {
-                    // Ensure we don't advance optimistically
-                }
-
-                // Cap at end
-                if (timelineDuration.HasValue && timelinePosition > timelineDuration)
-                {
-                    timelinePosition = timelineDuration;
-                }
             }
             else
             {
@@ -538,433 +636,387 @@ namespace DynamicWin.UI.UIElements.Custom
                 timelineDuration = null;
                 isPlayingFlag = false;
                 lastSampleKey = null;
-
-                // No timeline -> do NOT reset displayFill here to preserve smooth visual; leave displayFill as-is
             }
 
-            // Animate displayFill towards actual progress (after timelinePosition updated)
+
+            // Visual interpolation
             float targetFill = 0f;
             bool haveTarget = false;
 
-            if (userIsSeeking)
+            // Use cached duration total seconds to avoid repeated property access
+            double totalDurSeconds = (timelineDuration.HasValue) ? timelineDuration.Value.TotalSeconds : 0;
+
+            if (totalDurSeconds > 0)
             {
-                if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
+                if (userIsSeeking)
                 {
-                    targetFill = Math.Clamp((float)(userSeekElapsed.TotalSeconds / timelineDuration.Value.TotalSeconds), 0f, 1f);
+                    targetFill = Math.Clamp((float)(userSeekElapsed.TotalSeconds / totalDurSeconds), 0f, 1f);
+                    haveTarget = true;
+                }
+                else if (timelinePosition.HasValue)
+                {
+                    targetFill = Math.Clamp((float)(timelinePosition.Value.TotalSeconds / totalDurSeconds), 0f, 1f);
                     haveTarget = true;
                 }
             }
-            else if (timelinePosition.HasValue && timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
-            {
-                targetFill = Math.Clamp((float)(timelinePosition.Value.TotalSeconds / timelineDuration.Value.TotalSeconds), 0f, 1f);
-                haveTarget = true;
-            }
 
-            // Smoothly interpolate displayFill to target to avoid snapping on resync
             if (haveTarget)
             {
-                const float smoothing = 30f; // more responsive interpolation
-                displayFill = Mathf.Lerp(displayFill, targetFill, Math.Min(1f, smoothing * deltaTime));
+                // 30f * deltaTime is simple, but ensure deltaTime isn't huge (spike protection)
+                float t = Math.Min(1f, 30f * deltaTime);
+                displayFill = Mathf.Lerp(displayFill, targetFill, t);
             }
 
-            // Position controls relative to layout (unchanged)
-            try
+
+            // Updating layout
+            // Use widgetBounds
+            float padding = 0f;
+            float thumbSize = Math.Min(widgetBounds.Height - padding * 2f, widgetBounds.Height * 1f);
+            SKRect thumbRect = SKRect.Create(widgetBounds.Left + padding, widgetBounds.Top + padding, thumbSize, thumbSize);
+
+            // Pre-calculate common layout values
+            float btnSize = 28f;
+            float btnSpacing = 8f;
+            float buttonsYOffset = 16f + 14f + 12f + 24f; // titleY + titleH + artistH + gap
+            float startXLocal = thumbRect.Right - widgetBounds.Left - 45f;
+
+            // Set positions (null checks instead of try-catch)
+            if (btnPrev != null) btnPrev.LocalPosition = new Vec2(startXLocal, buttonsYOffset);
+            if (btnPlay != null)
             {
-                var rr = GetRect();
-                var rect = rr.Rect;
-                float padding = 0f;
-                float thumbSize = Math.Min(rect.Height - padding * 2f, rect.Height * 1f);
-                SKRect thumbRect = SKRect.Create(rect.Left + padding, rect.Top + padding, thumbSize, thumbSize);
+                btnPlay.LocalPosition = new Vec2(startXLocal + (btnSize + btnSpacing), buttonsYOffset);
 
-                float textSpacing = 14f;
-                float textX = thumbRect.Right + textSpacing;
-                float availableWidth = rect.Width - (textX - rect.Left) - padding;
+                // Icon update
+                bool effectivePlaying = GetEffectivePlayingState();
+                var icon = effectivePlaying ? (Resources.Res.Pause ?? Resources.Res.Stop) : Resources.Res.Play;
 
-                // Compute positions in local coordinates (relative to rect.TopLeft)
-                float localBaseX = textX - rect.Left;
-                float titleY = 16f;
-                float titleHeight = 14f;
-                float artistHeight = 12f;
-
-                float buttonsYOffset = titleY + titleHeight + artistHeight + 24f; // Below texts
-                float btnSize = 28f;
-                // Reduce spacing so buttons sit closer to thumbnail/text
-                float btnSpacing = 8f;
-                float buttonsTotal = btnSize * 3f + btnSpacing * 2f;
-                // Place buttons directly to the right of the thumbnail (closer to thumbnail)
-                float startXLocal = thumbRect.Right - rect.Left - 25f; // 25px gap from thumbnail
-                float btnY = buttonsYOffset;
-
-                if (btnPrev != null) btnPrev.LocalPosition = new Vec2(startXLocal, btnY);
-                if (btnPlay != null) btnPlay.LocalPosition = new Vec2(startXLocal + (btnSize + btnSpacing), btnY); // Play in middle
-                if (btnNext != null) btnNext.LocalPosition = new Vec2(startXLocal + 2 * (btnSize + btnSpacing), btnY);
-
-                // Update play/pause icon based on detected playback state (consider optimistic)
-                if (btnPlay != null)
+                // Only update the image if it actually changed (avoids invalidation overhead)
+                if (btnPlay.Image.Image != icon)
                 {
-                    bool effectivePlaying = GetEffectivePlayingState();
-                    var icon = effectivePlaying ? (Resources.Res.Pause ?? Resources.Res.Stop) : Resources.Res.Play;
-                    try
-                    {
-                        btnPlay.Image.Image = icon;
-                        btnPlay.Image.Color = Theme.IconColor; // Ensure visible tint
-                    }
-                    catch { }
+                    btnPlay.Image.Image = icon;
+                    btnPlay.Image.Color = Theme.IconColor;
                 }
             }
-            catch (Exception ex)
+            if (btnNext != null) btnNext.LocalPosition = new Vec2(startXLocal + 2 * (btnSize + btnSpacing), buttonsYOffset);
+
+
+            // Input handling for seeking and hover states
+            // Logic consolidated to use 'timelineBarRect'
+            bool isMouseInBar = timelineBarRect.Contains(mousePos.X, mousePos.Y);
+
+            // Hover state
+            isHoveringOverTimeline = isMouseInBar && IsHovering && !timelineBar.IsLocked;
+
+            // Seeking state
+            // Mouse down (start seek)
+            if (IsHovering && IsMouseDown && !mouseDownOverTimeline && isMouseInBar && !timelineBar.IsLocked)
             {
-#if DEBUG
-                Debug.WriteLine("Update layout error: " + ex.Message);
-#endif
+                mouseDownOverTimeline = true;
+                userIsSeeking = true;
+
+                // Calculate initial seek
+                if (totalDurSeconds > 0)
+                {
+                    userSeekElapsed = timelinePosition ?? TimeSpan.Zero;
+                    float rel = Math.Clamp((mousePos.X - barX) / barWidth, 0f, 1f);
+                    userSeekElapsed = TimeSpan.FromSeconds(rel * totalDurSeconds);
+                }
             }
 
-            // Handle timeline mouse interactions (seeking)
-            try
+            // Dragging
+            if (mouseDownOverTimeline && IsMouseDown)
             {
-                // Compute timeline bar rect in screen coordinates
-                var rr = GetRect();
-                float barWidth = rr.Rect.Width - 2 * timelineSidePadding;
-                float barX = rr.Rect.Left + (rr.Rect.Width - barWidth) / 2f;
-                float btnBottom = btnPrev != null ? btnPrev.LocalPosition.Y + btnPrev.Size.Y : rr.Rect.Bottom - 20f;
-                float barY = rr.Rect.Top + btnBottom + timelineBarPadding;
-                if (barY + timelineHeight > rr.Rect.Bottom) barY = rr.Rect.Bottom - timelineHeight - timelineBarPadding;
-
-                var barRect = SKRect.Create(barX, barY, barWidth, timelineHeight);
-
-                var mousePos = RendererMain.CursorPosition;
-
-                // Mouse down over timeline begins seeking
-                if (IsHovering && IsMouseDown && !mouseDownOverTimeline && barRect.Contains(mousePos.X, mousePos.Y))
+                if (totalDurSeconds > 0)
                 {
-                    mouseDownOverTimeline = true;
-                    userIsSeeking = true;
-                    // Compute initial seek position
-                    // Prefer initialising from current snapshot so drag feels continuous
-                    if (timelinePosition.HasValue && timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
-                    {
-                        userSeekElapsed = timelinePosition.Value;
-                        float rel = Math.Clamp((mousePos.X - barX) / barWidth, 0f, 1f);
-                        userSeekElapsed = TimeSpan.FromSeconds(rel * timelineDuration.Value.TotalSeconds);
-                    }
+                    float rel = Math.Clamp((mousePos.X - barX) / barWidth, 0f, 1f);
+                    userSeekElapsed = TimeSpan.FromSeconds(rel * totalDurSeconds);
                 }
+            }
 
-                // While mouse is down and over timeline, update seek position
-                if (mouseDownOverTimeline && IsMouseDown)
+            // Mouse Up (Commit)
+            if (mouseDownOverTimeline && !IsMouseDown)
+            {
+                mouseDownOverTimeline = false;
+                if (userIsSeeking)
                 {
-                    if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
+                    TimeSpan? start = currentTimeline?.StartTime;
+                    if (start.HasValue)
                     {
-                        float rel = Math.Clamp((mousePos.X - barX) / barWidth, 0f, 1f);
-                        userSeekElapsed = TimeSpan.FromSeconds(rel * timelineDuration.Value.TotalSeconds);
-                    }
-                }
-
-                // On mouse up, if seeking, commit the seek
-                if (mouseDownOverTimeline && !IsMouseDown)
-                {
-                    mouseDownOverTimeline = false;
-                    if (userIsSeeking)
-                    {
-                        // Compute target absolute position as StartTime + userSeekElapsed
-                        TimeSpan? start = currentTimeline?.StartTime;
-                        if (start.HasValue)
+                        var seekTarget = start.Value + userSeekElapsed;
+                        // Fire and forget task
+                        _ = Task.Run(async () =>
                         {
-                            var target = start.Value + userSeekElapsed;
-                            
-                            _ = Task.Run(async () =>
+                            try
                             {
-                                try
+                                var ok = await MediaInfo.SeekCurrentSessionAsync(seekTarget).ConfigureAwait(false);
+                                if (ok)
                                 {
-                                    var ok = await MediaInfo.SeekCurrentSessionAsync(target).ConfigureAwait(false);
-                                    if (ok)
+                                    lock (mediaLock)
                                     {
-                                        // On success, force timeline resync next loop
-                                        lock (mediaLock)
-                                        {
-                                            // Update local snapshot to the seeked position so UI reflects the change immediately
-                                            lastSampleElapsed = userSeekElapsed;
-                                            lastSampleReceivedAt = DateTime.UtcNow;
-                                            lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-                                            timelineFetchedOnce = false;
-                                        }
-                                     }
+                                        lastSampleElapsed = userSeekElapsed;
+                                        lastSampleReceivedAt = DateTime.UtcNow;
+                                        lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                                        timelineFetchedOnce = false;
+                                    }
                                 }
-                                catch { }
-                            });
-                        }
-
-                        // Keep userIsSeeking true until after commit to allow UI to show seek state briefly
-                        userIsSeeking = false;
-                     }
-                 }
-             }
-             catch { }
-            
-            if (!string.IsNullOrEmpty(currentMedia?.Title))
-            {
-                fullTitleText = currentMedia.Title;
-
-                // Only re-measure text width when title actually changes
-                if (prevFullTitleText != fullTitleText)
-                {
-                    var paint = GetPaint();
-                    paint.TextSize = 14f;
-                    paint.Typeface = Resources.Res.SatoshiBold;
-                    titleTextWidth = paint.MeasureText(fullTitleText);
-                    prevFullTitleText = fullTitleText;
+                            }
+                            catch { } // Task exception is isolated here
+                        });
+                    }
+                    userIsSeeking = false;
                 }
+            }
 
-                // Trigger scrolling if longer than threshold
-                if (fullTitleText.Length > titleScrollCharThreshold)
+            string newTitle = !string.IsNullOrEmpty(currentMedia?.Title) ? currentMedia.Title : "No media playing";
+
+            if (fullTitleText != newTitle)
+            {
+                fullTitleText = newTitle;
+                // Only measure when string changes
+                var paint = GetPaint();
+                paint.TextSize = 14f;
+                paint.Typeface = Res.SFProBold; // Accessing Res property might be slight overhead, ensure cached if possible
+                titleTextWidth = paint.MeasureText(fullTitleText);
+
+                // Reset scroll on change
+                isTitleScrolling = false;
+                titleScrollOffset = 0f;
+                titleScrollTimer = 0f;
+            }
+
+            if (fullTitleText.Length > titleScrollCharThreshold)
+            {
+                isTitleScrolling = true;
+                if (titleScrollTimer < titleScrollDelay)
                 {
-                    isTitleScrolling = true;
-
-                    if (titleScrollTimer < titleScrollDelay)
-                    {
-                        titleScrollTimer += deltaTime; // Wait before scroll
-                    }
-                    else
-                    {
-                        titleScrollOffset += titleScrollSpeed * deltaTime;
-                        if (titleScrollOffset > titleTextWidth + 20f) // Wrap after text + gap
-                        {
-                            titleScrollOffset = 0f;
-                            titleScrollTimer = 0f; // Pause before next scroll
-                        }
-                    }
+                    titleScrollTimer += deltaTime;
                 }
                 else
                 {
-                    isTitleScrolling = false;
-                    titleScrollOffset = 0f;
+                    titleScrollOffset += titleScrollSpeed * deltaTime;
+                    if (titleScrollOffset > titleTextWidth + 20f)
+                    {
+                        titleScrollOffset = 0f;
+                        titleScrollTimer = 0f;
+                    }
                 }
             }
-            else
+
+
+            // Elapsed time display
+            // Update displayed elapsed seconds when we have an elapsed sample even if duration is unknown
+            if (sampleElapsed.HasValue)
             {
-                // Ensure we show a clear placeholder when no media title is available
-                fullTitleText = "No media playing";
+                float desired = (float)(userIsSeeking ? userSeekElapsed.TotalSeconds : sampleElapsed.Value.TotalSeconds);
 
-                if (prevFullTitleText != fullTitleText)
+                if (userIsSeeking || !displayedElapsedInitialized)
                 {
-                    var paint = GetPaint();
-                    paint.TextSize = 14f;
-                    paint.Typeface = Res.SatoshiBold;
-                    titleTextWidth = paint.MeasureText(fullTitleText);
-                    prevFullTitleText = fullTitleText;
-                }
-
-                isTitleScrolling = false;
-                titleScrollOffset = 0f;
-            }
-
-            // Update displayed elapsed seconds using the visible snapshot (sampleElapsed) to avoid second-level jitter
-            // sampleElapsed already includes local clock advancement when playback is Playing
-            if (sampleElapsed.HasValue && sampleDuration.HasValue)
-            {
-                float desired = (float)sampleElapsed.Value.TotalSeconds;
-
-                if (userIsSeeking)
-                {
-                    // When seeking, jump the smoothed value to the seek target for immediate feedback
-                    displayedElapsedSeconds = (float)userSeekElapsed.TotalSeconds;
-                    displayedElapsedInitialized = true;
-                }
-                else if (!displayedElapsedInitialized)
-                {
-                    // Initialise to current value
                     displayedElapsedSeconds = desired;
                     displayedElapsedInitialized = true;
                 }
                 else
                 {
-                    // If paused/stopped, snap to sample exactly to avoid backward corrections
                     if (!isPlayingFlag)
                     {
                         displayedElapsedSeconds = desired;
                     }
                     else
                     {
-                        // Smoothly interpolate towards desired when playing to keep motion continuous
-                        const float smoothing = 12f;
-                        displayedElapsedSeconds = Mathf.Lerp(displayedElapsedSeconds, desired, Math.Min(1f, smoothing * deltaTime));
+                        // Smoothly advance displayed elapsed while playing
+                        displayedElapsedSeconds = Mathf.Lerp(displayedElapsedSeconds, desired, Math.Min(1f, 12f * deltaTime));
                     }
                 }
             }
 
-            // Update hover/seek-driven timeline extra height (smooth transition)
+            // Re-use calculation
+            float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
+            timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
+
+            // Ensure metadata is populated when we have an image but no metadata
             try
             {
-                var rr2 = GetRect();
-                float barWidth2 = rr2.Rect.Width - 2 * timelineSidePadding;
-                float barX2 = rr2.Rect.Left + (rr2.Rect.Width - barWidth2) / 2f;
-                float btnBottom2 = btnPrev != null ? btnPrev.LocalPosition.Y + btnPrev.Size.Y : rr2.Rect.Bottom - 20f;
-                float barY2 = rr2.Rect.Top + btnBottom2 + timelineBarPadding;
-                if (barY2 + timelineHeight > rr2.Rect.Bottom) barY2 = rr2.Rect.Bottom - timelineHeight - timelineBarPadding;
-                var barRect2 = SKRect.Create(barX2, barY2, barWidth2, timelineHeight);
-                var mousePos2 = RendererMain.CursorPosition;
-                isHoveringOverTimeline = barRect2.Contains(mousePos2.X, mousePos2.Y) && IsHovering;
+                bool needMeta = false;
+                lock (mediaLock)
+                {
+                    needMeta = (currentMedia == null) && (thumbnailImage != null || pendingImage != null);
+                }
 
-                float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
-                timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
+                if (needMeta && (DateTime.UtcNow - lastMetadataFetch) >= metadataFetchInterval)
+                {
+                    // Throttle and ensure only one fetch runs at a time
+                    if (System.Threading.Interlocked.CompareExchange(ref metadataFetchRunning, 1, 0) == 0)
+                    {
+                        lastMetadataFetch = DateTime.UtcNow;
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var meta = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: false).ConfigureAwait(false);
+                                if (meta != null)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        // Only adopt if we still lack metadata or keys differ
+                                        if (currentMedia == null)
+                                        {
+                                            currentMedia = meta;
+                                            try { currentMediaKey = $"{meta.Title ?? ""}|{meta.Artist ?? ""}|0"; } catch { currentMediaKey = null; }
+                                            optimisticActive = false;
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+                            finally
+                            {
+                                System.Threading.Interlocked.Exchange(ref metadataFetchRunning, 0);
+                            }
+                        });
+                    }
+                }
             }
             catch { }
         }
 
         private void OnThumbnailChanged(object? sender, MediaChangedEventArgs e)
         {
-            // Called from MediaThumbnailService loop (background). We only care about bytes/metadata presence.
-            // If bytes present, decode into a bitmap for pending swap; if null, just update metadata.
-            Task.Run(() =>
+            try
             {
-                var media = e.Media;
                 var bytes = e.ThumbnailBytes;
+                var media = e.Media;
 
-                // If there's really no media (no metadata and no bytes), wipe cached thumbnails
-                if (media == null && (bytes == null || bytes.Length == 0))
-                {
-                    lock (mediaLock)
-                    {
-                        currentMedia = null;
-                        currentMediaKey = null;
-
-                        if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
-                        if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
-                        if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-
-                        pendingMedia = null;
-                        pendingMediaKey = null;
-
-                        // Fresh timeline sample (none) -> cancel optimistic UI
-                        optimisticActive = false;
-                    }
-
-                    return;
-                }
-
-                // Build key similar to prior logic
-                string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
-
+                // Adopt metadata immediately
                 lock (mediaLock)
                 {
-                    if (key == currentMediaKey || key == pendingMediaKey)
-                    {
-                        // Nothing to do; avoid decode
-                        return;
-                    }
-                }
-
-                SKBitmap? newBmp = null;
-                ulong? newFp = null;
-
-                // Prefer using the central service decoded bitmap if available to avoid re-decoding bytes repeatedly
-                var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                if (svcBmp != null)
-                {
-                    try
-                    {
-                        var clone = new SKBitmap(svcBmp.Info);
-                        svcBmp.CopyTo(clone);
-                        newBmp = clone;
-                        newFp = ComputeFingerprint(newBmp);
-                    }
-                    catch
-                    {
-                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } newBmp = null; }
-                        newFp = null;
-                    }
-                }
-                else if (bytes != null && bytes.Length > 0)
-                {
-                    try
-                    {
-                        using var ms = new SKMemoryStream(bytes);
-                        var decoded = SKBitmap.Decode(ms);
-                        newBmp = decoded;
-                        if (newBmp != null) newFp = ComputeFingerprint(newBmp);
-                    }
-                    catch (Exception ex)
-                    {
-#if DEBUG
-                        Debug.WriteLine("Thumbnail decode in service handler failed: " + ex.Message);
-#endif
-                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
-                        newBmp = null;
-                        newFp = null;
-                    }
-                }
-
-                lock (mediaLock)
-                {
-                    // If key now matches current or pending, bail
-                    if (key == currentMediaKey || key == pendingMediaKey)
-                    {
-                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
-                        return;
-                    }
-
-                    // If the incoming bitmap is visually identical to the currently-displayed thumbnail (fingerprint), adopt metadata/key instead
-                    if (newFp.HasValue && thumbnailFingerprint.HasValue && newFp.Value == thumbnailFingerprint.Value)
+                    if (media != null)
                     {
                         currentMedia = media;
-                        currentMediaKey = key;
-                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
-                        pendingMedia = null;
-                        pendingMediaKey = null;
-
-                        // Fresh timeline sample arrived -> cancel optimistic UI
+                        currentMediaKey = $"{media.Title ?? ""}|{media.Artist ?? ""}|{(bytes?.Length ?? 0)}";
                         optimisticActive = false;
-                        return;
+                        timelineFetchedOnce = false;
+                        lastTimelineResync = DateTime.MinValue;
                     }
 
-                    // If there's no current thumbnail yet, queue as pending to animate in (so first show animates)
-                    if (thumbnailBitmap == null && newBmp != null)
+                    // Clear any one-shot pending bytes; we'll handle decoding directly below
+                    pendingThumbnailBytesFromService = null;
+                    pendingMedia = media;
+                    mediaNeedsUpdate = false;
+                    mediaClearRequestedAt = DateTime.MinValue;
+                }
+
+                // Helper to queue a background decode and set pendingImage when appropriate
+                void DecodeAndQueueBytes(byte[] bts, Media? md)
+                {
+                    _ = Task.Run(() =>
                     {
-                        pendingBitmap = newBmp;
-                        pendingFingerprint = newFp;
-                        pendingMedia = media;
-                        pendingMediaKey = key;
-                    }
-                    else
-                    {
-                        if (newBmp != null)
+                        SKImage? img = null;
+                        ulong? fp = null;
+                        try
                         {
-                            if (pendingBitmap != null)
+                            img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(bts, out fp);
+                        }
+                        catch { img = null; fp = null; }
+
+                        if (img == null) return;
+
+                        lock (mediaLock)
+                        {
+                            // If visually identical to current, adopt metadata only
+                            if (fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
                             {
-                                try { pendingBitmap.Dispose(); } catch { }
-                                pendingBitmap = null;
+                                if (md != null)
+                                {
+                                    currentMedia = md;
+                                    currentMediaKey = $"{md.Title ?? ""}|{md.Artist ?? ""}|{bts.Length}";
+                                }
+                                optimisticActive = false;
+                                try { img.Dispose(); } catch { }
+                                return;
+                            }
+
+                            // Replace any existing pending image
+                            if (pendingImage != null)
+                            {
+                                try { pendingImage.Dispose(); } catch { }
+                                pendingImage = null;
                                 pendingFingerprint = null;
                                 pendingMediaKey = null;
                                 pendingMedia = null;
                             }
 
-                            pendingBitmap = newBmp;
-                            pendingFingerprint = newFp;
-                            pendingMedia = media;
-                            pendingMediaKey = key;
+                            pendingImage = img;
+                            pendingFingerprint = fp;
+                            pendingMedia = md;
+                            pendingMediaKey = (md == null) ? string.Empty : $"{md.Title ?? ""}|{md.Artist ?? ""}|{bts.Length}";
                         }
+                    });
+                }
 
-                        if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
+                // If event provided bytes, decode them immediately
+                if (bytes != null && bytes.Length > 0)
+                {
+                    try
+                    {
+                        var cloned = (byte[])bytes.Clone();
+                        DecodeAndQueueBytes(cloned, media);
+                    }
+                    catch { }
+
+                    return;
+                }
+
+                // No bytes in event: prefer service cached bytes (fast path)
+                if (media != null)
+                {
+                    try
+                    {
+                        var svcBytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                        if (svcBytes != null && svcBytes.Length > 0)
                         {
-                            currentMedia = media;
-                            currentMediaKey = key;
-
-                            // If no media, wipe thumbnail cache so UI doesn't show stale artwork
-                            if (media == null)
-                            {
-                                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
-                                if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-                                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
-
-                                pendingMediaKey = null;
-                                pendingMedia = null;
-                            }
-
-                            // Fresh timeline sample arrived -> cancel optimistic UI
-                            optimisticActive = false;
+                            var cloned = (byte[])svcBytes.Clone();
+                            DecodeAndQueueBytes(cloned, media);
+                            return;
                         }
                     }
+                    catch { }
+
+                    // If no cached bytes, trigger a one-shot fetch but do not block UI thread
+                    var now = DateTime.UtcNow;
+                    if ((now - lastMediaCheck) > TimeSpan.FromMilliseconds(500))
+                    {
+                        lastMediaCheck = now;
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var b = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: true).ConfigureAwait(false);
+                                if (b != null && b.Length > 0)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        // stash as consumed so other loops won't duplicate work
+                                        pendingThumbnailBytesFromService = null;
+                                        pendingMedia = media;
+                                        mediaNeedsUpdate = false;
+                                    }
+
+                                    DecodeAndQueueBytes((byte[])b.Clone(), media);
+                                }
+                            }
+                            catch { }
+                        });
+                    }
                 }
-            });
+                else
+                {
+                    // No media and no bytes: clear thumbnail after a short debounce to avoid flicker
+                    lock (mediaLock)
+                    {
+                        mediaClearRequestedAt = DateTime.UtcNow;
+                    }
+                }
+            }
+            catch { }
         }
 
         private void StartFetchLoop()
@@ -979,98 +1031,36 @@ namespace DynamicWin.UI.UIElements.Custom
                 {
                     try
                     {
-                        // Fetch lightweight timeline sample frequently so UI can update progress smoothly
+                        // Timeline fetch: perform an initial fetch when we do not yet have a timeline sample
+                        // and also periodically re-sync the timeline so external changes (pause/seek) are detected
                         try
                         {
-                            bool needFetch = false;
-                            // Always allow frequent timeline fetches (MediaInfo already caches at 250ms)
-                            if (!userIsSeeking)
-                                needFetch = true;
-
-                            // Avoid fetching timeline while user is actively seeking to prevent overwriting the user's drag
-                            if (needFetch && !userIsSeeking)
+                            // Timeline re-sync: perform an initial fetch if missing, then refresh at configured interval
+                            if (!userIsSeeking && (!timelineFetchedOnce || (DateTime.UtcNow - lastTimelineResync) >= timelineFetchInterval))
                             {
-                                var tl = await MediaInfo.FetchCurrentTimelineAsync().ConfigureAwait(false);
+                                // Force refresh to bypass small MediaInfo timeline cache so external changes are detected
+                                var tl = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: true).ConfigureAwait(false);
                                 if (tl != null)
                                 {
-#if DEBUG
-                                    Debug.WriteLine($"[MEDIA TIMELINE] Pos={tl.Position} Start={tl.StartTime} End={tl.EndTime} Status={tl.PlaybackStatus}");
-#endif
                                     lock (mediaLock)
                                     {
-                                        // Compute absolute elapsed at sample
                                         var absElapsed = tl.Position - tl.StartTime;
                                         var now = DateTime.UtcNow;
 
-                                        // If we already have a prior sample, perform a drift-tolerant update to avoid jitter
-                                        if (lastSampleElapsed.HasValue && lastSampleReceivedAt != DateTime.MinValue)
-                                        {
-                                            // If the current playback status is not Playing (paused/stopped), anchor exactly to the sample
-                                            // This prevents the UI from drifting backwards while paused.
-                                            if (tl.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-                                            {
-                                                lastSampleElapsed = absElapsed;
-                                                lastSampleReceivedAt = now;
-                                            }
-                                            else
-                                            {
-                                                // Predict where the elapsed should be based on our local clock
-                                                var predicted = lastSampleElapsed.Value + (now - lastSampleReceivedAt);
-                                                // Error = desired - predicted
-                                                var error = (absElapsed - predicted).TotalSeconds;
-
-                                                // If error is very large, resync immediately; otherwise gently nudge the anchor
-                                                const double largeResyncSeconds = 3.0; // >3s indicates a real discontinuity (seek/track change)
-                                                const double nudgeFactor = 0.12; // Fraction of error to apply per sample (slow convergence)
-
-                                                if (Math.Abs(error) > largeResyncSeconds)
-                                                {
-                                                    // Large discontinuity -> reset anchor to the sample
-                                                    lastSampleElapsed = absElapsed;
-                                                    lastSampleReceivedAt = now;
-                                                    // Reset displayed elapsed as well to avoid a visible jump while converging
-                                                    displayedElapsedSeconds = (float)absElapsed.TotalSeconds;
-                                                    displayedElapsedInitialized = true;
-                                                }
-                                                else
-                                                {
-                                                    // Gentle correction: apply a fraction of the error to the stored anchor so predicted slowly converges
-                                                    try
-                                                    {
-                                                        lastSampleElapsed = lastSampleElapsed.Value + TimeSpan.FromSeconds(error * nudgeFactor);
-                                                        // Do NOT update lastSampleReceivedAt; keep local clock anchor so progression remains smooth
-                                                        // Update duration to newest value so progress fraction is accurate
-                                                        lastSampleDuration = tl.EndTime - tl.StartTime;
-                                                    }
-                                                    catch { }
-                                                }
-                                            }
-                                        }
-                                        else
-                                        {
-                                            // Anchor first sample to it
-                                            lastSampleElapsed = absElapsed;
-                                            lastSampleReceivedAt = now;
-                                            lastSampleDuration = tl.EndTime - tl.StartTime;
-                                            // Initialise smoothed displayed time to the anchored sample
-                                            displayedElapsedSeconds = (float)absElapsed.TotalSeconds;
-                                            displayedElapsedInitialized = true;
-                                        }
-
-                                        // Always update playback status and currentTimeline reference
+                                        lastSampleElapsed = absElapsed;
+                                        lastSampleReceivedAt = now;
+                                        lastSampleDuration = tl.EndTime - tl.StartTime;
                                         lastPlaybackStatus = tl.PlaybackStatus;
                                         currentTimeline = tl;
 
-                                        timelineFetchedOnce = true; // Mark fetched
+                                        timelineFetchedOnce = true;
                                         lastTimelineResync = DateTime.UtcNow;
 
-                                        // Fresh timeline sample arrived -> cancel optimistic UI so external pauses/plays are reflected
                                         optimisticActive = false;
                                     }
                                 }
                                 else
                                 {
-                                    // If timeline is null, ensure we clear snapshot so UI hides timeline
                                     lock (mediaLock)
                                     {
                                         lastSampleElapsed = null;
@@ -1078,143 +1068,127 @@ namespace DynamicWin.UI.UIElements.Custom
                                         currentTimeline = null;
                                         timelineFetchedOnce = false;
 
-                                        // Cancel optimistic UI when no timeline is available
                                         optimisticActive = false;
                                     }
                                 }
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception) { }
+
+                        byte[]? svcBytes = null;
+                        DynamicWin.Utils.Media? svcMedia = null;
+
+                        // Only attempt media/thumbnail decoding occasionally or when service signalled a change
+                        bool shouldProcessMedia = false;
+                        try
                         {
-#if DEBUG
-                            Debug.WriteLine("Timeline fetch error: " + ex.Message);
-#endif
+                            if (mediaNeedsUpdate || (DateTime.UtcNow - lastMediaCheck) >= mediaCheckInterval)
+                                shouldProcessMedia = true;
                         }
+                        catch { shouldProcessMedia = false; }
 
-                        var media = await MediaInfo.FetchCurrentMediaAsync();
-
-                        // Build lightweight key to detect duplicates (title|artist|thumbLen)
-                        string key = (media == null) ? string.Empty : $"{media.Title ?? ""}|{media.Artist ?? ""}|{(media.ThumbnailData?.Length ?? 0)}";
-
-                        // If key matches current or pending, skip decode entirely
-                        if (key == currentMediaKey || key == pendingMediaKey)
+                        if (shouldProcessMedia)
                         {
-                            // Nothing to do, swallow
-                        }
-                        else
-                        {
-                            // Convert thumbnail bytes to SKBitmap on background thread and update fields under lock
-                            SKBitmap? newBmp = null;
-                            ulong? newFp = null;
-                            try
-                            {
-                                // Prefer using service-decoded bitmap to avoid duplicate decoding when thumbnail service is active
-                                var svcBmp = MediaThumbnailService.Instance.GetCurrentThumbnailBitmap();
-                                if (svcBmp != null)
-                                {
-                                    try
-                                    {
-                                        var clone = new SKBitmap(svcBmp.Info);
-                                        svcBmp.CopyTo(clone);
-                                        newBmp = clone;
-                                        newFp = ComputeFingerprint(newBmp);
-                                    }
-                                    catch { if (newBmp != null) { try { newBmp.Dispose(); } catch { } newBmp = null; } newFp = null; }
-                                }
-                                else if (media?.ThumbnailData != null && media.ThumbnailData.Length > 0)
-                                {
-                                    using var ms = new MemoryStream(media.ThumbnailData);
-                                    newBmp = SKBitmap.Decode(ms);
-                                    if (newBmp != null) newFp = ComputeFingerprint(newBmp);
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-#if DEBUG
-                                Debug.WriteLine("Thumbnail decode failed: " + ex.Message);
-#endif
-                                if (newBmp != null)
-                                {
-                                    try { newBmp.Dispose(); } catch { }
-                                }
-                                newBmp = null;
-                                newFp = null;
-                            }
+                            lastMediaCheck = DateTime.UtcNow;
 
+                            // Prefer bytes captured from service event (cheap) over querying MediaInfo repeatedly
                             lock (mediaLock)
                             {
-                                // If key matches current or pending, skip updates entirely
-                                if (key == currentMediaKey || key == pendingMediaKey)
+                                if (pendingThumbnailBytesFromService != null && pendingThumbnailBytesFromService.Length > 0)
                                 {
-                                    if (newBmp != null)
-                                    {
-                                        try { newBmp.Dispose(); } catch { }
-                                    }
+                                    svcBytes = (byte[])pendingThumbnailBytesFromService.Clone();
+                                    svcMedia = pendingMedia; // adopt whatever metadata was provided
+                                    mediaNeedsUpdate = false;
                                 }
-                                else
+                                else if (mediaNeedsUpdate && pendingMedia != null)
                                 {
-                                    // If the newly-decoded bitmap fingerprint matches the currently-displayed bitmap, adopt metadata/key
-                                    // and avoid queuing an animation.
-                                    if (newFp.HasValue && thumbnailFingerprint.HasValue && newFp.Value == thumbnailFingerprint.Value)
-                                    {
-                                        currentMedia = media;
-                                        currentMediaKey = key;
-                                        if (newBmp != null) { try { newBmp.Dispose(); } catch { } }
+                                    // Service signalled a change but did not provide bytes (metadata-only update)
+                                    // Use the pending metadata directly to avoid relying on MediaInfo cache
+                                    svcBytes = null;
+                                    svcMedia = pendingMedia;
+                                    mediaNeedsUpdate = false;
+                                }
+                            }
 
-                                        // Fresh timeline sample arrived -> cancel optimistic UI
-                                        optimisticActive = false;
+                            // If no bytes came from service events, only then query MediaInfo (infrequent)
+                            if (svcBytes == null)
+                            {
+                                try
+                                {
+                                    var media = await MediaInfo.FetchCurrentMediaAsync().ConfigureAwait(false);
+                                    svcMedia = media;
+                                    svcBytes = media?.ThumbnailData != null && media.ThumbnailData.Length > 0 ? (byte[])media.ThumbnailData.Clone() : null;
+                                }
+                                catch { svcBytes = null; svcMedia = null; }
+                            }
+
+                            // Build lightweight key to detect duplicates
+                            string key = (svcMedia == null) ? string.Empty : $"{svcMedia.Title ?? ""}|{svcMedia.Artist ?? ""}|{(svcBytes?.Length ?? 0)}";
+
+                            // If key matches current or pending, skip decode
+                            if (key == currentMediaKey || key == pendingMediaKey)
+                            {
+                                // nothing to do
+                                if (svcBytes != null) { /*keep bytes for later*/ }
+                            }
+                            else
+                            {
+                                // Decode bytes into SKImage (rate-limited) only when we have new bytes
+                                if (svcBytes != null && svcBytes.Length > 0)
+                                {
+                                    SKImage? img = null;
+                                    ulong? fp = null;
+                                    try
+                                    {
+                                        img = MediaThumbnailUtils.DecodeBytesToImageAndFingerprint(svcBytes, out fp);
+                                    }
+                                    catch { img = null; fp = null; }
+
+                                    bool skipPending = false;
+                                    lock (mediaLock)
+                                    {
+                                        if (img != null && fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
+                                        {
+                                            // Visually identical - adopt metadata only
+                                            if (svcMedia != null)
+                                            {
+                                                currentMedia = svcMedia;
+                                                currentMediaKey = key;
+                                            }
+                                            optimisticActive = false;
+                                            skipPending = true;
+                                        }
+                                    }
+                                    if (skipPending)
+                                    {
+                                        if (img != null) { try { img.Dispose(); } catch { } }
                                         continue;
                                     }
 
-                                    // If there's no current thumbnail yet, queue as pending to animate in
-                                    if (thumbnailBitmap == null && newBmp != null)
+                                    lock (mediaLock)
                                     {
-                                        pendingBitmap = newBmp;
-                                        pendingFingerprint = newFp;
-                                        pendingMedia = media;
-                                        pendingMediaKey = key;
-                                    }
-                                    else
-                                    {
-                                        // Queue as pending (replace any existing pending)
-                                        if (newBmp != null)
+                                        if (img != null)
                                         {
-                                            if (pendingBitmap != null)
-                                            {
-                                                try { pendingBitmap.Dispose(); } catch { }
-                                                pendingBitmap = null;
-                                                pendingFingerprint = null;
-                                                pendingMediaKey = null;
-                                                pendingMedia = null;
-                                            }
+                                            // Queue as pending (replace any existing pending)
+                                            if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; pendingMediaKey = null; pendingMedia = null; }
 
-                                            pendingBitmap = newBmp;
-                                            pendingFingerprint = newFp;
-                                            pendingMedia = media;
+                                            pendingImage = img;
+                                            pendingFingerprint = fp;
+                                            pendingMedia = svcMedia;
                                             pendingMediaKey = key;
 
-                                            // Store pending metadata to update textual fields when swapped
+                                            // Do not set thumbnailImage here; animator will swap on flip
                                         }
-
-                                        // If no thumbnail changes, but metadata changed and no pending, update currentMedia immediately
-                                        if ((newBmp == null) && key != currentMediaKey && pendingMediaKey == null)
+                                        else
                                         {
-                                            currentMedia = media;
-                                            currentMediaKey = key;
-
-                                            // If no media present, wipe cached thumbnails so UI can't show stale artwork
-                                            if (media == null)
+                                            // No image decoded: if there's metadata but no bytes, adopt metadata if changed
+                                            // Only adopt metadata when svcMedia is non-null. Avoid clearing currentMedia when media lookup returned null
+                                            if ((svcBytes == null || svcBytes.Length == 0) && svcMedia != null && key != currentMediaKey && pendingMediaKey == null)
                                             {
-                                                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
-                                                if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-                                                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
-
-                                                pendingMediaKey = null;
-                                                pendingMedia = null;
+                                                currentMedia = svcMedia;
+                                                currentMediaKey = key;
+                                                optimisticActive = false;
                                             }
-
-                                            // Fresh timeline sample arrived -> cancel optimistic UI
-                                            optimisticActive = false;
                                         }
                                     }
                                 }
@@ -1222,62 +1196,126 @@ namespace DynamicWin.UI.UIElements.Custom
                         }
                     }
                     catch (OperationCanceledException) { break; }
-                    catch (Exception ex)
-                    {
-#if DEBUG
-                        Debug.WriteLine("Media fetch loop error: " + ex.Message);
-#endif
-                    }
+                    catch (Exception) { }
 
-                    // Cooperative non-throwing wait: break long interval into short steps and check token
                     int totalMs = (int)fetchInterval.TotalMilliseconds;
                     int waited = 0;
-                    const int step = 250; // 250ms check
+                    const int step = 250;
 
                     while (waited < totalMs && !token.IsCancellationRequested)
                     {
                         int delay = Math.Min(step, totalMs - waited);
-                        try
-                        {
-                            await Task.Delay(delay).ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                            // Swallow
-                        }
+                        try { await Task.Delay(delay).ConfigureAwait(false); } catch { }
                         waited += delay;
                     }
                 }
             }, token);
         }
 
-        private void StopFetchLoop()
+        /// <summary>
+        /// Stop the background fetch loop. If disposeCached is true, also free cached images and metadata.
+        /// </summary>
+        private void StopFetchLoop(bool disposeCached = false)
         {
-            if (cts == null) return;
-            cts.Cancel();
-            cts.Dispose();
+            if (cts == null)
+            {
+                // Still optionally free resources
+                if (disposeCached)
+                {
+                    lock (mediaLock)
+                    {
+                        // If animator is mid-animation, keep images so flip can complete when UI resumes.
+                        if (animator.State == MediaAnimator.AnimState.Idle)
+                        {
+                            if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                            if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                            if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                        }
+
+                        pendingMediaKey = null; pendingMedia = null;
+                        currentMedia = null; currentMediaKey = null;
+                    }
+                }
+                return;
+            }
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch { }
+            try
+            {
+                cts.Dispose();
+            }
+            catch { }
             cts = null;
 
-            // Preserve cached thumbnails when stopping the loop so the UI shows the last image
             lock (mediaLock)
             {
-                // Keep currentMedia and thumbnailBitmap so thumbnail remains visible when re-opening
-                // Only clear transient pending state
-                if (pendingBitmap != null)
+                // Only dispose pendingImage if animator is idle; otherwise keep it so the pending swap can complete when UI resumes
+                if (animator.State == MediaAnimator.AnimState.Idle)
                 {
-                    try { pendingBitmap.Dispose(); } catch { }
-                    pendingBitmap = null;
-                    pendingFingerprint = null;
+                    if (pendingImage != null)
+                    {
+                        try { pendingImage.Dispose(); } catch { }
+                        pendingImage = null;
+                        pendingFingerprint = null;
+                    }
                 }
 
                 pendingMediaKey = null;
                 pendingMedia = null;
+
+                if (disposeCached)
+                {
+                    if (animator.State == MediaAnimator.AnimState.Idle)
+                    {
+                        if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                        if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                    }
+                    currentMedia = null;
+                    currentMediaKey = null;
+                }
             }
+        }
+
+        // Reset thumbnail/animation state for menu close/deactivation
+        private void ResetThumbnailState()
+        {
+            lock (mediaLock)
+            {
+                // Reset animator to idle
+                animatorReset();
+                // Dispose and clear all images and fingerprints
+                if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                currentMedia = null;
+                currentMediaKey = null;
+                pendingMedia = null;
+                pendingMediaKey = null;
+                optimisticActive = false;
+                timelineFetchedOnce = false;
+                lastTimelineResync = DateTime.MinValue;
+            }
+        }
+
+        // Helper to reset animator state
+        private void animatorReset()
+        {
+            // MediaAnimator does not have a Reset method, so forcibly set state
+            var field = typeof(MediaAnimator).GetField("State", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (field != null) field.SetValue(animator, MediaAnimator.AnimState.Idle);
+            var timerField = typeof(MediaAnimator).GetField("AnimTimer", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (timerField != null) timerField.SetValue(animator, 0f);
+            var blurField = typeof(MediaAnimator).GetField("BlurAmount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (blurField != null) blurField.SetValue(animator, 0f);
         }
 
         public override void Draw(SKCanvas canvas)
         {
-            // Extra visibility guard: only draw when HomeMenu is present and showing Media and island is hovered
+            // Extra visibility guard
             try
             {
                 var home = Res.HomeMenu;
@@ -1285,34 +1323,24 @@ namespace DynamicWin.UI.UIElements.Custom
                 if (home.currentBigMenuMode != HomeMenu.BigMenuMode.Media) return;
                 if (!RendererMain.Instance.MainIsland.IsHovering) return;
             }
-            catch
-            {
-                // Swallow if something goes wrong
-                return;
-            }
+            catch { return; }
 
-            // Do not draw if this UIObject is not enabled or its parent is not enabled
             if (!IsEnabled) return;
             if (Parent != null && !Parent.IsEnabled) return;
 
             var rr = GetRect();
-            var rect = rr.Rect; // SKRect
-
-            // Guard: don't draw if rect is degenerate
+            var rect = rr.Rect;
             if (rect.Width <= 0 || rect.Height <= 0) return;
 
-            // Limit thumbnail size so it never dominates the widget or leaks visually
-            float maxThumb = Math.Min(90f, rect.Width * 0.35f); // Cap to 90px and a fraction of width
+            float maxThumb = Math.Min(90f, rect.Width * 0.35f);
             float thumbSize = Math.Min(Math.Min(rect.Height * 2f, rect.Height * 1f), maxThumb);
-            thumbSize = Math.Max(12f, thumbSize); // Ensure reasonable minimum
-
-            float thumbRadius = Math.Max(12f, thumbSize * 0.18f); // Base radius for fallback
-
+            thumbSize = Math.Max(12f, thumbSize);
+            float thumbRadius = Math.Max(12f, thumbSize * 0.18f);
             SKRect thumbRect = SKRect.Create(rect.Left, rect.Top, thumbSize, thumbSize);
 
             string title = "No media playing";
             string artist = "No media playing";
-            SKBitmap? bmp = null;
+            SKImage? img = null;
 
             lock (mediaLock)
             {
@@ -1321,178 +1349,141 @@ namespace DynamicWin.UI.UIElements.Custom
                     title = currentMedia.Title ?? "No media playing";
                     artist = currentMedia.Artist ?? "No media playing";
                 }
-                bmp = thumbnailBitmap;
+                img = thumbnailImage;
             }
 
-            // If no thumbnail and metadata, don't draw media-specific chrome
-            if (bmp == null && string.IsNullOrEmpty(title) && string.IsNullOrEmpty(artist)) return;
+            if (img == null && string.IsNullOrEmpty(title) && string.IsNullOrEmpty(artist)) return;
 
-            // Determine current display bitmap and possible previous
-            SKBitmap? displayBmp = bmp;
-            SKBitmap? prevBmp = previousBitmap;
+            SKImage? displayImg = img;
+            SKImage? prevImg = previousImage;
 
-            // Build squircle path for thumbnail
-            var squirclePath = BuildSuperellipsePath(thumbRect, n: 4f, stepsPerQuarter: 18);
+            var squirclePath = BuildSuperellipsePath(thumbRect, 30f, 1f);
 
-            // Draw thumbnail with animation transforms
             try
             {
-                // Compute flip scale from animator
                 float flipScale = animator.GetFlipScale();
                 bool doFlip = animator.IsFlipping;
-
                 int save = canvas.Save();
 
-                // Apply horizontal flip transform around thumb center
+                // Shrink and dim thumbnail if paused, animated
+                float thumbScale = 0.6f + 0.4f * thumbnailAnim; // 0.6 (paused) to 1.0 (playing)
+                float dimAlpha = (1f - thumbnailAnim) * 120f; // 0 (playing) to 120 (paused)
+                float centerX = thumbRect.MidX;
+                float centerY = thumbRect.MidY;
+
                 if (doFlip)
                 {
                     float cx = thumbRect.MidX;
                     float cy = thumbRect.MidY;
                     canvas.Translate(cx, cy);
-                    canvas.Scale(flipScale, 1f);
-                    // Draw contents centered at origin
+                    canvas.Scale(flipScale * thumbScale, thumbScale);
                     var localRect = SKRect.Create(-thumbSize / 2f, -thumbSize / 2f, thumbSize, thumbSize);
-
-                    // Clip to squircle
-                    var localPath = BuildSuperellipsePath(localRect, n: 4f, stepsPerQuarter: 10);
+                    var localPath = BuildSuperellipsePath(localRect, 30f, 1f);
                     canvas.Save();
-                    canvas.ClipPath(localPath, antialias: true);
+                    canvas.ClipPath(localPath, antialias: Settings.AntiAliasing);
 
                     var paint = GetPaint();
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
 
-                    if (displayBmp != null)
+                    if (displayImg != null)
                     {
-                        var dest = localRect;
-                        canvas.DrawBitmap(displayBmp, dest, paint);
+                        try { canvas.DrawImage(displayImg, localRect, paint); } catch { }
+                        if (dimAlpha > 0.5f)
+                        {
+                            using var dimPaint = GetPaint();
+                            dimPaint.Color = new SKColor(0, 0, 0, (byte)dimAlpha);
+                            canvas.DrawRect(localRect, dimPaint);
+                        }
                     }
                     else
                     {
-                        // Placeholder
-                        using (var p = GetPaint())
-                        {
-                            p.IsAntialias = true;
-                            p.IsStroke = false;
-                            p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
-                            p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
-                            p.BlendMode = SKBlendMode.SrcOver;
-                            canvas.DrawRoundRect(new SKRoundRect(localRect, thumbRadius), p);
-                        }
+                        using var p = GetPaint();
+                        p.IsAntialias = Settings.AntiAliasing;
+                        p.IsStroke = false;
+                        p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
+                        p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
+                        p.BlendMode = SKBlendMode.SrcOver;
+                        canvas.DrawRoundRect(new SKRoundRect(localRect, thumbRadius), p);
                     }
 
-                    // Restore clip after drawing
                     canvas.Restore();
-
                     canvas.RestoreToCount(save);
-
-                    // Draw border in normal coordinates (not flipped) so border doesn't mirror oddly
-                    using (var borderPaint = GetPaint())
-                    {
-                        borderPaint.IsStroke = true;
-                        borderPaint.IsAntialias = true;
-                        borderPaint.StrokeWidth = 1.0f;
-                        borderPaint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
-                        canvas.DrawPath(squirclePath, borderPaint);
-                    }
                 }
                 else
                 {
-                    // Not flipping: draw normally clipped to squircle
                     canvas.Save();
-                    canvas.ClipPath(squirclePath, antialias: true);
+                    canvas.Translate(centerX, centerY);
+                    canvas.Scale(thumbScale, thumbScale);
+                    canvas.Translate(-centerX, -centerY);
+                    canvas.ClipPath(squirclePath, antialias: Settings.AntiAliasing);
 
                     var paint = GetPaint();
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     paint.BlendMode = SKBlendMode.SrcOver;
-
-                    if (displayBmp != null)
+                    if (displayImg != null)
                     {
-                        canvas.DrawBitmap(displayBmp, thumbRect, paint);
+                        try { canvas.DrawImage(displayImg, thumbRect, paint); } catch { }
+                        if (dimAlpha > 0.5f)
+                        {
+                            using var dimPaint = GetPaint();
+                            dimPaint.Color = new SKColor(0, 0, 0, (byte)dimAlpha);
+                            canvas.DrawRect(thumbRect, dimPaint);
+                        }
                     }
                     else
                     {
-                        using (var p = GetPaint())
-                        {
-                            p.IsAntialias = true;
-                            p.IsStroke = false;
-                            p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
-                            p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
-                            p.BlendMode = SKBlendMode.SrcOver;
-                            canvas.DrawRoundRect(new SKRoundRect(thumbRect, thumbRadius), p);
-                        }
+                        using var p = GetPaint();
+                        p.IsAntialias = Settings.AntiAliasing;
+                        p.IsStroke = false;
+                        p.Color = GetColor(Theme.WidgetBackground.Override(a: 0.06f)).Value();
+                        p.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
+                        p.BlendMode = SKBlendMode.SrcOver;
+                        canvas.DrawRoundRect(new SKRoundRect(thumbRect, thumbRadius), p);
                     }
 
-                    // Restore to pre-clip state
                     canvas.Restore();
-
-                    // Subtle border
-                    using (var borderPaint = GetPaint())
-                    {
-                        borderPaint.IsStroke = true;
-                        borderPaint.IsAntialias = true;
-                        borderPaint.StrokeWidth = 1.0f;
-                        borderPaint.Color = GetColor(Theme.WidgetBackground.Override(a: 0.08f)).Value();
-                        canvas.DrawPath(squirclePath, borderPaint);
-                    }
                 }
             }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("Draw thumbnail error: " + ex.Message);
-#endif
-            }
+            catch { }
 
-            // Draw title and artist to the right of thumbnail
-            float textX;
-            float textY = rect.Top + 16f; // Starting "y" for first line
-
-            // Add explicit spacing between thumbnail and text
-            float textSpacing = 14f;
-            textX = thumbRect.Right + textSpacing;
+            // Draw texts and timeline (reuse existing code from earlier)
+            float textX = thumbRect.Right + 14f;
+            float textY = rect.Top + 16f;
 
             var titlePaint = GetPaint();
             titlePaint.IsStroke = false;
             titlePaint.TextSize = 14f;
-            titlePaint.Typeface = Resources.Res.SatoshiBold;
+            titlePaint.Typeface = Resources.Res.SFProBold;
             titlePaint.Color = GetColor(Theme.TextMain).Value();
 
             var artistPaint = GetPaint();
             artistPaint.IsStroke = false;
             artistPaint.TextSize = 12f;
-            artistPaint.Typeface = Resources.Res.SatoshiRegular;
+            artistPaint.Typeface = Resources.Res.SFProRegular;
             artistPaint.Color = GetColor(Theme.TextSecond).Value();
 
             if (!string.IsNullOrEmpty(fullTitleText))
             {
-                float maxWidth = rect.Width - (textX - rect.Left) - 45f; // Max width for text
-
+                float maxWidth = rect.Width - (textX - rect.Left) - 45f;
                 if (isTitleScrolling)
                 {
-                    // Draw scrolling text
                     canvas.Save();
-                    // Clip to visible width
-                    canvas.ClipRect(SKRect.Create(textX, textY, maxWidth, titlePaint.TextSize + 2f), antialias: true);
-
+                    canvas.ClipRect(SKRect.Create(textX, textY, maxWidth, titlePaint.TextSize + 2f), antialias: Settings.AntiAliasing);
                     float xPos = textX - titleScrollOffset;
                     canvas.DrawText(fullTitleText, xPos, textY + titlePaint.TextSize, titlePaint);
-
-                    // Draw second copy for seamless wrap
                     if (xPos + titleTextWidth < textX + maxWidth)
                     {
                         canvas.DrawText(fullTitleText, xPos + titleTextWidth + 20f, textY + titlePaint.TextSize, titlePaint);
                     }
-
                     canvas.Restore();
                 }
                 else
                 {
-                    // Draw truncated text normally
                     var truncated = DWText.Truncate(fullTitleText, titleScrollCharThreshold);
                     canvas.DrawText(truncated, textX, textY + titlePaint.TextSize, titlePaint);
                 }
@@ -1506,53 +1497,52 @@ namespace DynamicWin.UI.UIElements.Custom
 
             try
             {
-                // Timeline bar width reduced to leave room for text
                 float barWidth = rect.Width - 2 * timelineSidePadding;
-                float barX = rect.Left + (rect.Width - barWidth) / 2f; // horizontally centered
-
-                // Position bar slightly below buttons
+                float barX = rect.Left + (rect.Width - barWidth) / 2f;
                 float barY = rect.Top + 95f + timelineBarPadding;
-
                 if (barY + timelineHeight > rect.Bottom) barY = rect.Bottom - timelineHeight - timelineBarPadding;
 
-                // Draw background
-                using (var paint = GetPaint())
-                {
-                    paint.IsStroke = false;
-                    paint.IsAntialias = true;
-                    paint.Color = timelineBgColor;
-                    canvas.DrawRoundRect(SKRect.Create(barX, barY, barWidth, timelineHeight), timelineHeight / 2f, timelineHeight / 2f, paint);
-                }
-
-                // Draw foreground fill (height increases when hovering or seeking)
                 float drawTimelineHeight = timelineHeight + timelineExtraHeight;
-                float barYOffset = (timelineHeight - drawTimelineHeight) / 2f;
-                using (var paint = GetPaint())
+
+                // If we have a DWProgressBarEx instance, position it and draw it
+                if (timelineBar != null)
                 {
-                    paint.IsStroke = false;
-                    paint.IsAntialias = true;
-                    paint.Color = GetColor(timelineFgColor).Value();
-                    float fillWidth = barWidth * displayFill;
-                    canvas.DrawRoundRect(SKRect.Create(barX, barY + barYOffset, fillWidth, drawTimelineHeight), drawTimelineHeight / 2f, drawTimelineHeight / 2f, paint);
+                    // Set size and local position relative to this object's rect
+                    timelineBar.Size = new Vec2(barWidth, drawTimelineHeight);
+                    timelineBar.LocalPosition = new Vec2(barX - rect.Left - 40f, barY - rect.Top + 3.5f);
+                    timelineBar.CornerRadius = drawTimelineHeight / 2f;
+                    // timelineBar target value is driven from Update to respect locking; do not set Value here.
+                    timelineBar.ForegroundColor = timelineFgColor.Override(a: 0.6f);
+                    timelineBar.BackgroundColor = Theme.WidgetBackground.Override(a: 0.04f);
+                    // If there's no media playing, lock and force the bar to zero immediately
+                    if (currentMedia == null)
+                    {
+                        timelineBar.IsLocked = true;
+                        timelineBar.ForceSetImmediate(0f);
+                    }
+                    else
+                    {
+                        timelineBar.IsLocked = false;
+                        // Drive the target value so smoothing animates the visual
+                        timelineBar.ForceSetValue(displayFill);
+                    }
+
+                    // Draw the progress bar as a child at the computed location
+                    timelineBar.Draw(canvas);
                 }
 
-                // Draw timeline text on both sides
                 string leftText;
                 string rightText;
 
                 if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
                 {
-                    // Use smoothed displayedElapsedSeconds for visible text to avoid second-level jitter
                     var leftTs = TimeSpan.FromSeconds(displayedElapsedSeconds);
                     var rightRemain = timelineDuration.Value - TimeSpan.FromSeconds(displayedElapsedSeconds);
-
                     leftText = FormatTimeSpanForDisplay(leftTs);
-                    // Right side shows remaining with a leading '-' to indicate time left
                     rightText = "-" + FormatTimeSpanForDisplay(rightRemain);
                 }
                 else
                 {
-                    // No timeline available: show placeholder
                     leftText = "--:--";
                     rightText = "--:--";
                 }
@@ -1560,48 +1550,34 @@ namespace DynamicWin.UI.UIElements.Custom
                 using (var paint = GetPaint())
                 {
                     paint.IsStroke = false;
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.Color = GetColor(timelineTextColor).Value();
                     paint.TextSize = timelineTextSize;
-                    paint.Typeface = Resources.Res.SatoshiRegular;
+                    paint.Typeface = Resources.Res.SFProRegular;
 
-                    // Text Y position just below bar
                     float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
-
-                    // Left text
                     float leftX = barX - timelineSidePadding + 4f;
                     canvas.DrawText(leftText, leftX, timelineTextY, paint);
 
-                    // Right text
                     float rightTextWidth = paint.MeasureText(rightText);
                     float rightX = barX + barWidth + timelineSidePadding - rightTextWidth - 4f;
                     canvas.DrawText(rightText, rightX, timelineTextY, paint);
                 }
             }
-            catch (Exception ex)
-            {
-#if DEBUG
-                Debug.WriteLine("Draw timeline bar error: " + ex.Message);
-#endif
-            }
+            catch { }
         }
 
         public override void OnDestroy()
         {
             base.OnDestroy();
 
-            // Unsubscribe from thumbnail service
             try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged; } catch { }
+            isThumbnailSubscribed = false;
 
-            // Ensure fetch loop stopped and bitmaps cleaned
-            StopFetchLoop();
-
-            lock (mediaLock)
-            {
-                if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; thumbnailFingerprint = null; }
-                if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingFingerprint = null; }
-                if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
-            }
+            StopFetchLoop(disposeCached: true);
+            // Reset thumbnail/animation state 
+            ResetThumbnailState();
         }
+
     }
 }

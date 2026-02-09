@@ -84,7 +84,7 @@ namespace DynamicWin.UI.Widgets.Big
             shortcutTitle = new DWText(this, " ", new Vec2(15f, 0), UIAlignment.MiddleLeft);
             shortcutTitle.TextSize = 9.5f;
             shortcutTitle.Anchor.X = 0f;
-            shortcutTitle.Font = Res.SatoshiBold;
+            shortcutTitle.Font = Res.SFProBold;
             shortcutTitle.Color = Theme.TextSecond;
             shortcutTitle.SilentSetActive(false);
             AddLocalObject(shortcutTitle);

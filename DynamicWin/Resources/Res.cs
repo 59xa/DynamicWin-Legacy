@@ -9,8 +9,8 @@ namespace DynamicWin.Resources
 {
     public class Res
     {
-        public static SKTypeface SatoshiRegular { get => LoadTypeface("Resources\\Satoshi-Regular.otf"); }
-        public static SKTypeface SatoshiBold { get => LoadTypeface("Resources\\Satoshi-Black.otf"); }
+        public static SKTypeface SFProRegular { get => LoadTypeface("Resources\\SF-Pro-Display-Regular.otf"); }
+        public static SKTypeface SFProBold { get => LoadTypeface("Resources\\SF-Pro-Display-Bold.otf"); }
         public static SKTypeface CascadiaMono { get => LoadTypeface("Resources\\CascadiaMono.ttf"); }
 
         public static SKBitmap searchIcon;
@@ -228,7 +228,7 @@ namespace DynamicWin.Resources
             }catch(Exception e)
             {
                 System.Diagnostics.Debug.WriteLine("Could not load font: " + path);
-                return SatoshiRegular;
+                return SFProRegular;
             }
         }
     }

@@ -23,7 +23,7 @@ using static DynamicWin.UI.UIElements.IslandObject;
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    27 November 2025
- *  Last Modified:          28 November 2025
+ *  Last Modified:          20 January 2026
  *
  */
 
@@ -46,7 +46,7 @@ namespace DynamicWin.UI.Menu.Menus
         private CancellationTokenSource? cts;
 
         // Progress bar tracking
-        private DWProgressBar? countdownBar;
+        private DWProgressBarEx? countdownBar;
         private float countdownProgress = 1f; // 1 = full, 0 = empty
 
         // Whether the provided update info is valid
@@ -98,13 +98,16 @@ namespace DynamicWin.UI.Menu.Menus
             // Title text
             var updaterText = new DWText(island, "An update is available.", new Vec2(0, -10), UIAlignment.Center)
             {
-                Font = Res.SatoshiBold,
+                Font = Res.SFProBold,
                 TextSize = 18,
                 Color = Theme.TextMain
             };
 
-            // Countdown progress bar
-            countdownBar = new DWProgressBar(island, new Vec2(0, 10), new Vec2(200, 5f), UIAlignment.Center);
+            // Countdown progress bar (use DWProgressBarEx and lock it so user cannot modify it)
+            countdownBar = new DWProgressBarEx(island, new Vec2(0, 10), new Vec2(200, 5f), UIAlignment.Center,
+                background: Theme.WidgetBackground.Override(a: 0.06f), foreground: Theme.Primary);
+            // Lock the control to prevent external modification via UI
+            countdownBar.IsLocked = true;
 
 #if DEBUG
             Debug.WriteLine($"[UPDATER] Version display: {latestVersion}");
@@ -160,7 +163,9 @@ namespace DynamicWin.UI.Menu.Menus
             // Update progress bar value
             if (countdownBar != null)
             {
-                countdownBar.value = countdownProgress;
+                // Update target using ForceSetValue so smoothing animates the visual smoothly
+                countdownBar.ForceSetValue(countdownProgress);
+                // Optionally, if you want it to snap immediately when the countdown completes, call SetValueImmediate(0f) there.
             }
         }
 

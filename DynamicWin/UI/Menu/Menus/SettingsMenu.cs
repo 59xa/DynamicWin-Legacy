@@ -27,10 +27,11 @@ namespace DynamicWin.UI.Menu.Menus
 {
     public class SettingsMenu : BaseMenu
     {
+        private static List<IRegisterableSetting> _cachedCustomOptions;
 
         public SettingsMenu()
         {
-            MainForm.onScrollEvent += (MouseWheelEventArgs x) => 
+            MainForm.onScrollEvent += (MouseWheelEventArgs x) =>
             {
                 yScrollOffset += x.Delta * 0.50f;
             };
@@ -60,7 +61,7 @@ namespace DynamicWin.UI.Menu.Menus
                 MenuManager.OpenMenu(Res.HomeMenu);
             }
 
-            foreach (var item in customOptions)
+            foreach (var item in _cachedCustomOptions)
             {
                 item.SaveSettings();
             }
@@ -86,21 +87,21 @@ namespace DynamicWin.UI.Menu.Menus
         {
             var objects = base.InitializeMenu(island);
 
-            SettingsMenu.LoadCustomOptions();
+            LoadCustomOptions();
 
-            foreach (var item in customOptions)
+            foreach (var item in _cachedCustomOptions)
             {
                 item.LoadSettings();
             }
 
             var generalTitle = new DWText(island, "General", new Vec2(25, 0), UIAlignment.TopLeft);
-            generalTitle.Font = Res.SatoshiBold;
+            generalTitle.Font = Res.SFProBold;
             generalTitle.Anchor.X = 0;
             objects.Add(generalTitle);
 
             {
                 var islandModesTitle = new DWText(island, "Island Mode", new Vec2(25, 0), UIAlignment.TopLeft);
-                islandModesTitle.Font = Res.SatoshiBold;
+                islandModesTitle.Font = Res.SFProBold;
                 islandModesTitle.Color = Theme.TextMain;
                 islandModesTitle.TextSize = 15;
                 islandModesTitle.Anchor.X = 0;
@@ -133,12 +134,12 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(antiAliasing);
 
             refreshRateDisclaimer1 = new DWText(island, "Enables application to run at the highest refresh rate supported by your monitor.", new Vec2(25, 0), UIAlignment.TopLeft);
-            refreshRateDisclaimer1.Font = Res.SatoshiRegular;
+            refreshRateDisclaimer1.Font = Res.SFProRegular;
             refreshRateDisclaimer1.TextSize = 12;
             refreshRateDisclaimer1.Anchor.X = 0;
 
             refreshRateDisclaimer2 = new DWText(island, "This setting will cause performance degradation on some devices, proceed with caution.", new Vec2(25, 0), UIAlignment.TopLeft);
-            refreshRateDisclaimer2.Font = Res.SatoshiRegular;
+            refreshRateDisclaimer2.Font = Res.SFProRegular;
             refreshRateDisclaimer2.TextSize = 12;
             refreshRateDisclaimer2.Anchor.X = 0;
 
@@ -188,7 +189,7 @@ namespace DynamicWin.UI.Menu.Menus
                 UIAlignment.TopLeft
             )
             {
-                Font = Res.SatoshiRegular,
+                Font = Res.SFProRegular,
                 TextSize = 12,
                 Anchor = new Vec2(0, 0)
             };
@@ -200,7 +201,7 @@ namespace DynamicWin.UI.Menu.Menus
                 UIAlignment.TopLeft
             )
             {
-                Font = Res.SatoshiRegular,
+                Font = Res.SFProRegular,
                 TextSize = 12,
                 Anchor = new Vec2(0, 0)
             };
@@ -216,11 +217,11 @@ namespace DynamicWin.UI.Menu.Menus
             limitRefreshRateDisclaimer2.IsEnabled = enableRefreshRateSubSettings;
 
             toggleIslandShadow = new DWCheckbox(
-                island, 
-                "Toggle island shadow", 
-                new Vec2(25, 0), 
-                new Vec2(25, 25), 
-                () => 
+                island,
+                "Toggle island shadow",
+                new Vec2(25, 0),
+                new Vec2(25, 25),
+                () =>
                 {
                     bool enabled = toggleIslandShadow.IsChecked;
 
@@ -230,18 +231,18 @@ namespace DynamicWin.UI.Menu.Menus
                         toggleHomeMenuShadow.IsChecked = false;
                         Settings.ToggleHomeMenuShadow = false;
                     }
-                }, 
+                },
                 UIAlignment.TopLeft);
             toggleIslandShadow.IsChecked = Settings.ToggleIslandShadow;
             toggleIslandShadow.Anchor.X = 0;
             objects.Add(toggleIslandShadow);
 
             toggleHomeMenuShadow = new DWCheckbox(
-                island, 
-                "Toggle home menu shadow when idle", 
-                new Vec2(65, 0), 
-                new Vec2(25, 25), 
-                () => { }, 
+                island,
+                "Toggle home menu shadow when idle",
+                new Vec2(65, 0),
+                new Vec2(25, 25),
+                () => { },
                 UIAlignment.TopLeft);
             toggleHomeMenuShadow.IsChecked = Settings.ToggleHomeMenuShadow;
             toggleHomeMenuShadow.Anchor.X = 0;
@@ -263,32 +264,44 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var selectedMonitorTitle = new DWText(island, "Selected Monitor", new Vec2(25, 0), UIAlignment.TopLeft);
-                selectedMonitorTitle.Font = Res.SatoshiBold;
+                selectedMonitorTitle.Font = Res.SFProBold;
                 selectedMonitorTitle.TextSize = 15;
                 selectedMonitorTitle.Anchor.X = 0;
                 objects.Add(selectedMonitorTitle);
 
-                var selectedMonitors = new string[MainForm.GetMonitorCount()];
-                for(int i = 0; i < selectedMonitors.Length; i++)
+                // Get current monitor count and names
+                int monitorCount = MainForm.GetMonitorCount();
+                var selectedMonitors = new string[monitorCount];
+
+                for (int i = 0; i < monitorCount; i++)
                 {
-                    if (i == 0) selectedMonitors[i] = "Primary";
-                    else selectedMonitors[i] = "Monitor " + i;
+                    // Get the specific monitor to show resolution/friendly name if possible
+                    var screen = System.Windows.Forms.Screen.AllScreens[i];
+                    string monitorLabel = (i == 0) ? "Primary" : $"Monitor {i + 1}";
+                    selectedMonitors[i] = $"{monitorLabel} ({screen.Bounds.Width}x{screen.Bounds.Height})";
                 }
 
                 var selectedMonitor = new DWMultiSelectionButton(island, selectedMonitors, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-                selectedMonitor.SelectedIndex = Math.Clamp(Settings.ScreenIndex, 0, MainForm.GetMonitorCount() - 1);
+
+                // Clamp the index to ensure it doesn't crash if a monitor was unplugged
+                selectedMonitor.SelectedIndex = Math.Clamp(Settings.ScreenIndex, 0, monitorCount - 1);
                 selectedMonitor.Anchor.X = 0;
+
                 selectedMonitor.onClick += (index) =>
                 {
                     Settings.ScreenIndex = index;
-                    MainForm.Instance.SetMonitor(Settings.ScreenIndex);
+                    // Immediate preview: move the island to the selected monitor
+                    if (MainForm.Instance != null)
+                    {
+                        MainForm.Instance.SetMonitor(index);
+                    }
                 };
                 objects.Add(selectedMonitor);
             }
 
             {
                 var themeTitle = new DWText(island, "Themes", new Vec2(25, 0), UIAlignment.TopLeft);
-                themeTitle.Font = Res.SatoshiBold;
+                themeTitle.Font = Res.SFProBold;
                 themeTitle.TextSize = 15;
                 themeTitle.Anchor.X = 0;
                 objects.Add(themeTitle);
@@ -311,14 +324,14 @@ namespace DynamicWin.UI.Menu.Menus
             });
 
             var widgetsTitle = new DWText(island, "Widgets", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetsTitle.Font = Res.SatoshiBold;
+            widgetsTitle.Font = Res.SFProBold;
             widgetsTitle.Color = Theme.TextMain;
             widgetsTitle.Anchor.X = 0;
             objects.Add(widgetsTitle);
 
             {
                 var wTitle = new DWText(island, "Small widgets (right click to add/edit)", new Vec2(25, 0), UIAlignment.TopLeft);
-                wTitle.Font = Res.SatoshiBold;
+                wTitle.Font = Res.SFProBold;
                 wTitle.Color = Theme.TextMain;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
@@ -330,7 +343,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             {
                 var wTitle = new DWText(island, "Big widgets (right click to add/edit)", new Vec2(25, 15), UIAlignment.TopLeft);
-                wTitle.Font = Res.SatoshiBold;
+                wTitle.Font = Res.SFProBold;
                 wTitle.Color = Theme.TextMain;
                 wTitle.TextSize = 15;
                 wTitle.Anchor.X = 0;
@@ -348,25 +361,25 @@ namespace DynamicWin.UI.Menu.Menus
             });
 
             var widgetOptionsTitle = new DWText(island, "Widget Settings", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetOptionsTitle.Font = Res.SatoshiBold;
+            widgetOptionsTitle.Font = Res.SFProBold;
             widgetOptionsTitle.Color = Theme.TextMain;
             widgetOptionsTitle.Anchor.X = 0;
             objects.Add(widgetOptionsTitle);
 
             {
-                foreach(var option in customOptions)
+                foreach (var option in _cachedCustomOptions)
                 {
                     var wTitle = new DWText(island, option.SettingTitle, new Vec2(25, 0), UIAlignment.TopLeft);
-                    wTitle.Font = Res.SatoshiBold;
+                    wTitle.Font = Res.SFProBold;
                     wTitle.TextSize = 15;
                     wTitle.Anchor.X = 0;
                     objects.Add(wTitle);
 
-                    foreach(var optionItem in option.SettingsObjects())
+                    foreach (var optionItem in option.SettingsObjects())
                     {
                         optionItem.Parent = island;
 
-                        if(optionItem.alignment == UIAlignment.TopLeft)
+                        if (optionItem.alignment == UIAlignment.TopLeft)
                         {
                             optionItem.Position = new Vec2(25, 0);
                             optionItem.Anchor.X = 0;
@@ -375,9 +388,10 @@ namespace DynamicWin.UI.Menu.Menus
                         if (optionItem is DWText)
                         {
                             ((DWText)optionItem).Color = Theme.TextMain;
-                            ((DWText)optionItem).Font = Res.SatoshiRegular;
+                            ((DWText)optionItem).Font = Res.SFProRegular;
                             ((DWText)optionItem).TextSize = 13;
-                        }else if(optionItem is DWCheckbox)
+                        }
+                        else if (optionItem is DWCheckbox)
                         {
                             optionItem.Size = new Vec2(25, 25);
                         }
@@ -388,20 +402,20 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             var releaseStreamTitle = new DWText(island, "Release Stream", new Vec2(25, 0), UIAlignment.TopLeft);
-            releaseStreamTitle.Font = Res.SatoshiBold;
+            releaseStreamTitle.Font = Res.SFProBold;
             releaseStreamTitle.Color = Theme.TextMain;
             releaseStreamTitle.Anchor.X = 0;
             objects.Add(releaseStreamTitle);
 
             var releaseStreamDisclaimerPt1 = new DWText(island, "Updates will be checked after you restart the application", new Vec2(25, -15), UIAlignment.TopLeft);
-            releaseStreamDisclaimerPt1.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimerPt1.Font = Res.SFProRegular;
             releaseStreamDisclaimerPt1.TextSize = 12;
             releaseStreamDisclaimerPt1.Color = Theme.TextSecond;
             releaseStreamDisclaimerPt1.Anchor.X = 0;
             objects.Add(releaseStreamDisclaimerPt1);
 
             var releaseStreamDisclaimerPt2 = new DWText(island, "or by pressing the 'Check for updates now' button.", new Vec2(25, -30), UIAlignment.TopLeft);
-            releaseStreamDisclaimerPt2.Font = Res.SatoshiRegular;
+            releaseStreamDisclaimerPt2.Font = Res.SFProRegular;
             releaseStreamDisclaimerPt2.TextSize = 12;
             releaseStreamDisclaimerPt2.Color = Theme.TextSecond;
             releaseStreamDisclaimerPt2.Anchor.X = 0;
@@ -459,7 +473,7 @@ namespace DynamicWin.UI.Menu.Menus
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),
                 TextSize = 15,
-                Font = Res.SatoshiBold
+                Font = Res.SFProBold
             });
 
             objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, -25), UIAlignment.TopLeft)
@@ -487,7 +501,7 @@ namespace DynamicWin.UI.Menu.Menus
             {
                 roundRadius = 25
             };
-            backBtn.Text.Font = Res.SatoshiBold;
+            backBtn.Text.Font = Res.SFProBold;
 
             bottomMask = new BottomMask(island, backBtn)
             {
@@ -524,7 +538,7 @@ namespace DynamicWin.UI.Menu.Menus
             var yPos = 35f;
             var spacing = 15f;
 
-            for(int i = 0; i < UiObjects.Count - 2; i++)
+            for (int i = 0; i < UiObjects.Count - 2; i++)
             {
                 var uiObject = UiObjects[i];
                 if (!uiObject.IsEnabled) continue;
@@ -543,7 +557,7 @@ namespace DynamicWin.UI.Menu.Menus
         {
             var vec = new Vec2(525, 425);
 
-            if(smallWidgetAdder != null)
+            if (smallWidgetAdder != null)
             {
                 vec.X = Math.Max(vec.X, smallWidgetAdder.Size.X + 50);
             }
@@ -556,11 +570,11 @@ namespace DynamicWin.UI.Menu.Menus
             return IslandSize() + 5;
         }
 
-        static List<IRegisterableSetting> customOptions;
-
         public static List<IRegisterableSetting> LoadCustomOptions()
         {
-            customOptions = new List<IRegisterableSetting>();
+            if (_cachedCustomOptions != null) return _cachedCustomOptions;
+
+            _cachedCustomOptions = new List<IRegisterableSetting>();
 
             var registerableSettings = AppDomain.CurrentDomain.GetAssemblies()
             .SelectMany(s => s.GetTypes())
@@ -569,7 +583,7 @@ namespace DynamicWin.UI.Menu.Menus
             foreach (var option in registerableSettings)
             {
                 var optionInstance = (IRegisterableSetting)Activator.CreateInstance(option);
-                customOptions.Add(optionInstance);
+                _cachedCustomOptions.Add(optionInstance);
             }
 
             // Loading in custom DLLs
@@ -587,22 +601,21 @@ namespace DynamicWin.UI.Menu.Menus
                     if (Path.GetExtension(file).ToLower().Equals(".dll"))
                     {
                         System.Diagnostics.Debug.WriteLine(file);
-                        var DLL = new Assembly[] { Assembly.LoadFile(Path.Combine(dirPath, file)) };
+                        var DLL = Assembly.LoadFile(Path.Combine(dirPath, file));
 
-                        var dllRegisterableSettings = DLL
-                            .SelectMany(s => s.GetTypes())
+                        var dllRegisterableSettings = DLL.GetTypes()
                             .Where(p => typeof(IRegisterableSetting).IsAssignableFrom(p) && p.IsClass);
 
                         foreach (var option in dllRegisterableSettings)
                         {
                             var optionInstance = (IRegisterableSetting)Activator.CreateInstance(option);
-                            customOptions.Add(optionInstance);
+                            _cachedCustomOptions.Add(optionInstance);
                         }
                     }
                 }
             }
 
-            return customOptions;
+            return _cachedCustomOptions;
         }
 
         // Border should only be rendered if on island mode instead of notch

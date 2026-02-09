@@ -2,6 +2,7 @@
 using DynamicWin.Utils;
 using Newtonsoft.Json;
 using Windows.Media.Control;
+using System.Threading.Tasks;
 
 /*
  *
@@ -12,7 +13,7 @@ using Windows.Media.Control;
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    18 May 2025
- *  Last Modified:          12 January 2026
+ *  Last Modified:          26 January 2026
  *
  */
 
@@ -21,6 +22,7 @@ namespace DynamicWin.UI.Widgets.Small
     class RegisterSmallVisualiserWidget : IRegisterableWidget
     {
         public bool IsSmallWidget => true;
+
         public string WidgetName => "Audio Visualiser";
 
         public WidgetBase CreateWidgetInstance(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter)
@@ -83,8 +85,8 @@ namespace DynamicWin.UI.Widgets.Small
         /// Returns a list of UI objects representing the available settings controls for the visualiser.
         /// </summary>
         /// <remarks>The returned UI objects reflect the current state of the underlying settings and
-        /// update the settings when interacted with. Callers can use this list to display or manage the settings UI for
-        /// the visualiser.</remarks>
+        /// update the settings when interacted with. Call this method
+        /// to display or manage the settings UI for the visualiser.</remarks>
         /// <returns>A list of <see cref="UIObject"/> instances corresponding to the settings controls. The list contains one
         /// object for each configurable setting.</returns>
         public List<UIObject> SettingsObjects()
@@ -136,7 +138,9 @@ namespace DynamicWin.UI.Widgets.Small
         private Animator? collapseAnim = null;
 
         private volatile bool targetExpanded = true; // Current target state
-        private bool isRunning = true; // Background loop control
+
+        // Track whether service says there is any media at all
+        private volatile bool hasMedia = false;
 
         public SmallVisualiserWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter)
             : base(parent, position, alignment)
@@ -155,34 +159,48 @@ namespace DynamicWin.UI.Widgets.Small
 
             AddLocalObject(audioVisualiser);
 
-            Task.Run(SessionMonitorLoop);
+            // Subscribe to media thumbnail/metadata changes; when metadata changes, fetch timeline once
+            MediaThumbnailService.Instance.ThumbnailChanged += OnServiceThumbnailChanged;
         }
 
-        private async Task SessionMonitorLoop()
+        private async void OnServiceThumbnailChanged(object? sender, MediaChangedEventArgs e)
         {
-            while (isRunning)
+            try
             {
+                var media = e.Media;
+
+                // Determine whether media exists
+                bool newHasMedia = media != null;
+
+                // If no media, collapse
+                if (!newHasMedia)
+                {
+                    hasMedia = false;
+                    targetExpanded = false;
+                    BeginInvokeUI(() => StartCollapseOrExpand(false));
+                    return;
+                }
+
+                // On metadata present, fetch timeline once (service will have invalidated timeline on metadata change)
                 try
                 {
-                    var timeline = await MediaInfo.FetchCurrentTimelineAsync();
+                    var tl = await MediaInfo.FetchCurrentTimelineAsync().ConfigureAwait(false);
+                    bool shouldExpand = tl != null && tl.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
 
-                    // Keep visualiser expanded for any session (Playing or Paused), collapse only if no session exists
-                    bool newExpanded = timeline != null &&
-                                       timeline.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+                    hasMedia = true;
+                    targetExpanded = shouldExpand;
 
-                    if (newExpanded != targetExpanded)
-                    {
-                        targetExpanded = newExpanded;
-                        BeginInvokeUI(() => StartCollapseOrExpand(targetExpanded));
-                    }
+                    BeginInvokeUI(() => StartCollapseOrExpand(shouldExpand));
                 }
                 catch
                 {
-                    // Swallow transient errors
+                    // If timeline fetch fails, still expand to show visualiser presence
+                    hasMedia = true;
+                    targetExpanded = true;
+                    BeginInvokeUI(() => StartCollapseOrExpand(true));
                 }
-
-                await Task.Delay(500);
             }
+            catch { }
         }
 
         private void StartCollapseOrExpand(bool expand)
@@ -233,7 +251,7 @@ namespace DynamicWin.UI.Widgets.Small
 
         public override void OnDestroy()
         {
-            isRunning = false; // Stop the background loop
+            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnServiceThumbnailChanged; } catch { }
             base.OnDestroy();
         }
     }

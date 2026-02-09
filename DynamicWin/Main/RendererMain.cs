@@ -440,15 +440,8 @@ namespace DynamicWin.Main
 
         private void Mask(SKCanvas canvas)
         {
-            var islandMask = GetMask();
-            canvas.ClipRoundRect(islandMask);
-        }
-
-        public SKRoundRect GetMask()
-        {
-            var islandMask = islandObject.GetRect();
-            islandMask.Deflate(new SKSize(1, 1));
-            return islandMask;
+            using var path = MainIsland.GetIslandPath();
+            canvas.ClipPath(path, SKClipOperation.Intersect, Settings.AntiAliasing);
         }
     }
 }

@@ -10,16 +10,17 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
+using System.Windows.Forms;
 using System.Windows.Threading;
 
 namespace DynamicWin
 {
-    public partial class DynamicWinMain : Application
+    public partial class DynamicWinMain : System.Windows.Application
     {
         public static MMDevice defaultDevice;
         public static MMDevice defaultMicrophone;
 
-        public static string Version => "v1.5.0r1";
+        public static string Version => "v1.6.0r";
         public static Channel ReleaseStream => Channel.Release;
 
         [STAThread]
@@ -44,12 +45,12 @@ namespace DynamicWin
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Failed to add application to startup: {ex.Message}");
+                System.Windows.MessageBox.Show($"Failed to add application to startup: {ex.Message}");
             }
         }
 
         Mutex mutex;
-        private DispatcherTimer topmostTimer; // timer to keep window absolutely topmost
+        private System.Timers.Timer topmostTimer; // use System.Timers.Timer to avoid creating Win32 dispatcher timers
         private MainForm mainForm;
 
         protected override void OnStartup(StartupEventArgs e)
@@ -57,7 +58,7 @@ namespace DynamicWin
             base.OnStartup(e);
 
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
-            Dispatcher.UnhandledException += Dispatcher_UnhandledException;
+            Current.Dispatcher.UnhandledException += Dispatcher_UnhandledException;
 
             bool result;
             mutex = new Mutex(true, "59xa.DynamicWin", out result);
@@ -99,54 +100,71 @@ namespace DynamicWin
 
             mainForm = new MainForm
             {
-                Width = 600,
-                Height = 600,
+                Width = 800,
+                Height = 500,
                 ResizeMode = ResizeMode.NoResize,
-                Topmost = true
+                Topmost = true,
+                ShowActivated = false,
             };
 
             mainForm.SizeToContent = SizeToContent.Manual;
 
-            var screenWidth = SystemParameters.PrimaryScreenWidth;
-            mainForm.Left = (screenWidth - mainForm.Width) / 2;
-
-            mainForm.Top = 0;
+            int screenIndex = Settings.ScreenIndex;
+            WindowPositionHelper.CenterWindowOnMonitor(mainForm, screenIndex);
 
             mainForm.Show();
 
-            Dispatcher.BeginInvoke(new Action(() =>
+            Current.Dispatcher.BeginInvoke(new Action(() =>
             {
                 ForceTopMost(mainForm);
             }), DispatcherPriority.ApplicationIdle);
 
-            topmostTimer = new DispatcherTimer
+            topmostTimer = new System.Timers.Timer(500); // milliseconds
+            topmostTimer.AutoReset = true;
+            topmostTimer.Elapsed += (_, _) =>
             {
-                Interval = TimeSpan.FromMilliseconds(500)
+                // Switch back to UI thread
+                Dispatcher.CurrentDispatcher.Invoke(() =>
+                {
+                    ForceTopMost(mainForm);
+                });
             };
-            topmostTimer.Tick += (_, _) => ForceTopMost(mainForm);
-            topmostTimer.Start();
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
             base.OnExit(e);
 
-            topmostTimer?.Stop();
+            try
+            {
+                topmostTimer?.Stop();
+                topmostTimer?.Dispose();
+                topmostTimer = null;
+            }
+            catch { }
+
             SaveManager.SaveAll();
             HardwareMonitor.Stop();
             MainForm.Instance.DisposeTrayIcon();
             KeyHandler.Stop();
             GC.KeepAlive(mutex);
+
+            try
+            {
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+                SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            }
+            catch { }
         }
 
         private void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
-            MessageBox.Show($"Unhandled exception: {e.ExceptionObject}");
+            System.Windows.MessageBox.Show($"Unhandled exception: {e.ExceptionObject}");
         }
 
         private void Dispatcher_UnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
-            MessageBox.Show($"Unhandled exception: {e.Exception}");
+            System.Windows.MessageBox.Show($"Unhandled exception: {e.Exception}");
             e.Handled = true;
         }
 
@@ -167,8 +185,130 @@ namespace DynamicWin
 
         private void ForceTopMost(Window window)
         {
-            var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            }
+            catch { }
+        }
+
+        // Helper to centre window horizontally on any monitor
+        private void UpdateWindowPosition()
+        {
+            try
+            {
+                if (mainForm == null) return;
+                WindowPositionHelper.CenterWindowOnMonitor(mainForm, Settings.ScreenIndex);
+            }
+            catch { }
+        }
+
+        private void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                UpdateWindowPosition();
+            }), DispatcherPriority.Normal);
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            try
+            {
+                if (e.Mode == PowerModes.Suspend)
+                {
+                    HandleSuspend();
+                }
+                else if (e.Mode == PowerModes.Resume)
+                {
+                    HandleResume();
+                }
+            }
+            catch { }
+        }
+
+        private void HandleSuspend()
+        {
+            try
+            {
+                // Stop and dispose the periodic topmost enforcement timer to free native handles
+                try { topmostTimer?.Stop(); topmostTimer?.Dispose(); topmostTimer = null; } catch { }
+
+                // Pause rendering loop in main form
+                try { MainForm.Instance?.PauseRendering(); } catch { }
+
+                // Stop hardware monitoring and background services
+                try { HardwareMonitor.Stop(); } catch { }
+
+                try { WeatherAPI.Default.StopFetching(); } catch { }
+
+#if DEBUG
+                Debug.WriteLine("[SYSTEM] Suspend handled: paused timers and background workers.");
+#endif
+            }
+            catch { }
+        }
+
+        private void HandleResume()
+        {
+            try
+            {
+                // Recreate and start topmost timer if needed
+                try { if (topmostTimer == null) CreateTopmostTimer(); else topmostTimer.Start(); } catch { }
+
+                // Resume main rendering loop
+                try { MainForm.Instance?.ResumeRendering(); } catch { }
+
+                // Re-initialise media manager and hardware monitor
+                try { MediaInfo.Initialize(); } catch { }
+
+                try { new HardwareMonitor(); } catch { }
+
+                // Force window to topmost once after resume
+                try { ForceTopMost(mainForm); } catch { }
+
+                // Ensure position is correct on resume
+                try { UpdateWindowPosition(); } catch { }
+
+#if DEBUG
+                Debug.WriteLine("[SYSTEM] Resume handled: restarted timers and background workers.");
+#endif
+            }
+            catch { }
+        }
+
+        private void CreateTopmostTimer()
+        {
+            try { topmostTimer?.Stop(); topmostTimer?.Dispose(); topmostTimer = null; } catch { }
+
+            topmostTimer = new System.Timers.Timer(500);
+            topmostTimer.AutoReset = true;
+            topmostTimer.Elapsed += (s, args) =>
+            {
+                try
+                {
+                    Dispatcher?.BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            // Continuously enforce Z-order and correct Monitor centering
+                            ForceTopMost(mainForm);
+                            UpdateWindowPosition();
+                        }
+                        catch { }
+                    }), DispatcherPriority.Normal);
+                }
+                catch { }
+            };
+
+            topmostTimer.Start();
+        }
+
+        public void MoveToMonitor(int monitorIndex)
+        {
+            if (mainForm == null) return;
+            WindowPositionHelper.CenterWindowOnMonitor(mainForm, monitorIndex);
         }
     }
 }

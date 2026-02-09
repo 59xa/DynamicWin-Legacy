@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:DynamicWin"
         mc:Ignorable="d"
         Background="Transparent"
-        Title="MainWindow" Height="450" Width="800"
+        Title="MainWindow" Height="800" Width="500"
         ShowInTaskbar="False" WindowStyle="None">
     <Grid>
 

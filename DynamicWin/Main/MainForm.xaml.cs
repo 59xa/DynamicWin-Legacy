@@ -37,16 +37,34 @@ namespace DynamicWin.Main
         private DateTime _lastMouseMoveTime = DateTime.MinValue;
         private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromSeconds(1.0);
 
+        // Rendering pause flag (used for suspend/hibernate)
+        private bool _renderPaused = false;
+
+        #region Win32 API Definitions
+
         [DllImport("user32.dll")]
         public static extern int SetWindowLong(IntPtr window, int idx, int val);
 
         [DllImport("user32.dll")]
         public static extern int GetWindowLong(IntPtr window, int idx);
 
-        // Define integer values
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+        // Constants for Z-Order and Window Styles
+        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_SHOWWINDOW = 0x0040;
+
+        private const int WM_WINDOWPOSCHANGING = 0x0046;
+
         const int GWL_EXSTYLE = -20;
         const int WS_EX_TOOLWINDOW = 0x00000080;
         const int WS_EX_APPWINDOW = 0x00040000;
+
+        #endregion
 
         public MainForm()
         {
@@ -80,21 +98,22 @@ namespace DynamicWin.Main
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
-            this.Title = "DynamicWin-Legacy Island";
+            this.Title = "DynamicWin-Legacy Overlay";
             this.Icon = BitmapFrame.Create(new Uri(DynamicWinMain.ReleaseStream.GetIconPath(), UriKind.Relative));
 
             // Loaded event to ensure that this does not show the application on the Alt+Tab switcher
 
             this.Loaded += (s, e) =>
             {
-                IntPtr handle = new WindowInteropHelper(this).Handle; // Define Handle
-                int winStyle = GetWindowLong(handle, GWL_EXSTYLE); // Fetch defined GWL_EXSTYLE
+                IntPtr handle = new WindowInteropHelper(this).Handle;
+                int winStyle = GetWindowLong(handle, GWL_EXSTYLE);
 
-                // Apply WS_EX_TOOLWINDOW and remove WS_EX_APPWINDOW if it exists
+                // Apply WS_EX_TOOLWINDOW and remove WS_EX_APPWINDOW
                 winStyle = (winStyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
                 SetWindowLong(handle, GWL_EXSTYLE, winStyle);
             };
 
+            // Placement happens after style is set
             SetMonitor(Settings.ScreenIndex);
 
             AddRenderer();
@@ -102,7 +121,7 @@ namespace DynamicWin.Main
             Res.extensions.ForEach((x) => x.LoadExtension());
             MainForm.Instance.AllowDrop = true;
 
-            // Tray icon
+            // Tray icon setup
             _trayIcon.Icon = new System.Drawing.Icon("Resources/icons/cog.ico");
             _trayIcon.Text = "DynamicWin-Legacy";
 
@@ -118,7 +137,6 @@ namespace DynamicWin.Main
             {
                 this.Topmost = true;
             };
-
 
             _trayIcon.ContextMenuStrip.Items.Add("Restart Control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
             {
@@ -160,25 +178,23 @@ namespace DynamicWin.Main
 
         public void SetMonitor(int monitorIndex)
         {
-            var screen = System.Windows.Forms.Screen.AllScreens[Math.Clamp(monitorIndex, 0, GetMonitorCount() - 1)];
-            Settings.ScreenIndex = Math.Clamp(monitorIndex, 0, GetMonitorCount() - 1);
+            var screens = System.Windows.Forms.Screen.AllScreens;
+            int clampedIndex = Math.Clamp(monitorIndex, 0, screens.Length - 1);
+            Settings.ScreenIndex = clampedIndex;
 
-            if (screen != null)
+            if (!this.IsLoaded)
+                this.WindowStartupLocation = WindowStartupLocation.Manual;
+
+            this.WindowState = WindowState.Normal;
+            this.ResizeMode = ResizeMode.CanResize;
+
+            WindowPositionHelper.CenterWindowOnMonitor(this, clampedIndex);
+            this.ResizeMode = ResizeMode.NoResize;
+
+            // Move the window in App.xaml.cs as well
+            if (System.Windows.Application.Current is DynamicWinMain app)
             {
-                if (!this.IsLoaded)
-                    this.WindowStartupLocation = WindowStartupLocation.Manual;
-
-                this.WindowState = WindowState.Normal;
-                this.ResizeMode = ResizeMode.CanResize;
-
-                var workingArea = screen.WorkingArea;
-
-                this.Left = workingArea.Left;
-                this.Top = workingArea.Top;
-                this.Width = workingArea.Width;
-                this.Height = workingArea.Height;
-
-                this.ResizeMode = ResizeMode.NoResize;
+                app.MoveToMonitor(clampedIndex);
             }
         }
 
@@ -269,10 +285,20 @@ namespace DynamicWin.Main
             onMainFormRender += customControl.Frame;
         }
 
+        // Allow external modules to pause/resume the rendering loop during suspend/hibernate
+        public void PauseRendering()
+        {
+            _renderPaused = true;
+        }
+
+        public void ResumeRendering()
+        {
+            _renderPaused = false;
+            _lastRenderTime = DateTime.Now; // Reset timing to avoid immediate large update
+        }
+
         public void MainForm_DragEnter(object? sender, DragEventArgs e)
         {
-            //System.Diagnostics.Debug.WriteLine("DragEnter");
-
             isDragging = true;
             e.Effects = DragDropEffects.Copy;
 
@@ -285,8 +311,6 @@ namespace DynamicWin.Main
 
         public void MainForm_DragLeave(object? sender, EventArgs e)
         {
-            //System.Diagnostics.Debug.WriteLine("DragLeave");
-
             isDragging = false;
 
             if (MenuManager.Instance.ActiveMenu is ConfigureShortcutMenu) return;

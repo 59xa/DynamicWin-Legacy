@@ -49,7 +49,7 @@ namespace DynamicWin.UI.Menu.Menus
             overlayText = new DWText(island, "Checking for updates...", new Vec2(0, 0), UIAlignment.Center)
             {
                 TextSize = 14,
-                Font = Res.SatoshiBold
+                Font = Res.SFProBold
             };
 
             objects.Add(overlayText);
