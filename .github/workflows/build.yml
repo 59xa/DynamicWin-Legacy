@@ -159,7 +159,7 @@ This update converts the sharp edges for both island/notch modes to use squircle
 
 The overlay's font also receives an adjustment to use `SF Pro Display` instead of `Satoshi`.
 
-`AudioVisualiser.cs` gets an adjustment again... this time with rendering the sample frequencies properly by no longer keeping ranges per bar, making output and feel more accurate and similar to the dynamic island on iPhones.
+\`AudioVisualiser.cs` gets an adjustment again... this time with rendering the sample frequencies properly by no longer keeping ranges per bar, making output and feel more accurate and similar to the dynamic island on iPhones.
 
 If `displayDotWhenIdle` setting is set to true, bar output will be consistent by clamping the lower volume output to the shape of a dot instead of going further down.
 
