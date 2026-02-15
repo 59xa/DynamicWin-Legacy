@@ -85,7 +85,7 @@ jobs:
         Configuration: ${{ matrix.configuration }}
 
     - name: Publish application
-      run: dotnet publish DynamicWin/DynamicWin.csproj -c ${{ matrix.configuration }} -f net9-0-windows10.0.19041.0 -r win-x64 --self-contained false -o publish
+      run: dotnet publish DynamicWin/DynamicWin.csproj -c ${{ matrix.configuration }} -f net9.0-windows10.0.19041.0 -r win-x64 --self-contained false -o publish
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
