@@ -58,6 +58,7 @@ jobs:
 
     env:
       Solution_Name: DynamicWin.sln
+      DWAppVersion: v1.6.0r
 
     steps:
     - name: Checkout
@@ -134,7 +135,8 @@ jobs:
     - name: Create Github Release
       uses: ncipollo/release-action@v1
       with:
-        tag: ${{ github.ref_name }}
+        tag: ${{ env.DWAppVersion }}
+        name: DynamicWin-Legacy ${{ env.DWAppVersion }} [${{ matrix.platform }}]
         artifacts: |
             Other\Output\DynamicWinSetup-x64.exe
             Other\Output\DynamicWinSetup-x64.exe.sha256
@@ -144,3 +146,5 @@ jobs:
             Other\Output\DynamicWinSetup-arm64.exe.md5
         draft: true
         prerelease: false
+        skipIfReleaseExists: true
+        replacesArtifacts: true
