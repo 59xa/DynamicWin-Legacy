@@ -127,20 +127,20 @@ jobs:
       with:
         name: DynamicWin-${{ matrix.platform }}
         path: |
-            Output\DynamicWinSetup-${{ matrix.platform }}.exe
-            Output\DynamicWinSetup-${{ matrix.platform }}.exe.sha256
-            Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
+            Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe
+            Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.sha256
+            Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
 
     - name: Create Github Release
       uses: ncipollo/release-action@v1
       with:
-        tag: ${{ env.DWAppVersion }}
+        tag: ${{ github.ref_name }}
         files: |
-            Output\DynamicWinSetup-x64.exe
-            Output\DynamicWinSetup-x64.exe.sha256
-            Output\DynamicWinSetup-x64.exe.md5
-            Output\DynamicWinSetup-arm64.exe
-            Output\DynamicWinSetup-arm64.exe.sha256
-            Output\DynamicWinSetup-arm64.exe.md5
+            Other\Output\DynamicWinSetup-x64.exe
+            Other\Output\DynamicWinSetup-x64.exe.sha256
+            Other\Output\DynamicWinSetup-x64.exe.md5
+            Other\Output\DynamicWinSetup-arm64.exe
+            Other\Output\DynamicWinSetup-arm64.exe.sha256
+            Other\Output\DynamicWinSetup-arm64.exe.md5
         draft: true
         prerelease: false
