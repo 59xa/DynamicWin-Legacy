@@ -63,7 +63,7 @@ namespace DynamicWin.UI.Widgets.Small
             var loudnessMeter = new LoudnessMeter(null, new Vec2(0, 0), new Vec2(400, 7.5f));
 
             var thresholdSlider = new DWSlider(null, new Vec2(0, 0), new Vec2(400, 25));
-            thresholdSlider.value = Mathf.Clamp(saveData.indicatorThreshold, 0.05f, 1f);
+            thresholdSlider.Value = Mathf.Clamp(saveData.indicatorThreshold, 0.05f, 1f);
             thresholdSlider.clickCallback = (x) =>
             {
                 saveData.indicatorThreshold = x;
