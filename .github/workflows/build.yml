@@ -135,7 +135,7 @@ jobs:
       uses: ncipollo/release-action@v1
       with:
         tag: ${{ github.ref_name }}
-        files: |
+        artifacts: |
             Other\Output\DynamicWinSetup-x64.exe
             Other\Output\DynamicWinSetup-x64.exe.sha256
             Other\Output\DynamicWinSetup-x64.exe.md5
