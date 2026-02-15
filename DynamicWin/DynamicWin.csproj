@@ -10,6 +10,7 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Company>$(Authors)</Company>
+    <Platforms>AnyCPU;ARM64</Platforms>
   </PropertyGroup>
 
   <ItemGroup>
