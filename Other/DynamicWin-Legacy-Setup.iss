@@ -33,7 +33,8 @@ SetupIconFile="InstallerIcon\setup.ico"
 
 [Files]
 Source: "..\publish\Release-{#Platform}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\publish\Release-{#Platform}\runtimes\*"; DestDir: "{app}\runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\publish\Release-{#Platform}\runtimes\*"; DestDir: "{app}\runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: DirExists("..\publish\Release-{#Platform}\runtimes")
+
 
 [Icons]
 Name: "{autoprograms}\DynamicWin"; Filename: "{app}\DynamicWin.exe"; 
