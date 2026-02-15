@@ -32,8 +32,8 @@ WizardSmallImageFile="InstallerIcon\setup.bmp"
 SetupIconFile="InstallerIcon\setup.ico"
 
 [Files]
-Source: "{#OutputDir}\..\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#OutputDir}\..\runtimes\*"; DestDir: "{app}\runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "publish\Release-{#Platform}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "publish\Release-{#Platform}\runtimes\*"; DestDir: "{app}\runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\DynamicWin"; Filename: "{app}\DynamicWin.exe"; 
