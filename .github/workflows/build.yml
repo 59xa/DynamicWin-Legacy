@@ -173,6 +173,10 @@ jobs:
           body: |
             # What's new in ${{ env.DWAppVersion }}
 
+            ### Continued support:
+            - Your support truly means a lot to me as I continue to maintain DynamicWin-Legacy. Keep an eye out on this repository whenever a new release comes out.
+            - Feel free to contribute to this project as you wish. Open any issues on the issues page if you encounter any bugs.
+
             ## Checksums
 
             ### x64
