@@ -132,72 +132,19 @@ jobs:
             Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.sha256
             Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
 
-    - name: Generate release notes
-      run: |
-        $notes = @"
-# What is new in $version
-- Dedicated installers for both `x64` and `arm64` devices
-- New island/notch design shape adjustment
-- Topmost placement fixes
-- Font adjustment (again... from `Satoshi` to `SF Pro Display`)
-- New progress bar implementation (deprecates `DWProgressBar.cs`)
-- Bug fixes and improvements (mainly with `InteropServices` calls on `MediaController.cs`)
-
-> [!NOTE]
-> This update was intended to be released as `v1.5.1r`, but there are a lot of changes made to the point where it did not make sense anymore to consider publishing this as a minor update. Therefore this update will be released as `$version`.
-
-## Dedicated installers for both `x64` and `arm64` Windows devices
-Starting with **$version**, DynamicWin-Legacy installers are now provided in both `x64` and `arm64` binaries.
-
-While `arm64` devices are still allowed to install `x64` binaries, both options are provided regardless. However, it is recommended to install the binaries according to the device's specifications.
-
-> [!WARNING]
-> These release builds are automated and are provided immediately when a new version is pushed to the `release` branch. Please report issues on the GitHub issues page.
-
-## Visual upgrades on island/notch
-With **$version**, the island/notch goes through another makeover.
-
-This update converts sharp edges into squircles using superellipse pathing, giving the overlay a more refined visual identity.
-
-The overlay font now uses `SF Pro Display` instead of `Satoshi`.
-
-`AudioVisualiser.cs` now renders sample frequencies more accurately and behaves closer to the real Dynamic Island.
-
-If `displayDotWhenIdle` is enabled, output clamps to a dot instead of collapsing further.
-
-## Topmost adjustments
-Topmost remains, but now respects certain application constraints.
-
-Applications like `MyDockFinder` may override placement. Alternatives like `Droptop 4` are recommended.
-
-## Progress bar adjustments
-`DWProgressBar.cs` is now deprecated in favor of `DWProgressBarEx.cs`.
-
-This affects `DWSlider.cs` and all UI components using progress bars.
-
-## Bug fixes and improvements
-Fixes performance issues introduced in `v1.5.0r1`, particularly CPU spikes in `MediaController.cs`.
-
-## Future of DynamicWin-Legacy
-DynamicWin-Legacy is approaching end-of-life. A successor project is in development. V3 is confirmed.
-
-## Continued support
-Your support means everything. Contributions and issue reports are always welcome.
-
-## Checksums
-\`\`\`
-SHA256:
-MD5:
-\`\`\`
-"@
-        $notes | Out-File release_notes.md -Encoding UTF8
-
     - name: Create Github Release
       uses: ncipollo/release-action@v1
       with:
         tag: ${{ env.DWAppVersion }}
         name: DynamicWin-Legacy ${{ env.DWAppVersion }} [${{ matrix.platform }}]
-        bodyFile: release_notes.md
+        body: |
+            \# What's new in ${{ env.DWAppVersion }}
+
+            \### Checksums:
+            \`\`\`
+            SHA256:
+            MD5:
+            \`\`\`
         artifacts: |
             Other\Output\DynamicWinSetup-x64.exe
             Other\Output\DynamicWinSetup-x64.exe.sha256
