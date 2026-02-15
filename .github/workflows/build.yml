@@ -50,7 +50,7 @@ jobs:
 
     strategy:
       matrix:
-        configuration: [Debug, Release]
+        configuration: [Release]
         platform: [x64, arm64]
 
     runs-on: windows-latest  # For a list of available runner types, refer to
@@ -71,6 +71,9 @@ jobs:
       with:
         dotnet-version: 9.0.x
 
+    - name: Install Inno Setup
+      run: choco install innosetup --no-progress -y
+
     # Add  MSBuild to the PATH: https://github.com/microsoft/setup-msbuild
     - name: Setup MSBuild.exe
       uses: microsoft/setup-msbuild@v2
@@ -88,14 +91,43 @@ jobs:
     - name: Publish application
       run: msbuild DynamicWin/DynamicWin.csproj `
            /t:Publish `  
-           /p:Configuration=${{ matrix.configuration }} `
+           /p:Configuration=Release `
            /p:Platform=${{ matrix.platform }} `
            /p:RuntimeIdentifier=win-${{ matrix.platform }} `
            /p:SelfContained=false `
-           /p:PublishDir=publish\${{ matrix.configuration }}-${{ matrix.platform }}\
+           /p:PublishDir=publish\Release-${{ matrix.platform }}\
 
-    - name: Upload build artifacts
+    - name: Build installer
+      run: |
+        iscc Other\DynamicWin-Legacy-Setup.iss `
+        /DDWAppVersion=${{ github.ref_name }} `
+        /DPlatform=${{ matrix.platform }}
+
+    - name: Generate SHA256 and MD5 hashes
+      run: |
+        $installer = "Output\DynamicWinSetup-${{ matrix.platform }}.exe"
+        Get-FileHash $installer -Algorithm SHA256 | ForEach-Object { $_.Hash } | Out-File "$installer.sha256"
+        Get-FileHash $installer -Algorithm MD5 | ForEach-Object { $_.Hash } | Out-File "$installer.md5"
+
+    - name: Upload artefacts
       uses: actions/upload-artifact@v4
       with:
-        name: DynamicWin-${{ matrix.configuration }}-${{ matrix.platform }}
-        path: publish/${{ matrix.configuration }}-${{ matrix.platform }}
+        name: DynamicWin-${{ matrix.platform }}
+        path: |
+            Output\DynamicWinSetup-${{ matrix.platform }}.exe
+            Output\DynamicWinSetup-${{ matrix.platform }}.exe.sha256
+            Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
+
+    - name: Create Github Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: ${{ env.DWAppVersion }}
+        files: |
+            Output\DynamicWinSetup-x64.exe
+            Output\DynamicWinSetup-x64.exe.sha256
+            Output\DynamicWinSetup-x64.exe.md5
+            Output\DynamicWinSetup-arm64.exe
+            Output\DynamicWinSetup-arm64.exe.sha256
+            Output\DynamicWinSetup-arm64.exe.md5
+        draft: true
+        prerelease: false
