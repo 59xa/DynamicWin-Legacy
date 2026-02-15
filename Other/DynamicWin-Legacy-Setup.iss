@@ -28,8 +28,8 @@ ShowLanguageDialog=yes
 LicenseFile="..\LICENSE"
 WizardStyle=modern
 WizardImageFile=compiler:WizClassicImage.bmp
-WizardSmallImageFile="Other\InstallerIcon\setup.bmp"
-SetupIconFile="Other\InstallerIcon\setup.ico"
+WizardSmallImageFile="InstallerIcon\setup.bmp"
+SetupIconFile="InstallerIcon\setup.ico"
 
 [Files]
 Source: "..\publish\Release-{#Platform}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
