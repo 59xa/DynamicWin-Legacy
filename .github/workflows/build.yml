@@ -136,8 +136,6 @@ jobs:
         name: DynamicWin-${{ matrix.platform }}
         path: |
             Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe
-            Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.sha256
-            Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
 
   release:
     needs: build
@@ -187,11 +185,7 @@ jobs:
 
           artifacts: |
             artifacts/**/DynamicWinSetup-x64.exe
-            artifacts/**/DynamicWinSetup-x64.exe.sha256
-            artifacts/**/DynamicWinSetup-x64.exe.md5
             artifacts/**/DynamicWinSetup-arm64.exe
-            artifacts/**/DynamicWinSetup-arm64.exe.sha256
-            artifacts/**/DynamicWinSetup-arm64.exe.md5
 
           draft: true
           prerelease: false
