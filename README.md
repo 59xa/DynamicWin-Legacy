@@ -23,17 +23,17 @@ A [Dynamic Island](https://support.apple.com/de-de/guide/iphone/iph28f50d10d/ios
 Similar to dynamic notches that you can find on macOS like [NotchNook](https://lo.cafe/notchnook), this application brings the concept on Windows devices to life.
 
 ### Implementation and build
-This application is developed using C# for the logic, and [SkiaSharp](https://github.com/mono/SkiaSharp) to display the graphical interface.
+This application is developed using C# for the logic, Windows Presentation Foundation (WPF) for windowing, and [SkiaSharp](https://github.com/mono/SkiaSharp) to display the graphical interface.
 To build this project, ensure that you have the latest version of **`.NET 9.0`** installed on your environment.
 
 To get started:
 ```bash
-git pull https://github.com/59xa/DynamicWin.git
+git pull https://github.com/59xa/DynamicWin-Legacy.git
 ```
 
 ### Future plans/continued support:
 - While [version 2.0](https://github.com/FlorianButz/DynamicWin) of this software has been made public, the legacy codebase will continue to exist and maintained by me until FlorianButz decides to pull the legacy support.
-- This repository is no longer connected to the original repository's fork network. Please report your issues regarding V2  [here](https://github.com/FlorianButz/DynamicWin).
+- This repository is no longer connected to the original repository's fork network. Please report your issues regarding V2 [here](https://github.com/FlorianButz/DynamicWin).
 - V1 (this repository) will co-exist with V2, and will not serve as a replacement but an alternative for users to use.
 - Your support truly means a lot to keep maintaining DynamicWin Legacy. Keep an eye out whenever a new release comes out.
 - Feel free to contribute to this project as you wish. Open any issues on the issues page if you encounter any bugs.
@@ -45,7 +45,7 @@ git pull https://github.com/59xa/DynamicWin.git
 > [!NOTE]
 > Only checkboxed features are currently available. Unimplemented features will be introduced as time passes.
 
-DynamicWin has a variety of features, currently including: <br>
+DynamicWin-Legacy has a variety of features, currently including: <br>
 
 ## Shortcuts
 - [x] `Ctrl + Win` Will hide the island (or show it again).
