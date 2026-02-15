@@ -97,6 +97,9 @@ jobs:
            /p:SelfContained=false `
            /p:PublishDir=publish\Release-${{ matrix.platform }}\
 
+    - name: List published files
+      run: dir publish\Release-${{ matrix.platform }}\
+
     - name: Build installer
       run: |
         iscc Other\DynamicWin-Legacy-Setup.iss `
