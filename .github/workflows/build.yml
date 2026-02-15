@@ -38,14 +38,12 @@
 
 name: .NET Core Desktop
 env:
-  DWAppVersion: v1.6.0r
+  DWAppVersion: v1.6.1r
 permissions:
   contents: write
 
 on:
   push:
-    branches: [ "release" ]
-  pull_request:
     branches: [ "release" ]
 
 jobs:
