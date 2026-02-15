@@ -108,7 +108,7 @@ jobs:
 
     - name: Generate SHA256 and MD5 hashes
       run: |
-        $installer = "Output\DynamicWinSetup-${{ matrix.platform }}.exe"
+        $installer = "Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe"
 
         $dir = Split-Path $installer
         if (-not (Test-Path $dir)) {
