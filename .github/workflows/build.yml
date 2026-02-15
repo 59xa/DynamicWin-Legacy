@@ -109,8 +109,18 @@ jobs:
     - name: Generate SHA256 and MD5 hashes
       run: |
         $installer = "Output\DynamicWinSetup-${{ matrix.platform }}.exe"
-        Get-FileHash $installer -Algorithm SHA256 | ForEach-Object { $_.Hash } | Out-File "$installer.sha256"
-        Get-FileHash $installer -Algorithm MD5 | ForEach-Object { $_.Hash } | Out-File "$installer.md5"
+
+        $dir = Split-Path $installer
+        if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Path $dir | Out-Null
+        }
+
+        if (Test-Path $installer) {
+            Get-FileHash $installer -Algorithm SHA256 | ForEach-Object { $_.Hash } | Out-File "$installer.sha256"
+            Get-FileHash $installer -Algorithm MD5    | ForEach-Object { $_.Hash } | Out-File "$installer.md5"
+        } else {
+            Write-Error "Installer not found: $installer"
+        }
 
     - name: Upload artefacts
       uses: actions/upload-artifact@v4
