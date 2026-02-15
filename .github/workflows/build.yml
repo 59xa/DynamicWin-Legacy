@@ -108,20 +108,24 @@ jobs:
         /DPlatform=${{ matrix.platform }}
 
     - name: Generate SHA256 and MD5 hashes
+      id: hashes
+      shell: pwsh
       run: |
         $installer = "Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe"
 
-        $dir = Split-Path $installer
-        if (-not (Test-Path $dir)) {
-            New-Item -ItemType Directory -Path $dir | Out-Null
+        if (!(Test-Path $installer)) {
+            Write-Error "Installer not found: $installer"
+            exit 1
         }
 
-        if (Test-Path $installer) {
-            Get-FileHash $installer -Algorithm SHA256 | ForEach-Object { $_.Hash } | Out-File "$installer.sha256"
-            Get-FileHash $installer -Algorithm MD5    | ForEach-Object { $_.Hash } | Out-File "$installer.md5"
-        } else {
-            Write-Error "Installer not found: $installer"
-        }
+        $sha256 = (Get-FileHash $installer -Algorithm SHA256).Hash
+        $md5    = (Get-FileHash $installer -Algorithm MD5).Hash
+
+        $sha256 | Out-File "$installer.sha256"
+        $md5    | Out-File "$installer.md5"
+
+        "sha256_${{ matrix.platform }}=$sha256" >> $env:GITHUB_OUTPUT
+        "md5_${{ matrix.platform }}=$md5" >> $env:GITHUB_OUTPUT
 
     - name: Upload artefacts
       uses: actions/upload-artifact@v4
@@ -133,18 +137,19 @@ jobs:
             Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
 
     - name: Create Github Release
+      if: matrix.platform == 'x64'
       uses: ncipollo/release-action@v1
       with:
         tag: ${{ env.DWAppVersion }}
         name: DynamicWin-Legacy ${{ env.DWAppVersion }} [${{ matrix.platform }}]
         body: |
-            \# What's new in ${{ env.DWAppVersion }}
+            # What's new in ${{ env.DWAppVersion }}
 
-            \### Checksums:
-            \`\`\`
-            SHA256:
-            MD5:
-            \`\`\`
+            ## Checksums:
+            ### x64
+            SHA256: `${{ steps.hashes.outputs.sha256_x64 }}`
+            MD5: `${{ steps.hashes.outputs.md5_x64 }}`
+
         artifacts: |
             Other\Output\DynamicWinSetup-x64.exe
             Other\Output\DynamicWinSetup-x64.exe.sha256
