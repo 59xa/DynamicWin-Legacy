@@ -135,7 +135,7 @@ jobs:
     - name: Generate release notes
       run: |
         $notes = @"
-# What is new in v1.6.0r
+# What is new in $version
 - Dedicated installers for both `x64` and `arm64` devices
 - New island/notch design shape adjustment
 - Topmost placement fixes
@@ -144,51 +144,52 @@ jobs:
 - Bug fixes and improvements (mainly with `InteropServices` calls on `MediaController.cs`)
 
 > [!NOTE]
-> _This update was intended to be released as `v1.5.1r`, but there are a lot of changes made to the point where it did not make sense anymore to consider publishing this as a minor update. Therefore this update will be released as `v1.6.0r`._
+> This update was intended to be released as `v1.5.1r`, but there are a lot of changes made to the point where it did not make sense anymore to consider publishing this as a minor update. Therefore this update will be released as `$version`.
 
-### Dedicated installers for both `x64` and `arm64` Windows devices
-Starting with **`v1.6.0r`**, DynamicWin-Legacy installers are now provided in both `x64` and `arm64` binaries!
+## Dedicated installers for both `x64` and `arm64` Windows devices
+Starting with **$version**, DynamicWin-Legacy installers are now provided in both `x64` and `arm64` binaries.
+
 While `arm64` devices are still allowed to install `x64` binaries, both options are provided regardless. However, it is recommended to install the binaries according to the device's specifications.
 
 > [!WARNING]
-> These release builds are now automated and are provided immediately the moment a new version is pushed to the `release` branch. Know that installations may not work, so please report these inconsistencies on the [issues page](https://github.com/59xa/DynamicWin-Legacy/issues).
+> These release builds are automated and are provided immediately when a new version is pushed to the `release` branch. Please report issues on the GitHub issues page.
 
-### Visual upgrades on island/notch
-With **`v1.6.0r`**, the island/notch goes through another makeover once again!
-This update converts the sharp edges for both island/notch modes to use squircles as the superellipse pathing, making the overlay look more fancy. Other UI elements also received this same treatment as part of this change.
+## Visual upgrades on island/notch
+With **$version**, the island/notch goes through another makeover.
 
-The overlay's font also receives an adjustment to use `SF Pro Display` instead of `Satoshi`.
+This update converts sharp edges into squircles using superellipse pathing, giving the overlay a more refined visual identity.
 
-\`AudioVisualiser.cs` gets an adjustment again... this time with rendering the sample frequencies properly by no longer keeping ranges per bar, making output and feel more accurate and similar to the dynamic island on iPhones.
+The overlay font now uses `SF Pro Display` instead of `Satoshi`.
 
-If `displayDotWhenIdle` setting is set to true, bar output will be consistent by clamping the lower volume output to the shape of a dot instead of going further down.
+`AudioVisualiser.cs` now renders sample frequencies more accurately and behaves closer to the real Dynamic Island.
 
-### Topmost adjustments
-Previously, I mentioned that topmost was to be removed for this update. Good news, it is here to stay but with constraints.
-For applications like `MyDockFinder`, the overlay will be forced down. Suggest using alternatives like `Droptop 4` instead.
+If `displayDotWhenIdle` is enabled, output clamps to a dot instead of collapsing further.
 
-### Progress bar adjustments
-As of this update, `DWProgressBar.cs` is deprecated in preference of `DWProgressBarEx.cs`.
-This change also affects `DWSlider.cs`, and this new implementation will be used across all UI elements that use the progress bar.
+## Topmost adjustments
+Topmost remains, but now respects certain application constraints.
 
-### Bug fixes and improvements
-With the release of `v1.5.0r1`, there were performance issues that caused the CPU usage to spike up mainly when fetching metadata from `MediaController.cs`.
-This new update addresses that issue, please continue to report performance degradation through the [issues page](https://github.com/59xa/DynamicWin-Legacy/issues) or in the Discord server.
+Applications like `MyDockFinder` may override placement. Alternatives like `Droptop 4` are recommended.
 
-### Future of DynamicWin-Legacy
-While updates are still being pushed out for DynamicWin-Legacy, expect the updates to stagnate as this repository slowly reaches end-of-life in the coming months.
-The good news, however, is that DynamicWin-Legacy will be superseded by a new project in the works! More information about this soon; but for now, V3 is confirmed.
+## Progress bar adjustments
+`DWProgressBar.cs` is now deprecated in favor of `DWProgressBarEx.cs`.
 
-### Continued support:
-- Your support truly means a lot to me as I continue to maintain DynamicWin-Legacy. Keep an eye out on this repository whenever a new release comes out.
-- Feel free to contribute to this project as you wish. Open any issues on the issues page if you encounter any bugs.
+This affects `DWSlider.cs` and all UI components using progress bars.
 
-### Checksums:
+## Bug fixes and improvements
+Fixes performance issues introduced in `v1.5.0r1`, particularly CPU spikes in `MediaController.cs`.
+
+## Future of DynamicWin-Legacy
+DynamicWin-Legacy is approaching end-of-life. A successor project is in development. V3 is confirmed.
+
+## Continued support
+Your support means everything. Contributions and issue reports are always welcome.
+
+## Checksums
 \`\`\`
-SHA256: 
-MD5: 
+SHA256:
+MD5:
 \`\`\`
-        "@
+"@
         $notes | Out-File release_notes.md -Encoding UTF8
 
     - name: Create Github Release
