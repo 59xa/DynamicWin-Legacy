@@ -192,11 +192,10 @@ MD5:
         $notes | Out-File release_notes.md -Encoding UTF8
 
     - name: Create Github Release
-      if: matrix.platform == 'x64'
       uses: ncipollo/release-action@v1
       with:
         tag: ${{ env.DWAppVersion }}
-        name: DynamicWin-Legacy ${{ env.DWAppVersion }}
+        name: DynamicWin-Legacy ${{ env.DWAppVersion }} [${{ matrix.platform }}]
         bodyFile: release_notes.md
         artifacts: |
             Other\Output\DynamicWinSetup-x64.exe
