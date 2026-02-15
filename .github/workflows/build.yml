@@ -37,6 +37,10 @@
 # refer to https://github.com/microsoft/github-actions-for-desktop-apps
 
 name: .NET Core Desktop
+env:
+  DWAppVersion: v1.6.0r
+permissions:
+  contents: write
 
 on:
   push:
@@ -58,7 +62,6 @@ jobs:
 
     env:
       Solution_Name: DynamicWin.sln
-      DWAppVersion: v1.6.0r
 
     steps:
     - name: Checkout
@@ -136,28 +139,61 @@ jobs:
             Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.sha256
             Other\Output\DynamicWinSetup-${{ matrix.platform }}.exe.md5
 
-    - name: Create Github Release
-      if: matrix.platform == 'x64'
-      uses: ncipollo/release-action@v1
-      with:
-        tag: ${{ env.DWAppVersion }}
-        name: DynamicWin-Legacy ${{ env.DWAppVersion }} [${{ matrix.platform }}]
-        body: |
+  release:
+    needs: build
+    runs-on: windows-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Recalculate hashes
+        id: hashes
+        shell: pwsh
+        run: |
+          $x64 = Get-ChildItem -Recurse artifacts -Filter "DynamicWinSetup-x64.exe"
+          $arm = Get-ChildItem -Recurse artifacts -Filter "DynamicWinSetup-arm64.exe"
+
+          $sha256_x64 = (Get-FileHash $x64.FullName -Algorithm SHA256).Hash
+          $md5_x64    = (Get-FileHash $x64.FullName -Algorithm MD5).Hash
+
+          $sha256_arm = (Get-FileHash $arm.FullName -Algorithm SHA256).Hash
+          $md5_arm    = (Get-FileHash $arm.FullName -Algorithm MD5).Hash
+
+          "sha256_x64=$sha256_x64" >> $env:GITHUB_OUTPUT
+          "md5_x64=$md5_x64" >> $env:GITHUB_OUTPUT
+          "sha256_arm64=$sha256_arm" >> $env:GITHUB_OUTPUT
+          "md5_arm64=$md5_arm" >> $env:GITHUB_OUTPUT
+
+      - name: Create Github Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ env.DWAppVersion }}
+          name: DynamicWin-Legacy ${{ env.DWAppVersion }}
+          body: |
             # What's new in ${{ env.DWAppVersion }}
 
-            ## Checksums:
+            ## Checksums
+
             ### x64
             SHA256: `${{ steps.hashes.outputs.sha256_x64 }}`
             MD5: `${{ steps.hashes.outputs.md5_x64 }}`
 
-        artifacts: |
-            Other\Output\DynamicWinSetup-x64.exe
-            Other\Output\DynamicWinSetup-x64.exe.sha256
-            Other\Output\DynamicWinSetup-x64.exe.md5
-            Other\Output\DynamicWinSetup-arm64.exe
-            Other\Output\DynamicWinSetup-arm64.exe.sha256
-            Other\Output\DynamicWinSetup-arm64.exe.md5
-        draft: true
-        prerelease: false
-        skipIfReleaseExists: true
-        replacesArtifacts: true
+            ### arm64
+            SHA256: `${{ steps.hashes.outputs.sha256_arm64 }}`
+            MD5: `${{ steps.hashes.outputs.md5_arm64 }}`
+
+          artifacts: |
+            artifacts/**/DynamicWinSetup-x64.exe
+            artifacts/**/DynamicWinSetup-x64.exe.sha256
+            artifacts/**/DynamicWinSetup-x64.exe.md5
+            artifacts/**/DynamicWinSetup-arm64.exe
+            artifacts/**/DynamicWinSetup-arm64.exe.sha256
+            artifacts/**/DynamicWinSetup-arm64.exe.md5
+
+          draft: true
+          prerelease: false
+          skipIfReleaseExists: true
+          replacesArtifacts: true
