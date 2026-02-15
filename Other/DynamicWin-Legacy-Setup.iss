@@ -1,5 +1,5 @@
-﻿#define DWAppVersion GetStringParam('DWAppVersion', 'v1.6.0r')
-#define Platform GetStringParam('Platform', 'x64')
+﻿#define DWAppVersion GetStringParam("DWAppVersion", "v1.6.0r")
+#define Platform GetStringParam("Platform", "x64")
 
 [Setup]
 AppName=DynamicWin
