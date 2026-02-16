@@ -131,7 +131,6 @@ namespace DynamicWin.Main
             _trayIcon.ContextMenuStrip.Opening += (s, e) =>
             {
                 this.Topmost = false;
-                Activate();
             };
 
             _trayIcon.ContextMenuStrip.Closing += (s, e) =>

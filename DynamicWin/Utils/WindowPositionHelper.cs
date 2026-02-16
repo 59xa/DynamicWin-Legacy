@@ -15,8 +15,6 @@ namespace DynamicWin.Utils
             var screen = screens[clampedIndex];
             var bounds = screen.Bounds;
 
-            double windowWidth = window is { ActualWidth: > 0 } ? window.ActualWidth : window.Width;
-
             // Get DPI scaling for the target monitor
             double dpiX = 96.0, dpiY = 96.0;
             var source = PresentationSource.FromVisual(window);
@@ -37,11 +35,12 @@ namespace DynamicWin.Utils
             double scaleX = dpiX / 96.0;
             double scaleY = dpiY / 96.0;
 
-            double targetLeft = (bounds.Left + (bounds.Width - windowWidth * scaleX) / 2.0) / scaleX;
-            double targetTop = bounds.Top / scaleY;
-
-            window.Left = targetLeft;
-            window.Top = targetTop;
+            // Aggressively place window at the very top and full width of the physical screen (ignoring taskbar)
+            var screenBounds = screen.Bounds;
+            window.Left = screenBounds.Left / scaleX;
+            window.Top = screenBounds.Top / scaleY;
+            window.Width = screenBounds.Width / scaleX;
+            window.Height = screenBounds.Height / scaleY;
         }
     }
 }
