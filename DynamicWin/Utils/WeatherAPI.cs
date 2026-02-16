@@ -19,7 +19,7 @@ using System.Collections.Generic;
 *   Author:                 59xa
 *   GitHub:                 https://github.com/59xa
 *   Implementation Date:    16 May 2025
-*   Last Modified:          02 January 2026
+*   Last Modified:          15 February 2026
 *   
 *   TO MAINTAINERS:
 *    - When fetching weather data, the API might hallucinate, and retrieve forecast data from a different city.
@@ -69,25 +69,30 @@ namespace DynamicWin.Utils
         /// <param name="type">"default" for geo IP, "city" for user-selected</param>
         public void StartFetching(int countryIndex, int cityIndex, string? type = null)
         {
+            bool shouldStart = false;
             lock (_lock)
             {
                 _activeClients++;
                 if (_activeClients == 1)
                 {
                     _internalCts = new CancellationTokenSource();
-                    // Start the loop without blocking the caller
-                    _ = Task.Run(() => Fetch(countryIndex, cityIndex, type, _internalCts.Token, _internalCts));
-#if DEBUG
-                    Debug.WriteLine("[WEATHER API] StartFetching invoked; loop started.");
-#endif
-                }
-                else
-                {
-#if DEBUG
-                    Debug.WriteLine("[WEATHER API] StartFetching invoked; already running (refcount={0}).", _activeClients);
-#endif
+                    shouldStart = true;
                 }
             }
+            if (shouldStart)
+            {
+                // Start the loop without blocking the caller
+                _ = Task.Run(() => Fetch(countryIndex, cityIndex, type, _internalCts.Token, _internalCts));
+#if DEBUG
+                Debug.WriteLine("[WEATHER API] StartFetching invoked; loop started.");
+#endif
+            }
+#if DEBUG
+            else
+            {
+                Debug.WriteLine("[WEATHER API] StartFetching invoked; already running (refcount={0}).", _activeClients);
+            }
+#endif
         }
 
         /// <summary>
@@ -117,6 +122,18 @@ namespace DynamicWin.Utils
 #endif
                 }
             }
+        }
+
+        /// <summary>
+        /// Immediately fetch and push the latest weather data, bypassing the background loop.
+        /// </summary>
+        public async Task ForceRefresh(int countryIndex, int cityIndex, string? type = null)
+        {
+            try
+            {
+                await Fetch(countryIndex, cityIndex, type, CancellationToken.None, null);
+            }
+            catch { }
         }
 
         /// <summary>
