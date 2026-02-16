@@ -519,7 +519,7 @@ namespace DynamicWin.UI.Menu.Menus
                 Font = Res.SFProBold
             });
 
-            objects.Add(new DWText(island, $"Software architecture: {DynamicWinMain.SoftwareArchitecture.ToString().ToLower()}", new Vec2(25, -25), UIAlignment.TopLeft)
+            objects.Add(new DWText(island, $"Software architecture: {DynamicWinMain.ProcessArchitecture.ToString().ToLower()}", new Vec2(25, -25), UIAlignment.TopLeft)
             {
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),
