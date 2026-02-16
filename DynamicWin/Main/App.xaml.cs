@@ -17,8 +17,8 @@ namespace DynamicWin
 {
     public partial class DynamicWinMain : System.Windows.Application
     {
-        public static MMDevice defaultDevice;
-        public static MMDevice defaultMicrophone;
+        public static MMDevice? defaultDevice;
+        public static MMDevice? defaultMicrophone;
 
         public static string Version => "v1.6.1b";
         public static Channel ReleaseStream => Channel.Release;
@@ -50,9 +50,9 @@ namespace DynamicWin
             }
         }
 
-        Mutex mutex;
-        private System.Timers.Timer topmostTimer; // use System.Timers.Timer to avoid creating Win32 dispatcher timers
-        private MainForm mainForm;
+        private Mutex? mutex;
+        private System.Timers.Timer? topmostTimer; // use System.Timers.Timer to avoid creating Win32 dispatcher timers
+        private MainForm? mainForm;
 
         protected override void OnStartup(StartupEventArgs e)
         {
