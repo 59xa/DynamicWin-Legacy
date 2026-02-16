@@ -1,5 +1,6 @@
 {
-  "version": "v1.6.0r",
-  "downloadUri": "https://www.dropbox.com/scl/fi/xqt43g5mhkzzaqtsw0id2/update.zip?rlkey=9k4pejtf4janbm2saqqeoi92d&st=hlbmpmr2&dl=1",
-  "releaseStream": "canary"
+  "version": "v1.6.1b",
+  "downloadUri": "https://www.dropbox.com/scl/fi/exeo8a1fi65npmm03agd1/update.zip?rlkey=2woio3wye7a25wv9r7cbzer1i&st=9ykswvle&dl=1",
+  "releaseStream": "canary",
+  "_disclaimer": "This JSON file will no longer be updated as v1.6.1r and beyond will provide binaries for x64 and arm64 devices separately."
 }
