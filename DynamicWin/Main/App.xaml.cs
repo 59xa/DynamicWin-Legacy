@@ -22,6 +22,7 @@ namespace DynamicWin
 
         public static string Version => "v1.6.0r";
         public static Channel ReleaseStream => Channel.Release;
+        public static Architecture SoftwareArchitecture => RuntimeInformation.ProcessArchitecture;
 
         [STAThread]
         public static void Main()

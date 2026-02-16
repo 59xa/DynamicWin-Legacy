@@ -476,6 +476,14 @@ namespace DynamicWin.UI.Menu.Menus
                 Font = Res.SFProBold
             });
 
+            objects.Add(new DWText(island, $"Software architecture: {DynamicWinMain.SoftwareArchitecture.ToString().ToLower()}", new Vec2(25, -25), UIAlignment.TopLeft)
+            {
+                Color = Theme.TextMain,
+                Anchor = new Vec2(0, 0),
+                TextSize = 13,
+                Font = Res.SFProBold
+            });
+
             objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, -25), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
