@@ -100,7 +100,7 @@ jobs:
            /p:PublishDir=${{ github.workspace }}\publish\Release-${{ matrix.platform }}\
 
     - name: Publish Updater
-      run: msbuild DynamicWin/Updater.csproj `
+      run: msbuild Updater/Updater.csproj `
        /t:Publish `
        /p:Configuration=Release `
        /p:RuntimeIdentifier=win-${{ matrix.platform }} `
