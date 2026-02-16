@@ -90,8 +90,8 @@ jobs:
       env:
         Configuration: ${{ matrix.configuration }}
 
-    - name: Publish application
-      run: msbuild DynamicWin/DynamicWin.csproj `
+    - name: Publish solution
+      run: msbuild $env:Solution_Name `
            /t:Publish `  
            /p:Configuration=Release `
            /p:Platform=${{ matrix.platform }} `
