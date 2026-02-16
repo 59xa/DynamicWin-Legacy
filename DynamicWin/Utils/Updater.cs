@@ -68,7 +68,7 @@ namespace DynamicWin.Utils
                 Debug.WriteLine($"[UPDATER]: selected stream = {(Settings.ReleaseStream == 1 ? "canary" : "release")}");
 #endif
 
-                var release = await FetchRemote("version", DynamicWinMain.ProcessArchitecture);
+                var release = await FetchRemote("version-release", DynamicWinMain.ProcessArchitecture);
 
 #if DEBUG
                 if (release != null)
