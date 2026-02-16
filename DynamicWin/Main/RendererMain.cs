@@ -19,7 +19,7 @@ namespace DynamicWin.Main
 {
     public class RendererMain : SKElement
     {
-        private IslandObject islandObject;
+        private readonly IslandObject islandObject;
         public IslandObject MainIsland => islandObject;
         private List<UIObject> objects => MenuManager.Instance.ActiveMenu.UiObjects;
 
@@ -31,8 +31,8 @@ namespace DynamicWin.Main
         public static Vec2 ScreenDimensions => new Vec2(MainForm.Instance.Width, MainForm.Instance.Height);
         public static Vec2 CursorPosition => new Vec2(Mouse.GetPosition(MainForm.Instance).X, Mouse.GetPosition(MainForm.Instance).Y);
 
-        private static RendererMain instance;
-        public static RendererMain Instance => instance;
+        private static RendererMain? instance;
+        public static RendererMain? Instance => instance;
 
         // Guard so the startup updater sequence runs only once per application lifetime
         private static bool startupUpdaterSequenceStarted = false;
@@ -42,8 +42,8 @@ namespace DynamicWin.Main
         public float blurOverride = 0f;
         public float alphaOverride = 1f;
 
-        public Action<float> onUpdate;
-        public Action<SKCanvas> onDraw;
+        public Action<float>? onUpdate;
+        public Action<SKCanvas>? onDraw;
 
         private Stopwatch? updateStopwatch;
         private int initialScreenBrightness = 0;

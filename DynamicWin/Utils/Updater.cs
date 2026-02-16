@@ -4,17 +4,18 @@ using System.Net.Http;
 using System.Text.Json;
 using System;
 using DynamicWin.Main;
+using System.Runtime.InteropServices;
 
 /*
  *
  *  Overview:
  *      - Updater logic to handle automatic updates rather than user manually updating
- *      - from the repository holding the codebase (DynamicWin-Legacy/stable).
+ *      - from the repository holding the codebase (DynamicWin-Legacy/release).
  *      
  *  Author:                 59xa
  *  Github:                 https://github.com/59xa
  *  Implementation Date:    27 November 2025
- *  Last Modified:          10 January 2026
+ *  Last Modified:          15 February 2026
  *
  */
 
@@ -31,11 +32,23 @@ namespace DynamicWin.Utils
         /// <param name="file">The name of the JSON file to fetch from the remote repository. Cannot be null or empty.</param>
         /// <returns>A task that represents the asynchronous operation. The task result contains an <see cref="AppVersion"/>
         /// object if the file is successfully retrieved and deserialised; otherwise, <see langword="null"/>.</returns>
-        private async Task<AppVersion?> FetchRemote(string file)
+        private async Task<AppVersion?> FetchRemote(string file, Architecture cpuArchitecture)
         {
             using HttpClient client = new();
+
+            string suffix = cpuArchitecture switch
+            {
+                Architecture.X64 => "-x64",
+                Architecture.Arm64 => "-arm64",
+                _ => string.Empty // In case none matches architecture
+            };
+
             string json = await client.GetStringAsync(
-                $"https://raw.githubusercontent.com/59xa/DynamicWin-Legacy/refs/heads/updater/{file}");
+                $"https://raw.githubusercontent.com/59xa/DynamicWin-Legacy/refs/heads/updater/{file}{suffix}.json");
+
+#if DEBUG
+            Debug.WriteLine(json);
+#endif
 
             var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
             return JsonSerializer.Deserialize<AppVersion>(json, options);
@@ -59,7 +72,7 @@ namespace DynamicWin.Utils
                 Debug.WriteLine($"[UPDATER]: selected stream = {(Settings.ReleaseStream == 1 ? "canary" : "release")}");
 #endif
 
-                var release = await FetchRemote("version.json");
+                var release = await FetchRemote("version-release", DynamicWinMain.ProcessArchitecture);
 
 #if DEBUG
                 if (release != null)
@@ -106,7 +119,7 @@ namespace DynamicWin.Utils
                     return null;
                 }
 
-                var canary = await FetchRemote("version-canary.json");
+                var canary = await FetchRemote("version-canary", DynamicWinMain.ProcessArchitecture);
 
 #if DEBUG
                 if (canary != null)

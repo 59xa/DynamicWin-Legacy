@@ -393,12 +393,44 @@ namespace DynamicWin.UI.Widgets.Small
         {
             base.OnDestroy();
             try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged; } catch { }
+            // Ensure animation is finished and thumbnail is visible
+            ForceFinishAnimation();
             // Dispose owned bitmaps
             lock (mediaLock)
             {
                 if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; }
                 if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; }
                 if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+            }
+        }
+
+        /// <summary>
+        /// Force the animator to finish and reset blur/flip state, ensuring thumbnail is always visible.
+        /// </summary>
+        public void ForceFinishAnimation()
+        {
+            animator.ForceFinish();
+            lock (mediaLock)
+            {
+                if (pendingBitmap != null)
+                {
+                    if (thumbnailBitmap != null)
+                    {
+                        try { thumbnailBitmap.Dispose(); } catch { }
+                    }
+                    thumbnailBitmap = pendingBitmap;
+                    currentBitmapFingerprint = pendingBitmapFingerprint;
+                    pendingBitmap = null;
+                    pendingBitmapFingerprint = null;
+                    currentMediaKey = pendingMediaKey;
+                    pendingMediaKey = null;
+                    pendingMedia = null;
+                }
+                if (previousBitmap != null)
+                {
+                    try { previousBitmap.Dispose(); } catch { }
+                    previousBitmap = null;
+                }
             }
         }
 

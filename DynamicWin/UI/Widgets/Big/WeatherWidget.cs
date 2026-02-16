@@ -190,7 +190,7 @@ namespace DynamicWin.UI.Widgets.Big
 
         UIObject _LocationTextReplacement;
 
-        static WeatherAPI _WeatherAPI;
+        static WeatherAPI _WeatherAPI => WeatherAPI.Default;
 
         DWImage _ForecastIcon;
 
@@ -259,7 +259,7 @@ namespace DynamicWin.UI.Widgets.Big
             };
 
             // Initialises weather API
-            if (_WeatherAPI == null) _WeatherAPI = new WeatherAPI();
+            // Always use singleton instance
 
             // Updates weather information display
             _WeatherAPI._OnWeatherDataReceived += OnWeatherDataReceived;
@@ -333,11 +333,29 @@ namespace DynamicWin.UI.Widgets.Big
             if (isEnabled)
             {
                 StartOrRestartFetchBasedOnSettings();
+                RefreshWeatherDisplay();
+                // Force immediate metadata/UI refresh
+                _ = _WeatherAPI.ForceRefresh(RegisterWeatherWidgetSettings.saveData.countryIndex, RegisterWeatherWidgetSettings.saveData.cityIndex,
+                    RegisterWeatherWidgetSettings.saveData.countryIndex == 0 ? "default" : "city");
             }
             else
             {
                 _WeatherAPI.StopFetching();
             }
+        }
+
+        // Force refresh of weather display from last known data and settings
+        private void RefreshWeatherDisplay()
+        {
+            if (!string.IsNullOrEmpty(lastWeatherData.city))
+            {
+                _TemperatureText.SetText(RegisterWeatherWidgetSettings.saveData.useCelsius ? lastWeatherData.celsius : lastWeatherData.fahrenheit);
+                _ForecastText.SetText(lastWeatherData.weatherText);
+                _LocationText.SetText(lastWeatherData.city);
+                UpdateIcon(lastWeatherData.weatherText);
+            }
+            _LocationTextReplacement.SilentSetActive(RegisterWeatherWidgetSettings.saveData.hideLocation);
+            _LocationText.SilentSetActive(!RegisterWeatherWidgetSettings.saveData.hideLocation);
         }
 
         // Helper to start fetching using current saved configuration

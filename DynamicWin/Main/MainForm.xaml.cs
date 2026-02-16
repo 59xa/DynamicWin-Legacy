@@ -71,6 +71,7 @@ namespace DynamicWin.Main
             InitializeComponent();
 
             _trayIcon = new Forms.NotifyIcon();
+            _trayIcon.MouseUp += TrayIcon_MouseUp;
 
             // Initialise mouse tracking
             _lastMouseMoveTime = DateTime.UtcNow;
@@ -130,7 +131,6 @@ namespace DynamicWin.Main
             _trayIcon.ContextMenuStrip.Opening += (s, e) =>
             {
                 this.Topmost = false;
-                Activate();
             };
 
             _trayIcon.ContextMenuStrip.Closing += (s, e) =>
@@ -400,6 +400,40 @@ namespace DynamicWin.Main
         internal void DisposeTrayIcon()
         {
             _trayIcon.Dispose();
+        }
+
+        private void TrayIcon_MouseUp(object? sender, Forms.MouseEventArgs e)
+        {
+            if (e.Button == Forms.MouseButtons.Right)
+            {
+                var screen = Forms.Screen.FromPoint(Forms.Control.MousePosition);
+
+                var iconX = Forms.Control.MousePosition.X;
+                var iconY = Forms.Control.MousePosition.Y;
+
+                float dpiScale = 1.0f;
+                using (var g = System.Drawing.Graphics.FromHwnd(IntPtr.Zero))
+                {
+                    dpiScale = g.DpiX / 96.0f;
+                }
+                int iconWidth = (int)(16 * dpiScale);
+
+                int menuWidth = 200;
+                if (_trayIcon.ContextMenuStrip != null && _trayIcon.ContextMenuStrip.Items.Count > 0)
+                {
+                    _trayIcon.ContextMenuStrip.Show(0, -1000);
+                    menuWidth = _trayIcon.ContextMenuStrip.Width;
+                    _trayIcon.ContextMenuStrip.Hide();
+                }
+
+                int menuX = iconX - (menuWidth / 2) + (iconWidth / 2);
+                int menuY = iconY;
+
+                if (menuX < screen.WorkingArea.Left) menuX = screen.WorkingArea.Left;
+                if (menuX + menuWidth > screen.WorkingArea.Right) menuX = screen.WorkingArea.Right - menuWidth;
+
+                _trayIcon.ContextMenuStrip?.Show(menuX, menuY);
+            }
         }
     }
 }

@@ -121,5 +121,17 @@ namespace DynamicWin.Utils
         }
 
         public bool IsFlipping => State == AnimState.Flip;
+
+        /// <summary>
+        /// Forces the animation to finish immediately, resetting state and blur.
+        /// </summary>
+        public void ForceFinish()
+        {
+            State = AnimState.Idle;
+            AnimTimer = 0f;
+            BlurAmount = 0f;
+            midSwapCalled = false;
+            lastHasPending = false;
+        }
     }
 }

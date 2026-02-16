@@ -16,7 +16,7 @@ using Windows.Media.Control;
  *   Author:                 59xa
  *   GitHub:                 https://github.com/59xa
  *   Implementation Date:    26 December 2025
- *   Last Modified:          27 January 2026
+ *   Last Modified:          15 February 2026
  *
  */
 
@@ -1304,13 +1304,7 @@ namespace DynamicWin.UI.UIElements.Custom
         // Helper to reset animator state
         private void animatorReset()
         {
-            // MediaAnimator does not have a Reset method, so forcibly set state
-            var field = typeof(MediaAnimator).GetField("State", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-            if (field != null) field.SetValue(animator, MediaAnimator.AnimState.Idle);
-            var timerField = typeof(MediaAnimator).GetField("AnimTimer", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-            if (timerField != null) timerField.SetValue(animator, 0f);
-            var blurField = typeof(MediaAnimator).GetField("BlurAmount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-            if (blurField != null) blurField.SetValue(animator, 0f);
+            animator.ForceFinish();
         }
 
         public override void Draw(SKCanvas canvas)

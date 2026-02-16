@@ -39,6 +39,8 @@ namespace DynamicWin.UI.Menu.Menus
 
         bool changedTheme = false;
 
+        DWMultiSelectionButton bigMenuModeSelector;
+
         void SaveAndBack()
         {
             Settings.AllowBlur = allowBlur.IsChecked;
@@ -50,6 +52,18 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.ToggleHomeMenuShadow = toggleHomeMenuShadow.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
+
+            // Save the selected default big menu mode
+            if (bigMenuModeSelector != null)
+            {
+                Settings.DefaultBigMenuMode = bigMenuModeSelector.SelectedIndex switch
+                {
+                    0 => HomeMenu.BigMenuMode.Widgets,
+                    1 => HomeMenu.BigMenuMode.Tray,
+                    2 => HomeMenu.BigMenuMode.Media,
+                    _ => HomeMenu.BigMenuMode.Widgets
+                };
+            }
 
             DynamicWinMain.UpdateStartup();
 
@@ -300,6 +314,35 @@ namespace DynamicWin.UI.Menu.Menus
             }
 
             {
+                var bigMenuModeTitle = new DWText(island, "Default Big Menu Mode", new Vec2(25, 0), UIAlignment.TopLeft);
+                bigMenuModeTitle.Font = Res.SFProBold;
+                bigMenuModeTitle.TextSize = 15;
+                bigMenuModeTitle.Anchor.X = 0;
+                objects.Add(bigMenuModeTitle);
+                var bigMenuModes = new string[] { "Widgets", "Tray", "Media" };
+                bigMenuModeSelector = new DWMultiSelectionButton(island, bigMenuModes, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
+                bigMenuModeSelector.SelectedIndex = Settings.DefaultBigMenuMode switch
+                {
+                    HomeMenu.BigMenuMode.Widgets => 0,
+                    HomeMenu.BigMenuMode.Tray => 1,
+                    HomeMenu.BigMenuMode.Media => 2,
+                    _ => 0
+                };
+                bigMenuModeSelector.Anchor.X = 0;
+                bigMenuModeSelector.onClick += (index) =>
+                {
+                    Settings.DefaultBigMenuMode = index switch
+                    {
+                        0 => HomeMenu.BigMenuMode.Widgets,
+                        1 => HomeMenu.BigMenuMode.Tray,
+                        2 => HomeMenu.BigMenuMode.Media,
+                        _ => HomeMenu.BigMenuMode.Widgets
+                    };
+                };
+                objects.Add(bigMenuModeSelector);
+            }
+
+            {
                 var themeTitle = new DWText(island, "Themes", new Vec2(25, 0), UIAlignment.TopLeft);
                 themeTitle.Font = Res.SFProBold;
                 themeTitle.TextSize = 15;
@@ -473,6 +516,14 @@ namespace DynamicWin.UI.Menu.Menus
                 Color = Theme.TextMain,
                 Anchor = new Vec2(0, 0),
                 TextSize = 15,
+                Font = Res.SFProBold
+            });
+
+            objects.Add(new DWText(island, $"Software architecture: {DynamicWinMain.ProcessArchitecture.ToString().ToLower()}", new Vec2(25, -25), UIAlignment.TopLeft)
+            {
+                Color = Theme.TextMain,
+                Anchor = new Vec2(0, 0),
+                TextSize = 13,
                 Font = Res.SFProBold
             });
 

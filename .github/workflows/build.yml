@@ -38,7 +38,7 @@
 
 name: build
 env:
-  DWAppVersion: v1.6.0r
+  DWAppVersion: v1.6.1r
 permissions:
   contents: write
 
@@ -99,7 +99,7 @@ jobs:
            /p:SelfContained=false `
            /p:PublishDir=${{ github.workspace }}\publish\Release-${{ matrix.platform }}\
 
-    - name: Publish Updater
+    - name: Publish updater
       run: msbuild Updater/Updater.csproj `
        /t:Publish `
        /p:Configuration=Release `
