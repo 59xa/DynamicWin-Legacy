@@ -36,7 +36,7 @@
 # For a complete CI/CD sample to get started with GitHub Action workflows for Desktop Applications,
 # refer to https://github.com/microsoft/github-actions-for-desktop-apps
 
-name: .NET Core Desktop
+name: build
 env:
   DWAppVersion: v1.6.1r
 permissions:
@@ -99,6 +99,14 @@ jobs:
            /p:SelfContained=false `
            /p:PublishDir=${{ github.workspace }}\publish\Release-${{ matrix.platform }}\
 
+    - name: Publish Updater
+      run: msbuild Updater/Updater.csproj `
+       /t:Publish `
+       /p:Configuration=Release `
+       /p:RuntimeIdentifier=win-${{ matrix.platform }} `
+       /p:SelfContained=false `
+       /p:PublishDir=${{ github.workspace }}\publish\Release-${{ matrix.platform }}\
+
     - name: List published files
       run: dir publish\Release-${{ matrix.platform }}\
 
@@ -140,7 +148,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Download all artifacts
+      - name: Download all artefacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
