@@ -48,10 +48,18 @@ namespace DynamicWin.Main
         public static List<string> smallWidgetsMiddle;
         public static List<string> bigWidgets;
 
+        private static HomeMenu.BigMenuMode defaultBigMenuMode = HomeMenu.BigMenuMode.Widgets;
+        public static HomeMenu.BigMenuMode DefaultBigMenuMode
+        {
+            get => defaultBigMenuMode;
+            set => defaultBigMenuMode = value;
+        }
+
         public static void InitializeSettings()
         {
             try
             {
+
 
                 if (SaveManager.Contains("settings"))
                 {
@@ -72,6 +80,19 @@ namespace DynamicWin.Main
                     Theme = (int)((Int64)SaveManager.Get("settings.theme"));
                     ScreenIndex = (int)((Int64)SaveManager.Get("settings.screenindex"));
                     ReleaseStream = SaveManager.Contains("settings.ReleaseStream") ? (int)((Int64)SaveManager.Get("settings.ReleaseStream")) : 0;
+
+                    if (SaveManager.Contains("settings.DefaultBigMenuMode"))
+                    {
+                        int mode = (int)(Int64)SaveManager.Get("settings.DefaultBigMenuMode");
+                        if (Enum.IsDefined(typeof(HomeMenu.BigMenuMode), mode))
+                            DefaultBigMenuMode = (HomeMenu.BigMenuMode)mode;
+                        else
+                            DefaultBigMenuMode = HomeMenu.BigMenuMode.Widgets;
+                    }
+                    else
+                    {
+                        DefaultBigMenuMode = HomeMenu.BigMenuMode.Widgets;
+                    }
 
                     Settings.smallWidgetsLeft = new List<string>();
                     Settings.smallWidgetsRight = new List<string>();
@@ -173,6 +194,8 @@ namespace DynamicWin.Main
             SaveManager.Add("settings.smallwidgetsright", smallWidgetsRight);
             SaveManager.Add("settings.smallwidgetsmiddle", smallWidgetsMiddle);
             SaveManager.Add("settings.bigwidgets", bigWidgets);
+
+            SaveManager.Add("settings.DefaultBigMenuMode", (int)DefaultBigMenuMode);
 
             SaveManager.SaveAll();
         }

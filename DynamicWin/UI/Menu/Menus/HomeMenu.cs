@@ -58,9 +58,27 @@ namespace DynamicWin.UI.Menu.Menus
 
         public override Vec2 IslandSizeBig()
         {
-            Vec2 size = new Vec2(275, 145);
-
+            // Use different sizing logic depending on the current big menu mode
+            if (currentBigMenuMode == BigMenuMode.Tray)
             {
+                // Tray mode
+                return new Vec2(350, 250);
+            }
+            else if (currentBigMenuMode == BigMenuMode.Media)
+            {
+                // Media mode
+                float desiredMediaWidth = 440f;
+                float desiredMediaHeight = 110f;
+                float horizontalPadding = 60f;
+                float topContainerHeight = 30f;
+                float width = desiredMediaWidth + horizontalPadding;
+                float height = desiredMediaHeight + bCD + topContainerHeight + topSpacing;
+                return new Vec2(width, height);
+            }
+            else // Widgets mode (default)
+            {
+                Vec2 size = new Vec2(275, 145);
+
                 float sizeTogetherBiggest = 0f;
                 float sizeTogether = 0f;
 
@@ -75,10 +93,8 @@ namespace DynamicWin.UI.Menu.Menus
                 }
 
                 size.X = (float)Math.Max(size.X, sizeTogetherBiggest);
-            }
 
-            {
-                float sizeTogetherBiggest = 0f;
+                sizeTogetherBiggest = 0f;
 
                 for (int i = 0; i < bigWidgets.Count; i++)
                 {
@@ -92,34 +108,9 @@ namespace DynamicWin.UI.Menu.Menus
 
                 // Set the container height to the total height of all rows
                 size.Y = Math.Max(size.Y, sizeTogetherBiggest);
+
+                return size;
             }
-
-            // When not in widget mode (showing tray) use fixed height
-            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Tray)
-            {
-                size.Y = 250;
-            }
-
-            // When Media view is active, ensure the island is large enough to contain the media panel
-            if (!isWidgetMode && currentBigMenuMode == BigMenuMode.Media)
-            {
-                // Keep in sync with the size used when rendering the media UIObject in Update()
-                float desiredMediaWidth = 440f;
-                float desiredMediaHeight = 110;
-
-                // Horizontal padding to give the media panel some inset from island edges
-                float horizontalPadding = 60f;
-
-                // Top container height (approximate) used by the top buttons
-                float topContainerHeight = 30f;
-
-                size.X = Math.Max(size.X, desiredMediaWidth + horizontalPadding);
-
-                // Add bCD (bottom container offset) + topContainerHeight + topSpacing to ensure vertical space
-                size.Y = desiredMediaHeight + bCD + topContainerHeight + topSpacing;
-            }
-
-            return size;
         }
 
         UIObject smallWidgetsContainer;
@@ -138,10 +129,13 @@ namespace DynamicWin.UI.Menu.Menus
 
         // Enum to track which big menu is active
         public enum BigMenuMode { Widgets, Tray, Media }
-        public BigMenuMode currentBigMenuMode = BigMenuMode.Widgets;
+        public BigMenuMode currentBigMenuMode;
 
         public override List<UIObject> InitializeMenu(IslandObject island)
         {
+            // Set currentBigMenuMode from user setting
+            currentBigMenuMode = Settings.DefaultBigMenuMode;
+
             var objects = base.InitializeMenu(island);
 
             smallWidgetsContainer = new UIObject(island, Vec2.zero, IslandSize(), UIAlignment.Center);
