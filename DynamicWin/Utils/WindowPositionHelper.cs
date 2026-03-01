@@ -1,3 +1,4 @@
+using DynamicWin.Main;
 using System;
 using System.Windows;
 using System.Windows.Forms;
@@ -14,6 +15,8 @@ namespace DynamicWin.Utils
             int clampedIndex = Math.Clamp(monitorIndex, 0, screens.Length - 1);
             var screen = screens[clampedIndex];
             var bounds = screen.Bounds;
+
+            double windowWidth = window is { ActualWidth: > 0 } ? window.ActualWidth : window.Width;
 
             // Get DPI scaling for the target monitor
             double dpiX = 96.0, dpiY = 96.0;
@@ -35,12 +38,21 @@ namespace DynamicWin.Utils
             double scaleX = dpiX / 96.0;
             double scaleY = dpiY / 96.0;
 
-            // Aggressively place window at the very top and full width of the physical screen (ignoring taskbar)
             var screenBounds = screen.Bounds;
-            window.Left = screenBounds.Left / scaleX;
-            window.Top = screenBounds.Top / scaleY;
-            window.Width = screenBounds.Width / scaleX;
-            window.Height = screenBounds.Height / scaleY;
+            double targetLeft = (bounds.Left + (bounds.Width - windowWidth * scaleX) / 2.0) / scaleX;
+            double targetTop = screenBounds.Top / scaleY;
+
+            const double epsilon = 1.0;
+
+            if (double.IsNaN(window.Left) || Math.Abs(window.Left - targetLeft) > epsilon)
+                window.Left = targetLeft;
+
+            if (double.IsNaN(window.Top) || Math.Abs(window.Top - targetTop) > epsilon)
+                window.Top = targetTop;
+
+            double desiredHeight = !Settings.ReduceWorkingArea ? screenBounds.Height / scaleY : 500.0;
+            if (double.IsNaN(window.Height) || Math.Abs(window.Height - desiredHeight) > epsilon)
+                window.Height = desiredHeight;
         }
     }
 }

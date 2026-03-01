@@ -43,7 +43,36 @@ namespace DynamicWin.Main
         public static int ScreenIndex { get => activeScreenIndex; set => activeScreenIndex = value; }
         public static int ReleaseStream { get => releaseStream; set => releaseStream = value; }
         public static bool AllowAutomaticUpdates { get => allowAutomaticUpdates; set => allowAutomaticUpdates = value; }
-        public static bool ReduceWorkingArea { get => reduceWorkingArea; set => reduceWorkingArea = value; }
+        public static bool ReduceWorkingArea
+        {
+            get => reduceWorkingArea;
+            set
+            {
+                reduceWorkingArea = value;
+
+                try
+                {
+                    if (Application.Current != null)
+                    {
+                        Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            try
+                            {
+                                if (MainForm.Instance != null)
+                                    WindowPositionHelper.CenterWindowOnMonitor(MainForm.Instance, ScreenIndex);
+                            }
+                            catch { }
+                        }));
+                    }
+                    else
+                    {
+                        if (MainForm.Instance != null)
+                            WindowPositionHelper.CenterWindowOnMonitor(MainForm.Instance, ScreenIndex);
+                    }
+                }
+                catch { }
+            }
+        }
 
         public static List<string> smallWidgetsLeft;
         public static List<string> smallWidgetsRight;
