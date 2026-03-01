@@ -115,6 +115,25 @@ namespace DynamicWin.Utils
         // Add playback status tracking for widgets
         private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus = null;
         public GlobalSystemMediaTransportControlsSessionPlaybackStatus? LastPlaybackStatus => _lastPlaybackStatus;
+        // Track when playback transitioned from playing to a non-playing state
+        private DateTime? lastPlaybackNotPlayingAt = null;
+        // Whether we've observed playback status at least once since service started
+        private bool playbackStateInitialized = false;
+        // Track if we've already notified about being paused for longer than 30 seconds
+        private bool hasNotifiedPausedLongThreshold = false;
+
+        /// <summary>
+        /// Returns true if media has been in a non-playing state for at least the provided duration.
+        /// </summary>
+        public bool IsPausedLongerThan(TimeSpan duration)
+        {
+            if (lastPlaybackNotPlayingAt == null) return false;
+            try
+            {
+                return (DateTime.UtcNow - lastPlaybackNotPlayingAt.Value) >= duration;
+            }
+            catch { return false; }
+        }
 
         private MediaThumbnailService() { }
 
@@ -230,7 +249,54 @@ namespace DynamicWin.Utils
                         playbackStatus = timeline.PlaybackStatus;
                 }
                 catch { }
-                _lastPlaybackStatus = playbackStatus;
+                // Update last playback status and record when it became non-playing
+                var previousPlaybackStatus = _lastPlaybackStatus;
+                try
+                {
+                    _lastPlaybackStatus = playbackStatus;
+
+                    // If this is the first observed playback state since service start, treat a non-playing
+                    // state as having been not-playing for longer than the idle threshold so widgets that
+                    // should hide on startup will collapse immediately. Subsequent non-playing transitions
+                    // use the normal timestamping behaviour (mark time when transition from playing occurs).
+                    if (!playbackStateInitialized)
+                    {
+                        playbackStateInitialized = true;
+                        if (playbackStatus.HasValue && playbackStatus.Value == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        {
+                            lastPlaybackNotPlayingAt = null;
+                        }
+                        else
+                        {
+                            // Mark as having been not-playing for a while so startup widgets can hide immediately
+                            lastPlaybackNotPlayingAt = DateTime.UtcNow.AddSeconds(-31);
+                        }
+                    }
+                    else
+                    {
+                        if (playbackStatus.HasValue && playbackStatus.Value == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        {
+                            lastPlaybackNotPlayingAt = null;
+                            hasNotifiedPausedLongThreshold = false;
+                        }
+                        else
+                        {
+                            if (previousPlaybackStatus.HasValue && previousPlaybackStatus.Value == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                            {
+                                // Just transitioned from playing to not-playing
+                                lastPlaybackNotPlayingAt = DateTime.UtcNow;
+                                hasNotifiedPausedLongThreshold = false;
+                            }
+                            else if (!previousPlaybackStatus.HasValue && playbackStatus.HasValue && playbackStatus.Value != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                            {
+                                // Started already not-playing (fallback)
+                                lastPlaybackNotPlayingAt = DateTime.UtcNow;
+                                hasNotifiedPausedLongThreshold = false;
+                            }
+                        }
+                    }
+                }
+                catch { _lastPlaybackStatus = playbackStatus; }
 
                 // If there is no media, clear all cached metadata and thumbnail, and notify subscribers immediately
                 if (media == null)
@@ -278,6 +344,51 @@ namespace DynamicWin.Utils
 
                 if (!metadataChanged && lastBytes != null && !forceRefreshThumbnail)
                 {
+                    // Before returning, check if playback status change or pause threshold crossing must be notified
+                    try
+                    {
+                        if (playbackStatus != null && lastMedia != null)
+                        {
+                            bool statusChanged = !Equals(previousPlaybackStatus, playbackStatus);
+                            bool isPausedLong = IsPausedLongerThan(TimeSpan.FromSeconds(30));
+                            bool shouldNotify = false;
+                            
+                            // Check if playback status changed
+                            if (statusChanged)
+                            {
+                                shouldNotify = true;
+                            }
+                            // Check if 30-second pause threshold was crossed
+                            else if (isPausedLong && !hasNotifiedPausedLongThreshold)
+                            {
+                                // Just crossed into "paused long" territory
+                                hasNotifiedPausedLongThreshold = true;
+                                shouldNotify = true;
+                            }
+                            else if (!isPausedLong && hasNotifiedPausedLongThreshold)
+                            {
+                                // Transitioned back to "not paused long" (resumed playing)
+                                hasNotifiedPausedLongThreshold = false;
+                                shouldNotify = true;
+                            }
+                            
+                            if (shouldNotify)
+                            {
+                                _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
+                                    new Media { Title = lastMedia.Title, Artist = lastMedia.Artist },
+                                    lastBytes
+                                ));
+
+                                List<Action<Media?>> snap3;
+                                lock (listLock) { snap3 = new List<Action<Media?>>(legacyListeners); }
+                                foreach (var l in snap3)
+                                {
+                                    try { l(lastMedia); } catch { }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
                     return;
                 }
 
@@ -327,6 +438,33 @@ namespace DynamicWin.Utils
                     Artist = media?.Artist,
                     ThumbnailData = lastBytes
                 };
+
+                // If playback status changed during this fetch, notify subscribers so widgets can re-evaluate
+                try
+                {
+                    if (playbackStatus != null && lastMedia != null)
+                    {
+                        // Check if playback status changed
+                        bool statusChanged = !Equals(previousPlaybackStatus, playbackStatus);
+                        
+                        // If playback status changed, notify subscribers
+                        if (statusChanged)
+                        {
+                            _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(
+                                new Media { Title = lastMedia.Title, Artist = lastMedia.Artist },
+                                lastBytes
+                            ));
+
+                            List<Action<Media?>> snap2;
+                            lock (listLock) { snap2 = new List<Action<Media?>>(legacyListeners); }
+                            foreach (var l in snap2)
+                            {
+                                try { l(lastMedia); } catch { }
+                            }
+                        }
+                    }
+                }
+                catch { }
 
                 bool bytesChanged = false;
                 if (newFingerprint.HasValue || prevFingerprint.HasValue)

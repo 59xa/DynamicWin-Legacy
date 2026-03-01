@@ -1,4 +1,4 @@
-﻿using DynamicWin.Utils;
+using DynamicWin.Utils;
 using DynamicWin.UI.UIElements;
 using SkiaSharp;
 using System;
@@ -52,6 +52,9 @@ namespace DynamicWin.UI.Widgets.Small
 
         public MediaThumbnailWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
+            // Ensure shared setting loaded
+            try { RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.Load(); } catch { }
+
             MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChanged;
 
             // Try to initialise from service canonical bitmap (fast path)
@@ -70,7 +73,23 @@ namespace DynamicWin.UI.Widgets.Small
                             thumbnailBitmap = bmp;
                             try { currentBitmapFingerprint = BitmapUtils.GetBitmapFingerprint(bmp); } catch { currentBitmapFingerprint = null; }
                             hasMedia = true;
-                            collapseProgress = 1f;
+
+                            // Respect shared hide-when-idle setting: if enabled and media has been paused for longer than 30 seconds, start collapsed
+                            bool hideWhenIdle = false;
+                            try { hideWhenIdle = RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.HideMediaWhenIdle; } catch { hideWhenIdle = false; }
+                            if (hideWhenIdle)
+                            {
+                                try
+                                {
+                                    bool pausedLong = MediaThumbnailService.Instance.IsPausedLongerThan(TimeSpan.FromSeconds(30));
+                                    collapseProgress = pausedLong ? 0f : 1f;
+                                }
+                                catch { collapseProgress = 1f; }
+                            }
+                            else
+                            {
+                                collapseProgress = 1f;
+                            }
                         }
                     }
                     catch { }
@@ -88,10 +107,41 @@ namespace DynamicWin.UI.Widgets.Small
             // Adopt metadata immediately and ensure widget expanded when media exists
             lock (mediaLock)
             {
+                // If shared setting requests hiding media when idle, only expand when playback active
+                bool hideWhenIdle = false;
+                try { hideWhenIdle = RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.HideMediaWhenIdle; } catch { hideWhenIdle = false; }
+
                 if (e.Media != null)
                 {
                     hasMedia = true;
-                    BeginInvokeUI(() => StartCollapseOrExpand(true));
+
+                    // If hideWhenIdle is enabled, determine expand state based on playback status and pause duration
+                    if (hideWhenIdle)
+                    {
+                        try
+                        {
+                            var status = DynamicWin.Utils.MediaThumbnailService.Instance?.LastPlaybackStatus;
+                            bool playing = status.HasValue && status.Value == Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                            
+                            // If not playing, check if paused longer than 30 seconds
+                            bool shouldExpand = playing;
+                            if (!playing)
+                            {
+                                bool pausedLong = MediaThumbnailService.Instance.IsPausedLongerThan(TimeSpan.FromSeconds(30));
+                                shouldExpand = !pausedLong;
+                            }
+                            
+                            BeginInvokeUI(() => StartCollapseOrExpand(shouldExpand));
+                        }
+                        catch
+                        {
+                            BeginInvokeUI(() => StartCollapseOrExpand(true));
+                        }
+                    }
+                    else
+                    {
+                        BeginInvokeUI(() => StartCollapseOrExpand(true));
+                    }
                 }
                 else
                 {
@@ -250,7 +300,7 @@ namespace DynamicWin.UI.Widgets.Small
             bool isPaused = false;
             try
             {
-                var status = DynamicWin.Utils.MediaThumbnailService.Instance?.LastPlaybackStatus;
+                var status = MediaThumbnailService.Instance?.LastPlaybackStatus;
                 if (status.HasValue)
                 {
                     isPaused = status.Value != Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
