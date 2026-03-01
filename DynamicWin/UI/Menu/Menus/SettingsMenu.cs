@@ -52,6 +52,7 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.ToggleHomeMenuShadow = toggleHomeMenuShadow.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
+            Settings.ReduceWorkingArea = reduceWorkingArea.IsChecked;
 
             // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
@@ -88,12 +89,13 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox antiAliasing;
         DWCheckbox runOnStartup;
         DWCheckbox allowAutomaticUpdates;
+        DWCheckbox reduceWorkingArea;
         DWCheckbox toggleIslandShadow;
         DWCheckbox toggleHomeMenuShadow;
         DWCheckbox toggleHighRefreshRate;
         DWCheckbox limitRefreshRateWhenIdle;
 
-        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2;
+        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2, workingAreaDisclaimer1, workingAreaDisclaimer2;
 
         UIObject bottomMask;
 
@@ -131,6 +133,24 @@ namespace DynamicWin.UI.Menu.Menus
                 };
                 objects.Add(islandMode);
             }
+
+            workingAreaDisclaimer1 = new DWText(island, "Renders the interface to its minimum height and width possible, also improves performance.", new Vec2(25, 0), UIAlignment.TopLeft);
+            workingAreaDisclaimer1.Font = Res.SFProRegular;
+            workingAreaDisclaimer1.TextSize = 12;
+            workingAreaDisclaimer1.Anchor.X = 0;
+
+            workingAreaDisclaimer2 = new DWText(island, "Enabling this setting may prevent the interface from being placed correctly at the top.", new Vec2(25, 0), UIAlignment.TopLeft);
+            workingAreaDisclaimer2.Font = Res.SFProRegular;
+            workingAreaDisclaimer2.TextSize = 12;
+            workingAreaDisclaimer2.Anchor.X = 0;
+
+            objects.Add(workingAreaDisclaimer1);
+            objects.Add(workingAreaDisclaimer2);
+
+            reduceWorkingArea = new DWCheckbox(island, "Reduce working area", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            reduceWorkingArea.IsChecked = Settings.ReduceWorkingArea;
+            reduceWorkingArea.Anchor.X = 0;
+            objects.Add(reduceWorkingArea);
 
             allowBlur = new DWCheckbox(island, "Toggle blur", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             allowBlur.IsChecked = Settings.AllowBlur;
