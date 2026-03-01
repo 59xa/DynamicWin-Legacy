@@ -1360,7 +1360,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 int save = canvas.Save();
 
                 // Shrink and dim thumbnail if paused, animated
-                float thumbScale = 0.6f + 0.4f * thumbnailAnim; // 0.6 (paused) to 1.0 (playing)
+                float thumbScale = 0.8f + 0.2f * thumbnailAnim; // 0.8 (paused) to 1.0 (playing)
                 float dimAlpha = (1f - thumbnailAnim) * 120f; // 0 (playing) to 120 (paused)
                 float centerX = thumbRect.MidX;
                 float centerY = thumbRect.MidY;
@@ -1547,7 +1547,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     paint.IsAntialias = Settings.AntiAliasing;
                     paint.Color = GetColor(timelineTextColor).Value();
                     paint.TextSize = timelineTextSize;
-                    paint.Typeface = Resources.Res.SFProRegular;
+                    paint.Typeface = Res.SFProRegular;
 
                     float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
                     float leftX = barX - timelineSidePadding + 4f;

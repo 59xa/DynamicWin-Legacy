@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Diagnostics;
 using DynamicWin.Resources;
+using DynamicWin.Main;
 
 namespace DynamicWin.UI.Widgets.Small
 {
@@ -368,7 +369,7 @@ namespace DynamicWin.UI.Widgets.Small
                 float flipScale = animator.GetFlipScale();
                 bool doFlip = animator.IsFlipping;
 
-                float thumbScale = 0.6f + 0.4f * thumbnailAnim;
+                float thumbScale = 0.8f + 0.2f * thumbnailAnim;
                 float dimAlpha = (1f - thumbnailAnim) * 120f;
                 float centerX = thumbRect.MidX;
                 float centerY = thumbRect.MidY;
@@ -383,9 +384,9 @@ namespace DynamicWin.UI.Widgets.Small
                     var localRect = SKRect.Create(-thumbRect.Width / 2f, -thumbRect.Height / 2f, thumbRect.Width, thumbRect.Height);
                     var localPath = BuildSuperellipsePath(localRect, 7f, 1f);
                     canvas.Save();
-                    canvas.ClipPath(localPath, antialias: true);
+                    canvas.ClipPath(localPath, antialias: Settings.AntiAliasing);
                     var paint = GetPaint();
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     if (bmp != null)
                     {
@@ -411,9 +412,9 @@ namespace DynamicWin.UI.Widgets.Small
                     canvas.Translate(centerX, centerY);
                     canvas.Scale(thumbScale, thumbScale);
                     canvas.Translate(-centerX, -centerY);
-                    canvas.ClipPath(path, antialias: true);
+                    canvas.ClipPath(path, antialias: Settings.AntiAliasing);
                     var paint = GetPaint();
-                    paint.IsAntialias = true;
+                    paint.IsAntialias = Settings.AntiAliasing;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     if (bmp != null)
                     {
