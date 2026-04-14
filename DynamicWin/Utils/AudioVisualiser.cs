@@ -39,7 +39,7 @@ namespace DynamicWin.Utils
 
         private float[] targetHeights; // Re-use per-frame to avoid allocations
 
-        private float[] bandBalance = new float[] { 1f, 0.75f, 1.15f, 1.10f, 1.25f, 1.35f };
+        private float[] bandBalance = new float[] { 1f, 1f, 1.15f, 1.10f, 1.25f, 1.35f };
 
         private WasapiLoopbackCapture capture;
         private readonly object fftLock = new object();
@@ -96,7 +96,7 @@ namespace DynamicWin.Utils
         private bool enableDotWhenLow = true;
         public bool EnableDotWhenLow { get => enableDotWhenLow; set => enableDotWhenLow = value; }
         public float BlurAmount { get; set; } = 0f;
-        public float BarSpacing { get; set; } = 1f;
+        public float BarSpacing { get; set; } = 1.5f;
 
         // Initialise class
         public AudioVisualiser(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopRight, Col Primary = null, Col Secondary = null) : base(parent, position, size, alignment)
@@ -189,7 +189,7 @@ namespace DynamicWin.Utils
             }
 
             double minFreq = 20.0;  // 20Hz - human hearing start
-            double maxFreq = 12000.0; // 12kHz - frequency end
+            double maxFreq = 6000.0; // 12kHz - frequency end
 
             // Use Logarithmic scale for natural frequency distribution
             double logMin = Math.Log10(minFreq);
@@ -329,7 +329,7 @@ namespace DynamicWin.Utils
                 // Bar 0: Sub (1.2x) -> Strongest
                 // Bar 1: Bass (0.8x) -> Dipped to let bar 0 lead
                 // Bar 5: Highs (2.5x) -> Extreme boost for hi-hat visibility
-                float[] barWeights = { 1.0f, 0.85f, 1.15f, 1.5f, 2.0f, 2.5f };
+                float[] barWeights = { 1.0f, 0.9f, 1.15f, 1.5f, 2.0f, 2.5f };
 
                 for (int i = 0; i < barCount; i++)
                 {
@@ -577,22 +577,48 @@ namespace DynamicWin.Utils
                 float rawHeight = barHeight[i] * visualBoost;
                 float dynamicHeight = rawHeight * height * 0.8f;
 
-                float bH = dynamicHeight;
+                float activity = Math.Clamp(barHeight[i], 0f, 1f);
 
-                // Handle dot clamping
-                if (EnableDotWhenLow)
-                {
-                    // The dot should be a perfect circle/square, so its height equals its width
-                    // Clamp the height so it never gets smaller than the dot
-                    bH = Math.Max(dotHeight, dynamicHeight);
-                }
+                float center = (barCount - 1) / 2f;
+                float distFromCenter = MathF.Abs(i - center) / center;
+                float centerBoost = 1f - distFromCenter;
 
-                // Positioning
-                float x = Position.X + i * (barWidth2 + spacing2);
+                float midEmphasis = 1f - MathF.Abs(activity - 0.5f) * 2f;
+                midEmphasis = MathF.Pow(midEmphasis, 1.5f);
+
+                float minScale = 0.7f;
+                float baseScale = activity;
+
+                float breathStrength = 0.15f + (0.15f * centerBoost);
+
+                float time = (float)Stopwatch.GetTimestamp() / Stopwatch.Frequency;
+
+                float phaseOffset = i * 0.6f;
+
+                float lag = distFromCenter * 0.08f;
+                float delayedActivity = Math.Clamp(activity - lag, 0f, 1f);
+
+                float scale = minScale + (1f - minScale) * delayedActivity;
+                scale += midEmphasis * breathStrength;
+
+                float pulse = MathF.Sin(time * 4f + phaseOffset) * (0.03f + 0.02f * centerBoost) * midEmphasis;
+                scale += pulse;
+
+                scale = Math.Clamp(scale, minScale, 1.1f);
+
+                float scaledWidth = barWidth2 * scale;
+                float scaledDotHeight = dotHeight * scale;
+
+                float bH = EnableDotWhenLow
+                    ? Math.Max(scaledDotHeight, dynamicHeight)
+                    : dynamicHeight;
+
+                float xBase = Position.X + i * (barWidth2 + spacing2);
+                float x = xBase + (barWidth2 - scaledWidth) / 2f;
                 float barTopY = centerY - bH / 2;
 
-                var rect = SKRect.Create(x, barTopY, barWidth2, bH);
-                var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
+                var rect = SKRect.Create(x, barTopY, scaledWidth, bH);
+                var roundRect = new SKRoundRect(rect, scaledWidth / 2, scaledWidth / 2);
 
                 // Color logic: dot must stay at the "Secondary" color until it starts growing
                 // We calculate a 'colorActivity' based on how much it has grown past the dot
