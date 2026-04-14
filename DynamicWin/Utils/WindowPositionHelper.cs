@@ -50,7 +50,7 @@ namespace DynamicWin.Utils
             if (double.IsNaN(window.Top) || Math.Abs(window.Top - targetTop) > epsilon)
                 window.Top = targetTop;
 
-            double desiredHeight = !Settings.ReduceWorkingArea ? screenBounds.Height / scaleY : 500.0;
+            double desiredHeight = !Settings.AlwaysTopmost ? screenBounds.Height / scaleY : 500.0;
             if (double.IsNaN(window.Height) || Math.Abs(window.Height - desiredHeight) > epsilon)
                 window.Height = desiredHeight;
         }

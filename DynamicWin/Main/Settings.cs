@@ -43,7 +43,7 @@ namespace DynamicWin.Main
         public static int ScreenIndex { get => activeScreenIndex; set => activeScreenIndex = value; }
         public static int ReleaseStream { get => releaseStream; set => releaseStream = value; }
         public static bool AllowAutomaticUpdates { get => allowAutomaticUpdates; set => allowAutomaticUpdates = value; }
-        public static bool ReduceWorkingArea
+        public static bool AlwaysTopmost
         {
             get => reduceWorkingArea;
             set
@@ -108,7 +108,7 @@ namespace DynamicWin.Main
 
                     AllowAutomaticUpdates = SaveManager.Contains("settings.AllowAutomaticUpdates") ? (bool)SaveManager.Get("settings.AllowAutomaticUpdates") : true;
 
-                    ReduceWorkingArea = SaveManager.Contains("settings.ReduceWorkingArea") ? (bool)SaveManager.Get("settings.ReduceWorkingArea") : true;
+                    AlwaysTopmost = SaveManager.Contains("settings.ReduceWorkingArea") ? (bool)SaveManager.Get("settings.ReduceWorkingArea") : true;
 
                     Theme = (int)((Int64)SaveManager.Get("settings.theme"));
                     ScreenIndex = (int)((Int64)SaveManager.Get("settings.screenindex"));
@@ -170,7 +170,7 @@ namespace DynamicWin.Main
 
                     // default automatic updates enabled
                     AllowAutomaticUpdates = true;
-                    ReduceWorkingArea = true;
+                    AlwaysTopmost = true;
 
                     Theme = 0;
 
@@ -220,7 +220,7 @@ namespace DynamicWin.Main
             SaveManager.Add("settings.ReleaseStream", ReleaseStream);
 
             SaveManager.Add("settings.AllowAutomaticUpdates", AllowAutomaticUpdates);
-            SaveManager.Add("settings.ReduceWorkingArea", ReduceWorkingArea);
+            SaveManager.Add("settings.ReduceWorkingArea", AlwaysTopmost);
 
             SaveManager.Add("settings.theme", Theme);
             SaveManager.Add("settings.screenindex", ScreenIndex);

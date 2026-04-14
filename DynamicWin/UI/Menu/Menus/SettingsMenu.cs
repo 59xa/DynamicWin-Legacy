@@ -17,6 +17,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Controls;
+using System.Windows.Forms;
 using System.Windows.Input;
 using System.Windows.Navigation;
 using System.Xml.Linq;
@@ -52,7 +53,7 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.ToggleHomeMenuShadow = toggleHomeMenuShadow.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
-            Settings.ReduceWorkingArea = reduceWorkingArea.IsChecked;
+            Settings.AlwaysTopmost = alwaysTopmost.IsChecked;
 
             // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
@@ -89,7 +90,7 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox antiAliasing;
         DWCheckbox runOnStartup;
         DWCheckbox allowAutomaticUpdates;
-        DWCheckbox reduceWorkingArea;
+        DWCheckbox alwaysTopmost;
         DWCheckbox toggleIslandShadow;
         DWCheckbox toggleHomeMenuShadow;
         DWCheckbox toggleHighRefreshRate;
@@ -147,10 +148,10 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(workingAreaDisclaimer1);
             objects.Add(workingAreaDisclaimer2);
 
-            reduceWorkingArea = new DWCheckbox(island, "Reduce working area", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            reduceWorkingArea.IsChecked = Settings.ReduceWorkingArea;
-            reduceWorkingArea.Anchor.X = 0;
-            objects.Add(reduceWorkingArea);
+            alwaysTopmost = new DWCheckbox(island, $"Keep interface always topmost", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            alwaysTopmost.IsChecked = Settings.AlwaysTopmost;
+            alwaysTopmost.Anchor.X = 0;
+            objects.Add(alwaysTopmost);
 
             allowBlur = new DWCheckbox(island, "Toggle blur", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             allowBlur.IsChecked = Settings.AllowBlur;
