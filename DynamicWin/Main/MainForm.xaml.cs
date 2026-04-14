@@ -150,7 +150,8 @@ namespace DynamicWin.Main
             _settingsTrayItem.Image = ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/cog.png");
             _settingsTrayItem.Click += (x, y) =>
             {
-                MenuManager.OpenMenu(new SettingsMenu());
+                var settingsWindow = new SettingsWindow();
+                settingsWindow.Show();
             };
 
             _trayIcon.ContextMenuStrip.Items.Add(_settingsTrayItem);
