@@ -140,7 +140,7 @@ namespace DynamicWin.UI.Menu.Menus
             workingAreaDisclaimer1.TextSize = 12;
             workingAreaDisclaimer1.Anchor.X = 0;
 
-            workingAreaDisclaimer2 = new DWText(island, "Enabling this setting may prevent the interface from being placed correctly at the top.", new Vec2(25, 0), UIAlignment.TopLeft);
+            workingAreaDisclaimer2 = new DWText(island, "Disabling this setting may prevent the interface from being placed correctly at the top.", new Vec2(25, 0), UIAlignment.TopLeft);
             workingAreaDisclaimer2.Font = Res.SFProRegular;
             workingAreaDisclaimer2.TextSize = 12;
             workingAreaDisclaimer2.Anchor.X = 0;

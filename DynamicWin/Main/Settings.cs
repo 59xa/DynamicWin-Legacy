@@ -28,7 +28,7 @@ namespace DynamicWin.Main
         private static int activeScreenIndex;
         private static int releaseStream;
         private static bool allowAutomaticUpdates = true;
-        private static bool reduceWorkingArea;
+        private static bool alwaysTopmost;
 
         public static IslandObject.IslandMode IslandMode { get => islandMode; set => islandMode = value; }
         public static bool AllowBlur { get => allowBlur; set => allowBlur = value; }
@@ -45,10 +45,10 @@ namespace DynamicWin.Main
         public static bool AllowAutomaticUpdates { get => allowAutomaticUpdates; set => allowAutomaticUpdates = value; }
         public static bool AlwaysTopmost
         {
-            get => reduceWorkingArea;
+            get => alwaysTopmost;
             set
             {
-                reduceWorkingArea = value;
+                alwaysTopmost = value;
 
                 try
                 {
@@ -108,7 +108,7 @@ namespace DynamicWin.Main
 
                     AllowAutomaticUpdates = SaveManager.Contains("settings.AllowAutomaticUpdates") ? (bool)SaveManager.Get("settings.AllowAutomaticUpdates") : true;
 
-                    AlwaysTopmost = SaveManager.Contains("settings.ReduceWorkingArea") ? (bool)SaveManager.Get("settings.ReduceWorkingArea") : true;
+                    AlwaysTopmost = SaveManager.Contains("settings.AlwaysTopmost") ? (bool)SaveManager.Get("settings.AlwaysTopmost") : true;
 
                     Theme = (int)((Int64)SaveManager.Get("settings.theme"));
                     ScreenIndex = (int)((Int64)SaveManager.Get("settings.screenindex"));
@@ -220,7 +220,7 @@ namespace DynamicWin.Main
             SaveManager.Add("settings.ReleaseStream", ReleaseStream);
 
             SaveManager.Add("settings.AllowAutomaticUpdates", AllowAutomaticUpdates);
-            SaveManager.Add("settings.ReduceWorkingArea", AlwaysTopmost);
+            SaveManager.Add("settings.AlwaysTopmost", AlwaysTopmost);
 
             SaveManager.Add("settings.theme", Theme);
             SaveManager.Add("settings.screenindex", ScreenIndex);
