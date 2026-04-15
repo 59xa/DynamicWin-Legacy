@@ -173,11 +173,15 @@ namespace DynamicWin.UI.Menu.Menus
             // Navigation buttons removed per user request.
             var settingsButton = new DWImageButton(topContainer, Resources.Res.Settings, new Vec2(-20f, 0), new Vec2(20, 20), () =>
             {
+<<<<<<< HEAD
                 var settingsWindow = new DynamicWin.UI.Forms.SettingsWindow();
+=======
+                var settingsWindow = new SettingsWindow();
+>>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
                 settingsWindow.Show();
 
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine("[HOME MENU] User opened Settings menu.");
+                System.Diagnostics.Debug.WriteLine("[HOME MENU] User opened Settings window.");
 #endif
             },
             UIAlignment.MiddleRight);

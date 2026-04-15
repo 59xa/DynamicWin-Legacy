@@ -31,6 +31,7 @@ namespace DynamicWin.Main
         private static bool reduceWorkingArea;
         private static bool shortenWindowsWorkingArea;
 
+<<<<<<< HEAD
         public static bool ShortenWindowsWorkingArea 
         { 
             get => shortenWindowsWorkingArea; 
@@ -60,6 +61,9 @@ namespace DynamicWin.Main
                 catch { }
             }
         }
+=======
+        public static bool ShortenWindowsWorkingArea { get => shortenWindowsWorkingArea; set => shortenWindowsWorkingArea = value; }
+>>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
 
         public static IslandObject.IslandMode IslandMode { get => islandMode; set => islandMode = value; }
         public static bool AllowBlur { get => false; set => allowBlur = value; } // Temporarily disabled

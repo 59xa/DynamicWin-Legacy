@@ -69,6 +69,12 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
             Settings.AlwaysTopmost = alwaysTopmost.IsChecked;
             Settings.ShortenWindowsWorkingArea = shortenWindowsWorkingArea != null && shortenWindowsWorkingArea.IsChecked;
+<<<<<<< HEAD
+=======
+
+            // Apply or remove the AppBar working area reservation immediately
+            AppBarManager.Apply(MainForm.Instance, Settings.ScreenIndex, Settings.ShortenWindowsWorkingArea);
+>>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
 
             // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
@@ -157,6 +163,7 @@ namespace DynamicWin.UI.Menu.Menus
                 objects.Add(islandMode);
             }
 
+<<<<<<< HEAD
             {
                 var workingAreaTitle = new DWText(island, "Working Area", new Vec2(25, 0), UIAlignment.TopLeft);
                 workingAreaTitle.Font = Res.SFProBold;
@@ -220,6 +227,8 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(shortenDisc1);
             objects.Add(shortenDisc2);
 
+=======
+>>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
             alwaysTopmost = new DWCheckbox(island, $"Keep interface always topmost", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             alwaysTopmost.IsChecked = Settings.AlwaysTopmost;
             alwaysTopmost.Anchor.X = 0;
@@ -358,6 +367,59 @@ namespace DynamicWin.UI.Menu.Menus
             bool enableIslandShadowSubSettings = toggleIslandShadow.IsChecked;
 
             toggleHomeMenuShadow.IsEnabled = enableIslandShadowSubSettings;
+
+            {
+                var workingAreaTitle = new DWText(island, "Working Area", new Vec2(25, 0), UIAlignment.TopLeft);
+                workingAreaTitle.Font = Res.SFProBold;
+                workingAreaTitle.TextSize = 15;
+                workingAreaTitle.Anchor.X = 0;
+                objects.Add(workingAreaTitle);
+            }
+
+            bool isIslandMode = Settings.IslandMode == IslandObject.IslandMode.Island;
+
+            shortenWindowsWorkingArea = new DWCheckbox(
+                island,
+                isIslandMode ? "Shorten for Island" : "Shorten for Notch",
+                new Vec2(25, 0),
+                new Vec2(25, 25),
+                () => { },
+                UIAlignment.TopLeft
+            );
+            shortenWindowsWorkingArea.IsChecked = Settings.ShortenWindowsWorkingArea;
+            shortenWindowsWorkingArea.Anchor.X = 0;
+            objects.Add(shortenWindowsWorkingArea);
+
+            var shortenDisc1 = new DWText(
+                island,
+                isIslandMode 
+                    ? "Limits the space other windows have to exclude the island" 
+                    : "Limits the space other windows have to exclude the notch",
+                new Vec2(65, 0), 
+                UIAlignment.TopLeft
+            )
+            {
+                Font = Res.SFProRegular,
+                TextSize = 12,
+                Anchor = new Vec2(0, 0)
+            };
+
+            var shortenDisc2 = new DWText(
+                island,
+                isIslandMode
+                    ? "to avoid the island covering important elements of the windows beneath."
+                    : "to avoid the notch covering important elements of the windows beneath.",
+                new Vec2(65, 0),
+                UIAlignment.TopLeft
+            )
+            {
+                Font = Res.SFProRegular,
+                TextSize = 12,
+                Anchor = new Vec2(0, 0)
+            };
+
+            objects.Add(shortenDisc1);
+            objects.Add(shortenDisc2);
 
             runOnStartup = new DWCheckbox(island, "Start application on login", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             runOnStartup.IsChecked = Settings.RunOnStartup;
