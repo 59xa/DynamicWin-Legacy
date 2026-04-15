@@ -20,7 +20,7 @@ namespace DynamicWin
         public static MMDevice? defaultDevice;
         public static MMDevice? defaultMicrophone;
 
-        public static string Version => "v1.6.2b3";
+        public static string Version => "v1.6.2b4";
         public static Channel ReleaseStream => Channel.Canary;
         public static Architecture ProcessArchitecture => RuntimeInformation.ProcessArchitecture;
 
