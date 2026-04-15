@@ -1,4 +1,4 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using DynamicWin.Resources;
 using DynamicWin.UI.Menu.Menus.SettingsMenuObjects;
 using DynamicWin.UI.UIElements;
@@ -21,6 +21,7 @@ using System.Windows.Forms;
 using System.Windows.Input;
 using System.Windows.Navigation;
 using System.Xml.Linq;
+using System.Windows;
 using static DynamicWin.UI.UIElements.IslandObject;
 using static System.Net.Mime.MediaTypeNames;
 
@@ -30,12 +31,25 @@ namespace DynamicWin.UI.Menu.Menus
     {
         private static List<IRegisterableSetting> _cachedCustomOptions;
 
-        public SettingsMenu()
+        private bool isStandalone = false;
+        public Window ParentWindow { get; set; }
+
+        public SettingsMenu(bool isStandalone = false)
         {
-            MainForm.onScrollEvent += (MouseWheelEventArgs x) =>
+            this.isStandalone = isStandalone;
+
+            if (!isStandalone)
             {
-                yScrollOffset += x.Delta * 0.50f;
-            };
+                MainForm.onScrollEvent += (MouseWheelEventArgs x) =>
+                {
+                    yScrollOffset += x.Delta * 0.50f;
+                };
+            }
+        }
+
+        public void Scroll(float delta)
+        {
+            yScrollOffset += delta * 0.50f;
         }
 
         bool changedTheme = false;
@@ -54,6 +68,7 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
             Settings.AlwaysTopmost = alwaysTopmost.IsChecked;
+            Settings.ShortenWindowsWorkingArea = shortenWindowsWorkingArea != null && shortenWindowsWorkingArea.IsChecked;
 
             // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
@@ -71,10 +86,15 @@ namespace DynamicWin.UI.Menu.Menus
 
             if (changedTheme)
                 Theme.Instance.UpdateTheme(true);
-            else
+            else if (!isStandalone)
             {
                 Res.HomeMenu = new HomeMenu();
                 MenuManager.OpenMenu(Res.HomeMenu);
+            }
+
+            if (isStandalone && ParentWindow != null)
+            {
+                ParentWindow.Close();
             }
 
             foreach (var item in _cachedCustomOptions)
@@ -95,8 +115,9 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox toggleHomeMenuShadow;
         DWCheckbox toggleHighRefreshRate;
         DWCheckbox limitRefreshRateWhenIdle;
+        DWCheckbox shortenWindowsWorkingArea;
 
-        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2, workingAreaDisclaimer1, workingAreaDisclaimer2;
+        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2;
 
         UIObject bottomMask;
 
@@ -113,6 +134,7 @@ namespace DynamicWin.UI.Menu.Menus
 
             var generalTitle = new DWText(island, "General", new Vec2(25, 0), UIAlignment.TopLeft);
             generalTitle.Font = Res.SFProBold;
+            generalTitle.Color = Theme.TextMain;
             generalTitle.Anchor.X = 0;
             objects.Add(generalTitle);
 
@@ -135,18 +157,68 @@ namespace DynamicWin.UI.Menu.Menus
                 objects.Add(islandMode);
             }
 
-            workingAreaDisclaimer1 = new DWText(island, "Renders the interface to its minimum height and width possible, also improves performance.", new Vec2(25, 0), UIAlignment.TopLeft);
-            workingAreaDisclaimer1.Font = Res.SFProRegular;
-            workingAreaDisclaimer1.TextSize = 12;
-            workingAreaDisclaimer1.Anchor.X = 0;
+            {
+                var workingAreaTitle = new DWText(island, "Working Area", new Vec2(25, 0), UIAlignment.TopLeft);
+                workingAreaTitle.Font = Res.SFProBold;
+                workingAreaTitle.Color = Theme.TextMain;
+                workingAreaTitle.TextSize = 15;
+                workingAreaTitle.Anchor.X = 0;
+                objects.Add(workingAreaTitle);
 
-            workingAreaDisclaimer2 = new DWText(island, "Enabling this setting may prevent the interface from being placed correctly at the top.", new Vec2(25, 0), UIAlignment.TopLeft);
-            workingAreaDisclaimer2.Font = Res.SFProRegular;
-            workingAreaDisclaimer2.TextSize = 12;
-            workingAreaDisclaimer2.Anchor.X = 0;
+                var fixAreaBtn = new DWTextButton(island, "Fix Display Area", new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), () =>
+                {
+                    AppBarHelper.UnregisterAppBar(MainForm.Handle);
+                }, UIAlignment.TopLeft);
+                fixAreaBtn.Anchor.X = 0;
+                objects.Add(fixAreaBtn);
+            }
 
-            objects.Add(workingAreaDisclaimer1);
-            objects.Add(workingAreaDisclaimer2);
+            bool isIslandMode = Settings.IslandMode == IslandObject.IslandMode.Island;
+
+            shortenWindowsWorkingArea = new DWCheckbox(
+                island,
+                isIslandMode ? "Shorten for Island" : "Shorten for Notch",
+                new Vec2(25, 0),
+                new Vec2(25, 25),
+                () => { },
+                UIAlignment.TopLeft
+            );
+            shortenWindowsWorkingArea.IsChecked = Settings.ShortenWindowsWorkingArea;
+            shortenWindowsWorkingArea.Anchor.X = 0;
+            objects.Add(shortenWindowsWorkingArea);
+
+            var shortenDisc1 = new DWText(
+                island,
+                isIslandMode 
+                    ? "Limits the space other windows have to exclude the island" 
+                    : "Limits the space other windows have to exclude the notch",
+                new Vec2(65, 0), 
+                UIAlignment.TopLeft
+            )
+            {
+                Font = Res.SFProRegular,
+                Color = Theme.TextSecond,
+                TextSize = 12,
+                Anchor = new Vec2(0, 0)
+            };
+
+            var shortenDisc2 = new DWText(
+                island,
+                isIslandMode
+                    ? "to avoid the island covering important elements of the windows beneath."
+                    : "to avoid the notch covering important elements of the windows beneath.",
+                new Vec2(65, 0),
+                UIAlignment.TopLeft
+            )
+            {
+                Font = Res.SFProRegular,
+                Color = Theme.TextSecond,
+                TextSize = 12,
+                Anchor = new Vec2(0, 0)
+            };
+
+            objects.Add(shortenDisc1);
+            objects.Add(shortenDisc2);
 
             alwaysTopmost = new DWCheckbox(island, $"Keep interface always topmost", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             alwaysTopmost.IsChecked = Settings.AlwaysTopmost;
@@ -370,9 +442,9 @@ namespace DynamicWin.UI.Menu.Menus
                 themeTitle.Anchor.X = 0;
                 objects.Add(themeTitle);
 
-                var themeOptions = new string[] { "Custom", "Dark", "Light", "Candy", "Forest Dawn", "Sunset Glow" };
+                var themeOptions = new string[] { "Custom", "Dark", "Light", "Candy", "Forest Dawn", "Sunset Glow", "Aydo" };
                 var theme = new DWMultiSelectionButton(island, themeOptions, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-                theme.SelectedIndex = Settings.Theme + 1;
+                theme.SelectedIndex = Math.Clamp(Settings.Theme + 1, 0, themeOptions.Length - 1);
                 theme.Anchor.X = 0;
                 theme.onClick += (index) =>
                 {
@@ -551,7 +623,14 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, -25), UIAlignment.TopLeft)
             {
                 Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
+                Anchor = new Vec2(0, 0),
+                TextSize = 13,
+            });
+
+            objects.Add(new DWText(island, "Additional contribution by aydocs", new Vec2(25, -20), UIAlignment.TopLeft)
+            {
+                Color = Theme.TextThird,
+                Anchor = new Vec2(0, 0),
                 TextSize = 13,
             });
 

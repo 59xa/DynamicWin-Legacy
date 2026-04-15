@@ -1,4 +1,4 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using DynamicWin.UI.Menu;
 using DynamicWin.Utils;
 using SkiaSharp;
@@ -139,7 +139,17 @@ namespace DynamicWin.UI.UIElements
         {
             var paint = GetPaint();
             paint.IsAntialias = Settings.AntiAliasing;
-            paint.Color = Theme.IslandBackground.Value();
+            
+            var islandColor = Theme.IslandBackground.Value();
+            if (Settings.AllowBlur)
+            {
+                // Premium 78% opacity (200/255) for glass effect
+                paint.Color = new SKColor(islandColor.Red, islandColor.Green, islandColor.Blue, 200);
+            }
+            else
+            {
+                paint.Color = islandColor;
+            }
 
             var borderRect = GetRect();
             borderRect.Inflate(1.25f, 1.25f);

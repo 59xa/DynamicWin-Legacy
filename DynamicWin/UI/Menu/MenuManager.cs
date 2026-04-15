@@ -1,4 +1,4 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using DynamicWin.UI.Menu.Menus;
 using DynamicWin.Utils;
 using System;
@@ -106,8 +106,14 @@ namespace DynamicWin.UI.Menu
             Instance.SetOverlay(overlayMenu, duration, menuToOpenAfter);
         }
 
+        public static void RefreshOverlay(float duration = 1.0f)
+        {
+            if (Instance == null || Instance.overlayCts == null) return;
+            Instance.SetOverlay(Instance.overlayMenu, duration, Instance.overlayNextMenu, false);
+        }
+
         // Instance method to handle overlay logic
-        private void SetOverlay(BaseMenu overlayMenu, float duration, BaseMenu menuToOpenAfter)
+        private void SetOverlay(BaseMenu overlayMenu, float duration, BaseMenu menuToOpenAfter, bool reopen = true)
         {
             // Cancel any existing overlay
             if (overlayCts != null)
@@ -128,7 +134,7 @@ namespace DynamicWin.UI.Menu
             LockMenu(overlayMenu);
 
             // Open overlay instantly
-            QueueOpenMenu(overlayMenu);
+            if (reopen) QueueOpenMenu(overlayMenu);
 
             if (duration <= 0f) return; // manual close only
 

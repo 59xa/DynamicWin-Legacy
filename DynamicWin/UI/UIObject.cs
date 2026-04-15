@@ -1,4 +1,4 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using DynamicWin.Utils;
 using SkiaSharp;
 using System.Windows;
@@ -71,6 +71,7 @@ namespace DynamicWin.UI
         public float blurAmount = 0f;
         public float roundRadius = 0f;
         public bool maskInToIsland = true;
+        public static bool GlobalDisableIslandMasking = false;
 
         private List<UIObject> localObjects = new List<UIObject>();
         public List<UIObject> LocalObjects { get => localObjects; }

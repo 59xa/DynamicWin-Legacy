@@ -1,4 +1,4 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using Newtonsoft.Json;
 using System.Globalization;
 using System.IO;
@@ -89,6 +89,21 @@ namespace DynamicWin.Utils
                         break;
                     case 4:
                         ApplyTheme(sunsetGlow);
+                        break;
+                    case 5:
+                        ApplyTheme(new ThemeHolder
+                        {
+                            IslandColor = "#120524",
+                            TextMain = "#ffffff",
+                            TextSecond = "#cf94ff",
+                            TextThird = "#8b5cf6",
+                            Primary = "#A020F0",
+                            Secondary = "#1e0b36",
+                            Success = "#a855f7",
+                            Error = "#ef4444",
+                            IconColor = "#ffffff",
+                            WidgetBackground = "#15ffffff"
+                        });
                         break;
                 }
             }

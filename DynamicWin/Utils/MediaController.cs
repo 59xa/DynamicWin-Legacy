@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -32,6 +32,7 @@ namespace DynamicWin.Utils
         private const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
         private const byte VK_MEDIA_NEXT_TRACK = 0xB0;
         private const byte VK_MEDIA_PREV_TRACK = 0xB1;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
 
         public void PlayPause() => SafeMediaAction(MediaInfo.TryTogglePlayPauseAsync, VK_MEDIA_PLAY_PAUSE);
         public void Next() => SafeMediaAction(MediaInfo.TryNextAsync, VK_MEDIA_NEXT_TRACK);
@@ -41,14 +42,19 @@ namespace DynamicWin.Utils
         {
             _ = Task.Run(async () =>
             {
+                bool success = false;
                 try
                 {
-                    if (!await winRtAction().ConfigureAwait(false))
-                        keybd_event(fallbackKey, 0, 0, 0);
+                    success = await winRtAction().ConfigureAwait(false);
                 }
-                catch
+                catch { success = false; }
+
+                if (!success)
                 {
-                    keybd_event(fallbackKey, 0, 0, 0);
+                    // Full Click Cycle: KeyDown -> Sleep -> KeyUp
+                    keybd_event(fallbackKey, 0, 0, 0); 
+                    Thread.Sleep(5);
+                    keybd_event(fallbackKey, 0, KEYEVENTF_KEYUP, 0);
                 }
             });
         }

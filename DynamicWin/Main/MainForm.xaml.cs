@@ -1,7 +1,8 @@
-﻿using DynamicWin.Resources;
+using DynamicWin.Resources;
 using DynamicWin.UI.Menu;
 using DynamicWin.UI.Menu.Menus;
 using DynamicWin.Utils;
+using DynamicWin.UI.Forms;
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
@@ -11,6 +12,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Forms = System.Windows.Forms;
+using System.ComponentModel;
 
 namespace DynamicWin.Main
 {
@@ -18,6 +20,7 @@ namespace DynamicWin.Main
     {
         private static MainForm instance;
         public static MainForm Instance { get => instance; }
+        public static IntPtr Handle { get; private set; }
 
         public static Action<System.Windows.Input.MouseWheelEventArgs> onScrollEvent;
 
@@ -64,6 +67,73 @@ namespace DynamicWin.Main
         const int WS_EX_TOOLWINDOW = 0x00000080;
         const int WS_EX_APPWINDOW = 0x00040000;
 
+        [DllImport("user32.dll")]
+        internal static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct WindowCompositionAttributeData
+        {
+            public WindowCompositionAttribute Attribute;
+            public IntPtr Data;
+            public int SizeOfData;
+        }
+
+        internal enum WindowCompositionAttribute
+        {
+            WCA_ACCENT_POLICY = 19
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct AccentPolicy
+        {
+            public AccentState AccentState;
+            public int AccentFlags;
+            public int GradientColor;
+            public int AnimationId;
+        }
+
+        internal enum AccentState
+        {
+            ACCENT_DISABLED = 0,
+            ACCENT_ENABLE_GRADIENT = 1,
+            ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
+            ACCENT_ENABLE_BLURBEHIND = 3,
+            ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
+            ACCENT_INVALID_STATE = 5
+        }
+
+        public void ApplyBlur()
+        {
+            try {
+                var windowHelper = new WindowInteropHelper(this);
+                var accent = new AccentPolicy();
+                var accentStructSize = Marshal.SizeOf(accent);
+
+                if (Settings.AllowBlur)
+                {
+                    accent.AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND;
+                    accent.GradientColor = 0x01000000;
+                }
+                else
+                {
+                    accent.AccentState = AccentState.ACCENT_DISABLED;
+                }
+
+                var accentPtr = Marshal.AllocHGlobal(accentStructSize);
+                Marshal.StructureToPtr(accent, accentPtr, false);
+
+                var data = new WindowCompositionAttributeData
+                {
+                    Attribute = WindowCompositionAttribute.WCA_ACCENT_POLICY,
+                    SizeOfData = accentStructSize,
+                    Data = accentPtr
+                };
+
+                SetWindowCompositionAttribute(windowHelper.Handle, ref data);
+                Marshal.FreeHGlobal(accentPtr);
+            } catch { } // Silent fail for safety
+        }
+
         #endregion
 
         public MainForm()
@@ -96,6 +166,12 @@ namespace DynamicWin.Main
             this.WindowStyle = WindowStyle.None;
             this.WindowState = WindowState.Maximized;
             this.ResizeMode = ResizeMode.NoResize;
+
+            this.SourceInitialized += (s, e) =>
+            {
+                Handle = new WindowInteropHelper(this).Handle;
+                UpdateWindowPosition();
+            };
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
@@ -150,15 +226,17 @@ namespace DynamicWin.Main
             _settingsTrayItem.Image = ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/cog.png");
             _settingsTrayItem.Click += (x, y) =>
             {
-                MenuManager.OpenMenu(new SettingsMenu());
+                var settingsWindow = new SettingsWindow();
+                settingsWindow.Show();
             };
 
             _trayIcon.ContextMenuStrip.Items.Add(_settingsTrayItem);
 
             _trayIcon.ContextMenuStrip.Items.Add("Exit", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/exit.png"), (x, y) =>
             {
-                SaveManager.SaveAll();
-                Process.GetCurrentProcess().Kill();
+                _trayIcon.Visible = false;
+                AppBarHelper.UnregisterAppBar(this);
+                System.Windows.Application.Current.Shutdown();
             });
 
             _trayIcon.Visible = true;
@@ -188,14 +266,39 @@ namespace DynamicWin.Main
             this.WindowState = WindowState.Normal;
             this.ResizeMode = ResizeMode.CanResize;
 
-            WindowPositionHelper.CenterWindowOnMonitor(this, clampedIndex);
+            UpdateWindowPosition();
             this.ResizeMode = ResizeMode.NoResize;
 
             // Move the window in App.xaml.cs as well
             if (System.Windows.Application.Current is DynamicWinMain app)
             {
-                app.MoveToMonitor(clampedIndex);
+                // This will be handled by the direct call here in most cases
             }
+        }
+
+        public void UpdateWindowPosition()
+        {
+            WindowPositionHelper.CenterWindowOnMonitor(this, Settings.ScreenIndex);
+            ApplyWorkingArea();
+        }
+
+        private void ApplyWorkingArea()
+        {
+            if (Settings.ShortenWindowsWorkingArea)
+            {
+                // Reserve 40 pixels at the top
+                AppBarHelper.RegisterAppBar(this, 40);
+            }
+            else
+            {
+                AppBarHelper.UnregisterAppBar(this);
+            }
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            AppBarHelper.UnregisterAppBar(this);
+            base.OnClosing(e);
         }
 
         public static int GetMonitorCount()

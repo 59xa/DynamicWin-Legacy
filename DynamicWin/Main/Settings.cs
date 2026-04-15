@@ -1,4 +1,4 @@
-﻿using DynamicWin.Resources;
+using DynamicWin.Resources;
 using DynamicWin.UI.Menu.Menus;
 using DynamicWin.UI.UIElements;
 using DynamicWin.Utils;
@@ -29,9 +29,40 @@ namespace DynamicWin.Main
         private static int releaseStream;
         private static bool allowAutomaticUpdates = true;
         private static bool reduceWorkingArea;
+        private static bool shortenWindowsWorkingArea;
+
+        public static bool ShortenWindowsWorkingArea 
+        { 
+            get => shortenWindowsWorkingArea; 
+            set 
+            {
+                shortenWindowsWorkingArea = value;
+                try
+                {
+                    if (Application.Current != null)
+                    {
+                        Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            try
+                            {
+                                if (MainForm.Instance != null)
+                                    MainForm.Instance.UpdateWindowPosition();
+                            }
+                            catch { }
+                        }));
+                    }
+                    else
+                    {
+                        if (MainForm.Instance != null)
+                            MainForm.Instance.UpdateWindowPosition();
+                    }
+                }
+                catch { }
+            }
+        }
 
         public static IslandObject.IslandMode IslandMode { get => islandMode; set => islandMode = value; }
-        public static bool AllowBlur { get => allowBlur; set => allowBlur = value; }
+        public static bool AllowBlur { get => false; set => allowBlur = value; } // Temporarily disabled
         public static bool AllowAnimation { get => allowAnimation; set => allowAnimation = value; }
         public static bool AntiAliasing { get => antiAliasing; set => antiAliasing = value; }
         public static bool ToggleHighRefreshRate { get => toggleHighRefreshRate; set => toggleHighRefreshRate = value; }
@@ -109,6 +140,8 @@ namespace DynamicWin.Main
                     AllowAutomaticUpdates = SaveManager.Contains("settings.AllowAutomaticUpdates") ? (bool)SaveManager.Get("settings.AllowAutomaticUpdates") : true;
 
                     AlwaysTopmost = SaveManager.Contains("settings.ReduceWorkingArea") ? (bool)SaveManager.Get("settings.ReduceWorkingArea") : true;
+
+                    ShortenWindowsWorkingArea = SaveManager.Contains("settings.ShortenWindowsWorkingArea") ? (bool)SaveManager.Get("settings.ShortenWindowsWorkingArea") : false;
 
                     Theme = (int)((Int64)SaveManager.Get("settings.theme"));
                     ScreenIndex = (int)((Int64)SaveManager.Get("settings.screenindex"));
@@ -221,6 +254,8 @@ namespace DynamicWin.Main
 
             SaveManager.Add("settings.AllowAutomaticUpdates", AllowAutomaticUpdates);
             SaveManager.Add("settings.ReduceWorkingArea", AlwaysTopmost);
+
+            SaveManager.Add("settings.ShortenWindowsWorkingArea", ShortenWindowsWorkingArea);
 
             SaveManager.Add("settings.theme", Theme);
             SaveManager.Add("settings.screenindex", ScreenIndex);

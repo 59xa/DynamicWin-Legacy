@@ -157,81 +157,16 @@ namespace DynamicWin.UI.UIElements.Custom
 
             // Hook play/pause button to also toggle optimistic UI state
             btnPlay = new DWImageButton(this, Res.Play, new Vec2(0, 0), new Vec2(32, 32), () => {
-                // Determine desired action (play or pause)
-                bool currentlyPlaying = GetEffectivePlayingState();
-                bool willPlay = !currentlyPlaying;
-
-                optimisticState = willPlay;
+                // Optimistic UI toggle
+                optimisticState = !GetEffectivePlayingState();
                 optimisticActive = true;
+                if (btnPlay != null) btnPlay.Image.Image = optimisticState ? (Res.Pause ?? Res.Stop) : Res.Play;
 
-                // Update icon immediately
-                if (btnPlay != null)
-                {
-                    btnPlay.Image.Image = optimisticState ? (Res.Pause ?? Res.Stop) : Res.Play;
-                }
-
-                // Try WinRT play/pause separately (Play vs Pause) and force a timeline refresh afterwards
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        bool ok = await MediaInfo.TryTogglePlayPauseAsync().ConfigureAwait(false);
-
-                        if (!ok)
-                        {
-                            // Fallback toggle if specific call isn't supported
-                            controller.PlayPause();
-                        }
-
-                        // Immediately update local timeline/playback state optimistically so UI responds fast
-                        try
-                        {
-                            lock (mediaLock)
-                            {
-                                var now = DateTime.UtcNow;
-                                if (willPlay)
-                                {
-                                    // Resume: mark as playing and record reference time so virtual progression continues from lastSampleElapsed
-                                    if (!lastSampleElapsed.HasValue)
-                                    {
-                                        // If there's no sample, set to zero
-                                        lastSampleElapsed = TimeSpan.Zero;
-                                    }
-                                    lastSampleReceivedAt = now;
-                                    lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-                                    optimisticActive = false;
-                                    timelineFetchedOnce = true;
-                                }
-                                else
-                                {
-                                    // Pause: capture current elapsed and mark paused so virtual progression stops
-                                    if (!lastSampleElapsed.HasValue)
-                                    {
-                                        lastSampleElapsed = TimeSpan.Zero;
-                                    }
-
-                                    if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing && lastSampleReceivedAt != DateTime.MinValue)
-                                    {
-                                        try
-                                        {
-                                            lastSampleElapsed = lastSampleElapsed.Value + (now - lastSampleReceivedAt);
-                                        }
-                                        catch { }
-                                    }
-
-                                    lastSampleReceivedAt = now;
-                                    lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused;
-                                    optimisticActive = false;
-                                    timelineFetchedOnce = true;
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-                    catch
-                    {
-                        try { controller.PlayPause(); } catch { }
-                    }
+                _ = Task.Run(() => {
+                    try { controller.PlayPause(); } catch { }
+                    // Quick sleep and reset optimistic mode to let standard update loops take over
+                    Thread.Sleep(300);
+                    lock(mediaLock) { optimisticActive = false; }
                 });
              }, alignment: UIAlignment.TopLeft)
             {

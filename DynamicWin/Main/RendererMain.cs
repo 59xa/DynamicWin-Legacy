@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -13,6 +13,7 @@ using DynamicWin.UI.Menu.Menus;
 using DynamicWin.UI.UIElements;
 using DynamicWin.Utils;
 using DynamicWin.WPFBinders;
+using NAudio.CoreAudioApi;
 using SkiaSharp;
 
 namespace DynamicWin.Main
@@ -28,8 +29,30 @@ namespace DynamicWin.Main
         private bool lastIslandShadowSetting = Settings.ToggleIslandShadow;
         private bool lastShadowState = false; // Tracks whether shadow was active last frame
 
-        public static Vec2 ScreenDimensions => new Vec2(MainForm.Instance.Width, MainForm.Instance.Height);
-        public static Vec2 CursorPosition => new Vec2(Mouse.GetPosition(MainForm.Instance).X, Mouse.GetPosition(MainForm.Instance).Y);
+        public static Vec2 ScreenDimensions
+        {
+            get
+            {
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
+                if (active != null) return new Vec2((float)active.Width, (float)active.Height);
+                return new Vec2((float)MainForm.Instance.Width, (float)MainForm.Instance.Height);
+            }
+        }
+
+        public static Vec2 CursorPosition
+        {
+            get
+            {
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
+                if (active != null)
+                {
+                    var pos = Mouse.GetPosition(active);
+                    return new Vec2((float)pos.X, (float)pos.Y);
+                }
+                var mainPos = Mouse.GetPosition(MainForm.Instance);
+                return new Vec2((float)mainPos.X, (float)mainPos.Y);
+            }
+        }
 
         private static RendererMain? instance;
         public static RendererMain? Instance => instance;
@@ -47,8 +70,21 @@ namespace DynamicWin.Main
 
         private Stopwatch? updateStopwatch;
         private int initialScreenBrightness = 0;
+        private float initialSystemVolume = -1f;
+        private bool initialMuteState = false;
         private float deltaTime = 0f;
         public float DeltaTime => deltaTime;
+
+        private bool IsMuted()
+        {
+            return (DynamicWinMain.defaultDevice == null) ? true : DynamicWinMain.defaultDevice.AudioEndpointVolume.Mute;
+        }
+
+        private float GetVolumePercent()
+        {
+            var volume = (DynamicWinMain.defaultDevice == null) ? 1f : DynamicWinMain.defaultDevice.AudioEndpointVolume.MasterVolumeLevelScalar;
+            return volume * 100f;
+        }
 
         private bool isInitialized = false;
         public int canvasWithoutClip;
@@ -195,18 +231,6 @@ namespace DynamicWin.Main
                 islandObject.hidden = !islandObject.hidden;
             }
 
-            if ((key == Keys.VolumeDown || key == Keys.VolumeMute || key == Keys.VolumeUp) && PopupOptions.saveData.volumePopup)
-            {
-                if (MenuManager.Instance.ActiveMenu is HomeMenu)
-                {
-                    MenuManager.OpenOverlayMenu(new VolumeAdjustMenu(), 2.75f);
-                }
-                else if (VolumeAdjustMenu.timerUntilClose != null)
-                {
-                    VolumeAdjustMenu.timerUntilClose = 0f;
-                }
-            }
-
             if (key == Keys.MediaNextTrack || key == Keys.MediaPreviousTrack)
             {
                 if (MenuManager.Instance.ActiveMenu is HomeMenu)
@@ -233,19 +257,66 @@ namespace DynamicWin.Main
 
             onUpdate?.Invoke(DeltaTime);
 
-            if (BrightnessAdjustMenu.GetBrightness() != initialScreenBrightness && PopupOptions.saveData.brightnessPopup)
+            // --- Global System Monitor (Volume, Mute, Brightness) ---
+            try
             {
-                initialScreenBrightness = BrightnessAdjustMenu.GetBrightness();
-                if (MenuManager.Instance.ActiveMenu is HomeMenu)
+                // 1. Brightness Detection
+                int currentBrightness = BrightnessAdjustMenu.GetBrightness();
+                if (currentBrightness != initialScreenBrightness && PopupOptions.saveData.brightnessPopup)
                 {
-                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu());
+                    initialScreenBrightness = currentBrightness;
+                    if (MenuManager.Instance.ActiveMenu is BrightnessAdjustMenu)
+                    {
+                        MenuManager.RefreshOverlay(1.0f);
+                        BrightnessAdjustMenu.timerUntilClose = 0f;
+                    }
+                    else
+                    {
+                        MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu(), 1.0f);
+                        BrightnessAdjustMenu.timerUntilClose = 0f;
+                    }
                 }
-                else if (BrightnessAdjustMenu.timerUntilClose != null)
+                else { initialScreenBrightness = currentBrightness; } // Keep sync even if setting off
+
+                // 2. Volume & Mute Detection
+                float currentVolume = GetVolumePercent();
+                bool currentMute = IsMuted();
+
+                if (initialSystemVolume == -1f)
                 {
-                    BrightnessAdjustMenu.PressBK();
-                    BrightnessAdjustMenu.timerUntilClose = 0f;
+                    initialSystemVolume = currentVolume;
+                    initialMuteState = currentMute;
+                }
+
+                bool volumeDiff = Math.Abs(currentVolume - initialSystemVolume) > 0.01f;
+                bool muteDiff = currentMute != initialMuteState;
+
+                if ((volumeDiff || muteDiff) && PopupOptions.saveData.volumePopup)
+                {
+                    if (MenuManager.Instance.ActiveMenu is VolumeAdjustMenu)
+                    {
+                        MenuManager.RefreshOverlay(1.0f);
+                        VolumeAdjustMenu.timerUntilClose = 0f;
+                    }
+                    else
+                    {
+                        MenuManager.OpenOverlayMenu(new VolumeAdjustMenu(), 1.0f);
+                        VolumeAdjustMenu.timerUntilClose = 0f;
+                    }
+                }
+
+                // Global Sync: MUST happen every frame to prevent phantom triggers
+                initialSystemVolume = currentVolume;
+                initialMuteState = currentMute;
+
+                // 3. Audio Device Recovery
+                if (DynamicWinMain.defaultDevice == null)
+                {
+                    try { DynamicWinMain.defaultDevice = new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia); }
+                    catch { }
                 }
             }
+            catch { }
 
             MenuManager.Instance.Update(DeltaTime);
 
@@ -335,7 +406,7 @@ namespace DynamicWin.Main
                 try { islandShadow.DrawCall(canvas); } catch { }
             }
 
-            if (islandObject.maskInToIsland) Mask(canvas);
+            if (islandObject.maskInToIsland && !UIObject.GlobalDisableIslandMasking) Mask(canvas);
             islandObject.DrawCall(canvas);
 
             if (MainIsland.hidden) return;
@@ -375,7 +446,7 @@ namespace DynamicWin.Main
                         }
                     }
 
-                    if (uiObject.maskInToIsland)
+                    if (uiObject.maskInToIsland && !UIObject.GlobalDisableIslandMasking)
                     {
                         Mask(canvas);
                     }

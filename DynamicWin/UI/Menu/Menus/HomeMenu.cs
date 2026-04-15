@@ -1,4 +1,4 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using DynamicWin.Resources;
 using DynamicWin.UI.UIElements;
 using DynamicWin.UI.UIElements.Custom;
@@ -23,6 +23,7 @@ namespace DynamicWin.UI.Menu.Menus
 
         float songSizeAddition = 0f;
         float songLocalPosXAddition = 0f;
+
 
         public void NextSong()
         {
@@ -120,10 +121,6 @@ namespace DynamicWin.UI.Menu.Menus
 
         UIObject topContainer;
 
-        DWTextImageButton widgetButton;
-        DWTextImageButton trayButton;
-        DWTextImageButton mediaButton;
-
         Tray tray;
         MediaPlayer media;
 
@@ -173,62 +170,11 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(next);
             objects.Add(previous);
 
-            widgetButton = new DWTextImageButton(topContainer, Resources.Res.Widgets, "Widgets", new Vec2(75 / 2 + 5, 0), new Vec2(75, 20), () =>
-            {
-                // Switch to widgets view
-                currentBigMenuMode = BigMenuMode.Widgets;
-                isWidgetMode = true;
-            },
-            UIAlignment.MiddleLeft);
-            widgetButton.Text.alignment = UIAlignment.MiddleLeft;
-            widgetButton.Text.Anchor.X = 0;
-            widgetButton.Text.Position = new Vec2(28.5f, 0);
-            widgetButton.normalColor = Col.Transparent;
-            widgetButton.hoverColor = Col.Transparent;
-            widgetButton.clickColor = Theme.Primary.Override(a: 0.35f);
-            widgetButton.roundRadius = 25;
-
-            bigMenuItems.Add(widgetButton);
-
-            trayButton = new DWTextImageButton(topContainer, Resources.Res.Tray, "Tray", new Vec2(112.5f, 0), new Vec2(57.5f, 20), () =>
-            {
-                // Switch to tray view
-                currentBigMenuMode = BigMenuMode.Tray;
-                isWidgetMode = false;
-            },
-            UIAlignment.MiddleLeft);
-            trayButton.Text.alignment = UIAlignment.MiddleLeft;
-            trayButton.Text.Anchor.X = 0;
-            trayButton.Text.Position = new Vec2(27.5f, 0);
-            trayButton.normalColor = Col.Transparent;
-            trayButton.hoverColor = Col.Transparent;
-            trayButton.clickColor = Theme.Primary.Override(a: 0.35f);
-            trayButton.roundRadius = 25;
-
-            bigMenuItems.Add(trayButton);
-
-            mediaButton = new DWTextImageButton(topContainer, Resources.Res.PlayPause, "Media", new Vec2(158.5f + 20, 0), new Vec2(65, 20), () =>
-            {
-                // Switch to media view
-                currentBigMenuMode = BigMenuMode.Media;
-                isWidgetMode = false;
-                // Force re-notify current thumbnail to all widgets after switching to Media view
-                try { MediaThumbnailService.Instance.ForceNotifyCurrentThumbnail(); } catch { }
-            },
-            UIAlignment.MiddleLeft);
-            mediaButton.Text.alignment = UIAlignment.MiddleLeft;
-            mediaButton.Text.Anchor.X = 0;
-            mediaButton.Text.Position = new Vec2(28.5f, 0);
-            mediaButton.normalColor = Col.Transparent;
-            mediaButton.hoverColor = Col.Transparent;
-            mediaButton.clickColor = Theme.Primary.Override(a: 0.35f);
-            mediaButton.roundRadius = 25;
-
-            bigMenuItems.Add(mediaButton);
-
+            // Navigation buttons removed per user request.
             var settingsButton = new DWImageButton(topContainer, Resources.Res.Settings, new Vec2(-20f, 0), new Vec2(20, 20), () =>
             {
-                MenuManager.OpenMenu(new SettingsMenu());
+                var settingsWindow = new DynamicWin.UI.Forms.SettingsWindow();
+                settingsWindow.Show();
 
 #if DEBUG
                 System.Diagnostics.Debug.WriteLine("[HOME MENU] User opened Settings menu.");
@@ -360,6 +306,17 @@ namespace DynamicWin.UI.Menu.Menus
 
         public override void Update()
         {
+            // Handle content visibility based on current mode
+            bool isWidgets = currentBigMenuMode == BigMenuMode.Widgets;
+            bool isTray = currentBigMenuMode == BigMenuMode.Tray;
+            bool isMedia = currentBigMenuMode == BigMenuMode.Media;
+
+            bigWidgetsContainer.SetActive(isWidgets);
+            tray.SetActive(isTray);
+            media.SetActive(isMedia);
+
+            // Display logic for different modes handled elsewhere
+
             tray.Size = new Vec2(topContainer.Size.X - 5f, IslandSizeBig().Y - bCD - topContainer.Size.Y);
 
             // Enable / Disable small widgets
@@ -382,12 +339,7 @@ namespace DynamicWin.UI.Menu.Menus
                 }
             });
 
-            widgetButton.normalColor = Col.Lerp(widgetButton.normalColor, (currentBigMenuMode == BigMenuMode.Widgets) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            trayButton.normalColor = Col.Lerp(trayButton.normalColor, (currentBigMenuMode == BigMenuMode.Tray) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            mediaButton.normalColor = Col.Lerp(mediaButton.normalColor, (currentBigMenuMode == BigMenuMode.Media) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            widgetButton.hoverColor = Col.Lerp(widgetButton.hoverColor, (currentBigMenuMode == BigMenuMode.Widgets) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            trayButton.hoverColor = Col.Lerp(trayButton.hoverColor, (currentBigMenuMode == BigMenuMode.Tray) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
-            mediaButton.hoverColor = Col.Lerp(mediaButton.normalColor, (currentBigMenuMode == BigMenuMode.Media) ? Col.White.Override(a: 0.075f) : Col.Transparent, 15f * RendererMain.Instance.DeltaTime);
+            // Navigation button color animations removed per user request.
 
             RendererMain.Instance.MainIsland.LocalPosition.X = Mathf.Lerp(RendererMain.Instance.MainIsland.LocalPosition.X,
                 songLocalPosXAddition, 2f * RendererMain.Instance.DeltaTime);
