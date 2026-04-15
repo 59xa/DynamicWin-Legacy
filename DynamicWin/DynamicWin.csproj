@@ -9,8 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Company>github.com/aydocs</Company>
-    <Authors>github.com/aydocs</Authors>
+    <Company>$(Authors)</Company>
     <Platforms>AnyCPU;ARM64</Platforms>
   </PropertyGroup>
 
