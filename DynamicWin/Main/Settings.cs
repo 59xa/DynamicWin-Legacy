@@ -28,10 +28,9 @@ namespace DynamicWin.Main
         private static int activeScreenIndex;
         private static int releaseStream;
         private static bool allowAutomaticUpdates = true;
-        private static bool reduceWorkingArea;
+        private static bool alwaysTopmost;
         private static bool shortenWindowsWorkingArea;
 
-<<<<<<< HEAD
         public static bool ShortenWindowsWorkingArea 
         { 
             get => shortenWindowsWorkingArea; 
@@ -61,9 +60,6 @@ namespace DynamicWin.Main
                 catch { }
             }
         }
-=======
-        public static bool ShortenWindowsWorkingArea { get => shortenWindowsWorkingArea; set => shortenWindowsWorkingArea = value; }
->>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
 
         public static IslandObject.IslandMode IslandMode { get => islandMode; set => islandMode = value; }
         public static bool AllowBlur { get => false; set => allowBlur = value; } // Temporarily disabled
@@ -80,10 +76,10 @@ namespace DynamicWin.Main
         public static bool AllowAutomaticUpdates { get => allowAutomaticUpdates; set => allowAutomaticUpdates = value; }
         public static bool AlwaysTopmost
         {
-            get => reduceWorkingArea;
+            get => alwaysTopmost;
             set
             {
-                reduceWorkingArea = value;
+                alwaysTopmost = value;
 
                 try
                 {
@@ -143,7 +139,7 @@ namespace DynamicWin.Main
 
                     AllowAutomaticUpdates = SaveManager.Contains("settings.AllowAutomaticUpdates") ? (bool)SaveManager.Get("settings.AllowAutomaticUpdates") : true;
 
-                    AlwaysTopmost = SaveManager.Contains("settings.ReduceWorkingArea") ? (bool)SaveManager.Get("settings.ReduceWorkingArea") : true;
+                    AlwaysTopmost = SaveManager.Contains("settings.AlwaysTopmost") ? (bool)SaveManager.Get("settings.AlwaysTopmost") : true;
 
                     ShortenWindowsWorkingArea = SaveManager.Contains("settings.ShortenWindowsWorkingArea") ? (bool)SaveManager.Get("settings.ShortenWindowsWorkingArea") : false;
 
@@ -257,7 +253,7 @@ namespace DynamicWin.Main
             SaveManager.Add("settings.ReleaseStream", ReleaseStream);
 
             SaveManager.Add("settings.AllowAutomaticUpdates", AllowAutomaticUpdates);
-            SaveManager.Add("settings.ReduceWorkingArea", AlwaysTopmost);
+            SaveManager.Add("settings.AlwaysTopmost", AlwaysTopmost);
 
             SaveManager.Add("settings.ShortenWindowsWorkingArea", ShortenWindowsWorkingArea);
 

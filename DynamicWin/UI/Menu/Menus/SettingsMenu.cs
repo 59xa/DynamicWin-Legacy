@@ -69,12 +69,6 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
             Settings.AlwaysTopmost = alwaysTopmost.IsChecked;
             Settings.ShortenWindowsWorkingArea = shortenWindowsWorkingArea != null && shortenWindowsWorkingArea.IsChecked;
-<<<<<<< HEAD
-=======
-
-            // Apply or remove the AppBar working area reservation immediately
-            AppBarManager.Apply(MainForm.Instance, Settings.ScreenIndex, Settings.ShortenWindowsWorkingArea);
->>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
 
             // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
@@ -163,7 +157,6 @@ namespace DynamicWin.UI.Menu.Menus
                 objects.Add(islandMode);
             }
 
-<<<<<<< HEAD
             {
                 var workingAreaTitle = new DWText(island, "Working Area", new Vec2(25, 0), UIAlignment.TopLeft);
                 workingAreaTitle.Font = Res.SFProBold;
@@ -227,8 +220,6 @@ namespace DynamicWin.UI.Menu.Menus
             objects.Add(shortenDisc1);
             objects.Add(shortenDisc2);
 
-=======
->>>>>>> 578588243fc3c8382f91a900c41cde23a6b9c211
             alwaysTopmost = new DWCheckbox(island, $"Keep interface always topmost", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             alwaysTopmost.IsChecked = Settings.AlwaysTopmost;
             alwaysTopmost.Anchor.X = 0;
