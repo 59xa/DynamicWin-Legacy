@@ -134,6 +134,7 @@ namespace DynamicWin
 
         protected override void OnExit(ExitEventArgs e)
         {
+            AppBarHelper.ForceUnregisterLast();
             base.OnExit(e);
 
             try
@@ -200,7 +201,7 @@ namespace DynamicWin
             try
             {
                 if (mainForm == null) return;
-                WindowPositionHelper.CenterWindowOnMonitor(mainForm, Settings.ScreenIndex);
+                mainForm.UpdateWindowConfiguration();
             }
             catch { }
         }

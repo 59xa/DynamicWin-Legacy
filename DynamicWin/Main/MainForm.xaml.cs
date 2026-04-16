@@ -2,6 +2,7 @@
 using DynamicWin.UI.Menu;
 using DynamicWin.UI.Menu.Menus;
 using DynamicWin.Utils;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
@@ -25,6 +26,7 @@ namespace DynamicWin.Main
 
         internal Forms.ToolStripMenuItem _settingsTrayItem;
 
+        public static IntPtr Handle { get; private set; }
 
         private DateTime _lastRenderTime;
         // Target interval driven by monitor refresh rate (set in ctor)
@@ -96,6 +98,11 @@ namespace DynamicWin.Main
             this.WindowStyle = WindowStyle.None;
             this.WindowState = WindowState.Maximized;
             this.ResizeMode = ResizeMode.NoResize;
+            this.SourceInitialized += (s, e) =>
+            {
+                Handle = new WindowInteropHelper(this).Handle;
+                UpdateWindowConfiguration();
+            };
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
@@ -138,7 +145,7 @@ namespace DynamicWin.Main
                 this.Topmost = true;
             };
 
-            _trayIcon.ContextMenuStrip.Items.Add("Restart Control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
+            _trayIcon.ContextMenuStrip.Items.Add("Restart control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
             {
                 if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
                 this.Content = new Grid();
@@ -157,8 +164,9 @@ namespace DynamicWin.Main
 
             _trayIcon.ContextMenuStrip.Items.Add("Exit", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/exit.png"), (x, y) =>
             {
-                SaveManager.SaveAll();
-                Process.GetCurrentProcess().Kill();
+                _trayIcon.Visible = false;
+                AppBarHelper.UnregisterAppBar(this);
+                Application.Current.Shutdown();
             });
 
             _trayIcon.Visible = true;
@@ -188,14 +196,26 @@ namespace DynamicWin.Main
             this.WindowState = WindowState.Normal;
             this.ResizeMode = ResizeMode.CanResize;
 
-            WindowPositionHelper.CenterWindowOnMonitor(this, clampedIndex);
+            UpdateWindowConfiguration();
             this.ResizeMode = ResizeMode.NoResize;
+        }
 
-            // Move the window in App.xaml.cs as well
-            if (System.Windows.Application.Current is DynamicWinMain app)
-            {
-                app.MoveToMonitor(clampedIndex);
-            }
+        public void UpdateWindowConfiguration()
+        {
+            WindowPositionHelper.CenterWindowOnMonitor(this, Settings.ScreenIndex);
+            ApplyWorkingArea();
+        }
+
+        private void ApplyWorkingArea()
+        {
+            if (Settings.ReduceWorkingArea) AppBarHelper.RegisterAppBar(this, 40);
+            else AppBarHelper.UnregisterAppBar(this);
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            AppBarHelper.UnregisterAppBar(this);
+            base.OnClosing(e);
         }
 
         public static int GetMonitorCount()

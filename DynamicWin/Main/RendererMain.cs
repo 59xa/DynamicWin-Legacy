@@ -28,8 +28,30 @@ namespace DynamicWin.Main
         private bool lastIslandShadowSetting = Settings.ToggleIslandShadow;
         private bool lastShadowState = false; // Tracks whether shadow was active last frame
 
-        public static Vec2 ScreenDimensions => new Vec2(MainForm.Instance.Width, MainForm.Instance.Height);
-        public static Vec2 CursorPosition => new Vec2(Mouse.GetPosition(MainForm.Instance).X, Mouse.GetPosition(MainForm.Instance).Y);
+        public static Vec2 ScreenDimensions
+        {
+            get
+            {
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
+                if (active != null) return new Vec2((float)active.Width, (float)active.Height);
+                return new Vec2((float)MainForm.Instance.Width, (float)MainForm.Instance.Height);
+            }
+        }
+
+        public static Vec2 CursorPosition
+        {
+            get
+            {
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
+                if (active != null)
+                {
+                    var pos = Mouse.GetPosition(active);
+                    return new Vec2((float)pos.X, (float)pos.Y);
+                }
+                var mainPos = Mouse.GetPosition(MainForm.Instance);
+                return new Vec2((float)mainPos.X, (float)mainPos.Y);
+            }
+        }
 
         private static RendererMain? instance;
         public static RendererMain? Instance => instance;

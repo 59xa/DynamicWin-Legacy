@@ -53,6 +53,8 @@ namespace DynamicWin.UI.Widgets.Small
 
         public MediaThumbnailWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
+            UseGpuCaching = true;
+
             // Ensure shared setting loaded
             try { RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.Load(); } catch { }
 

@@ -35,6 +35,7 @@ namespace DynamicWin.UI.UIElements
             this.text = text;
             Color = Theme.TextMain;
             font = Resources.Res.SFProRegular;
+            UseGpuCaching = true;
         }
 
         public override void Draw(SKCanvas canvas)
