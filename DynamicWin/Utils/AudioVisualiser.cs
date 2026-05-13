@@ -226,11 +226,17 @@ namespace DynamicWin.Utils
         {
             try
             {
-                // Only capture raw bytes and mark dirty. Avoid creating or disposing SKImage here.
+                // Media object has null ThumbnailData by design; fetch bytes from service instead
+                byte[]? bytes = null;
+                try
+                {
+                    bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                }
+                catch { }
+
                 lock (thumbLock)
                 {
-                    pendingThumbnailBytes = m?.ThumbnailData != null ? (byte[])m.ThumbnailData.Clone() : null;
-                    // Update cached bytes reference so Draw sees latest available
+                    pendingThumbnailBytes = bytes != null && bytes.Length > 0 ? (byte[])bytes.Clone() : null;
                     cachedThumbnailBytes = pendingThumbnailBytes;
                     thumbnailDirty = true;
                     thumbnailFade = 0f;
@@ -254,9 +260,21 @@ namespace DynamicWin.Utils
                         return;
                     }
 
-                    pendingThumbnailBytes = e.ThumbnailBytes != null ? (byte[])e.ThumbnailBytes.Clone() : null;
+                    // Prefer bytes from event; fall back to service cache
+                    byte[]? bytes = e.ThumbnailBytes;
+                    if (bytes == null || bytes.Length == 0)
+                    {
+                        try
+                        {
+                            bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                        }
+                        catch { }
+                    }
+
+                    pendingThumbnailBytes = bytes != null && bytes.Length > 0 ? (byte[])bytes.Clone() : null;
                     cachedThumbnailBytes = pendingThumbnailBytes;
                     thumbnailDirty = true;
+                    thumbnailFade = 0f;
                 }
             }
             catch { }

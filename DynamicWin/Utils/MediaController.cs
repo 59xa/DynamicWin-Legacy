@@ -240,6 +240,14 @@ namespace DynamicWin.Utils
 
                 // Reset thumb cache on song change
                 _thumbnailBytesCache = null;
+
+                // Notify the central thumbnail service that media properties changed
+                // This ensures immediate thumbnail fetch and UI updates
+                try
+                {
+                    MediaThumbnailService.Instance.ForceNotifyCurrentThumbnail();
+                }
+                catch { }
             }
             catch { }
         }

@@ -96,6 +96,8 @@ namespace DynamicWin
             try
             {
                 MediaInfo.Initialize();
+                // Also initialise the thumbnail service to start event loop
+                _ = MediaThumbnailService.Instance;
             }
             catch { }
 
