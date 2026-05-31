@@ -965,7 +965,7 @@ namespace DynamicWin.UI.UIElements.Custom
         {
             const float btnSize = 28f;
             const float btnSpacing = 8f;
-            const float buttonOffsetFromThumbnail = 30f;
+            const float buttonOffsetFromThumbnail = 25f;
             float buttonsYOffset = 16f + TitleTextSize + ArtistTextSize + 24f;
             float startXLocal = thumbnailRect.Right - layoutRect.Left + buttonOffsetFromThumbnail;
 
