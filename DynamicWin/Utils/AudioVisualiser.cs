@@ -81,6 +81,7 @@ namespace DynamicWin.Utils
         public bool UseThumbnailBackground { get; set; } = false;
         public float ThumbnailFetchInterval { get; set; } = 1.0f;
         public float ThumbnailBlurAmount { get; set; } = 5f;
+        private bool thumbnailServiceSubscribed;
 
         public Col Primary;
         public Col Secondary;
@@ -149,8 +150,7 @@ namespace DynamicWin.Utils
 
             // Subscribe to central thumbnail service. Only capture bytes in event handlers to avoid
             // creating Skia objects on background threads which can cause native crashes.
-            MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
-            MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
+            SetThumbnailSubscription(true);
 
             // Prime thumbnail cache from central service using bytes if available. Avoid creating SKImage here.
             try
@@ -228,6 +228,34 @@ namespace DynamicWin.Utils
                 StartCapture();
             else
                 StopCapture(resetBars: true);
+        }
+
+        public void SetThumbnailSubscription(bool enabled)
+        {
+            if (thumbnailServiceSubscribed == enabled) return;
+
+            if (enabled)
+            {
+                MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
+                MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
+                thumbnailServiceSubscribed = true;
+                return;
+            }
+
+            try { MediaThumbnailService.Instance.Unsubscribe(OnThumbnailChanged); } catch { }
+            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChangedEvent; } catch { }
+            thumbnailServiceSubscribed = false;
+
+            lock (thumbLock)
+            {
+                cachedThumbnailBytes = null;
+                pendingThumbnailBytes = null;
+                thumbnailDirty = false;
+                cachedThumbnailImage?.Dispose();
+                cachedThumbnailImage = null;
+                previousThumbnailImage?.Dispose();
+                previousThumbnailImage = null;
+            }
         }
 
         private void StartCapture()
@@ -340,8 +368,7 @@ namespace DynamicWin.Utils
             base.OnDestroy();
 
             // Unsubscribe
-            try { MediaThumbnailService.Instance.Unsubscribe(OnThumbnailChanged); } catch { }
-            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChangedEvent; } catch { }
+            SetThumbnailSubscription(false);
 
             StopCapture(resetBars: false);
 
