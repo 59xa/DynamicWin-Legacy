@@ -9,9 +9,13 @@ namespace DynamicWin.Resources
 {
     public class Res
     {
-        public static SKTypeface SFProRegular { get => LoadTypeface("Resources\\SF-Pro-Display-Regular.otf"); }
-        public static SKTypeface SFProBold { get => LoadTypeface("Resources\\SF-Pro-Display-Bold.otf"); }
-        public static SKTypeface CascadiaMono { get => LoadTypeface("Resources\\CascadiaMono.ttf"); }
+        private static SKTypeface? sfProRegular;
+        private static SKTypeface? sfProBold;
+        private static SKTypeface? cascadiaMono;
+
+        public static SKTypeface SFProRegular => sfProRegular ??= LoadTypeface("Resources\\SF-Pro-Display-Regular.otf");
+        public static SKTypeface SFProBold => sfProBold ??= LoadTypeface("Resources\\SF-Pro-Display-Bold.otf");
+        public static SKTypeface CascadiaMono => cascadiaMono ??= LoadTypeface("Resources\\CascadiaMono.ttf");
 
         public static SKBitmap searchIcon;
         public static SKBitmap editIcon;
@@ -209,7 +213,7 @@ namespace DynamicWin.Resources
             {
                 using (var stream = File.OpenRead("Resources\\icons\\" + path))
                 {
-                    var image = SKImage.FromEncodedData(stream);
+                    using var image = SKImage.FromEncodedData(stream);
                     return SKBitmap.FromImage(image);
                 }
             }
@@ -228,7 +232,7 @@ namespace DynamicWin.Resources
             }catch(Exception e)
             {
                 System.Diagnostics.Debug.WriteLine("Could not load font: " + path);
-                return SFProRegular;
+                return SKTypeface.Default;
             }
         }
     }

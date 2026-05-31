@@ -44,21 +44,23 @@ namespace DynamicWin.UI.UIElements
             Color = normalColor;
         }
 
+        public override bool WantsRealtimeUpdate
+        {
+            get
+            {
+                var targetSize = initialScale * GetTargetScaleMultiplier();
+                return IsMouseDown ||
+                       Math.Abs(Size.X - targetSize.X) > 0.1f ||
+                       Math.Abs(Size.Y - targetSize.Y) > 0.1f;
+            }
+        }
+
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
             Vec2 currentSize = initialScale;
-            scaleMultiplier = Vec2.one;
-
-            if (IsHovering && !IsMouseDown)
-                scaleMultiplier *= hoverScaleMulti;
-            else if (IsMouseDown)
-                scaleMultiplier *= clickScaleMulti;
-            else if (!IsHovering && !IsMouseDown)
-                scaleMultiplier *= normalScaleMulti;
-            else
-                scaleMultiplier *= normalScaleMulti;
+            scaleMultiplier = GetTargetScaleMultiplier();
 
             currentSize *= scaleMultiplier;
 
@@ -72,6 +74,16 @@ namespace DynamicWin.UI.UIElements
                 Color = GetColor(Col.Lerp(Color, normalColor, colorSmoothingSpeed * deltaTime));
             else
                 Color = GetColor(Col.Lerp(Color, normalColor, colorSmoothingSpeed * deltaTime));
+        }
+
+        protected Vec2 GetTargetScaleMultiplier()
+        {
+            if (IsHovering && !IsMouseDown)
+                return hoverScaleMulti;
+            if (IsMouseDown)
+                return clickScaleMulti;
+
+            return normalScaleMulti;
         }
 
         public override void OnMouseUp()

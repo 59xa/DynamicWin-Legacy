@@ -28,8 +28,47 @@ namespace DynamicWin.Main
         private bool lastIslandShadowSetting = Settings.ToggleIslandShadow;
         private bool lastShadowState = false; // Tracks whether shadow was active last frame
 
-        public static Vec2 ScreenDimensions => new Vec2(MainForm.Instance.Width, MainForm.Instance.Height);
-        public static Vec2 CursorPosition => new Vec2(Mouse.GetPosition(MainForm.Instance).X, Mouse.GetPosition(MainForm.Instance).Y);
+        public static Vec2 ScreenDimensions
+        {
+            get
+            {
+                if (instance != null && instance.inputSnapshotValid)
+                    return instance.cachedScreenDimensions;
+
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
+                if (active != null) return new Vec2((float)active.Width, (float)active.Height);
+                return new Vec2((float)MainForm.Instance.Width, (float)MainForm.Instance.Height);
+            }
+        }
+
+        public static Vec2 CursorPosition
+        {
+            get
+            {
+                if (instance != null && instance.inputSnapshotValid)
+                    return instance.cachedCursorPosition;
+
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
+                if (active != null)
+                {
+                    var pos = Mouse.GetPosition(active);
+                    return new Vec2((float)pos.X, (float)pos.Y);
+                }
+                var mainPos = Mouse.GetPosition(MainForm.Instance);
+                return new Vec2((float)mainPos.X, (float)mainPos.Y);
+            }
+        }
+
+        public static bool IsLeftMouseButtonDown
+        {
+            get
+            {
+                if (instance != null && instance.inputSnapshotValid)
+                    return instance.cachedLeftMouseDown;
+
+                return Mouse.LeftButton == MouseButtonState.Pressed;
+            }
+        }
 
         private static RendererMain? instance;
         public static RendererMain? Instance => instance;
@@ -47,11 +86,21 @@ namespace DynamicWin.Main
 
         private Stopwatch? updateStopwatch;
         private int initialScreenBrightness = 0;
+        private DateTime lastBrightnessPoll = DateTime.MinValue;
+        private readonly TimeSpan brightnessPollInterval = TimeSpan.FromMilliseconds(500);
         private float deltaTime = 0f;
         public float DeltaTime => deltaTime;
 
         private bool isInitialized = false;
         public int canvasWithoutClip;
+
+        private bool inputSnapshotValid;
+        private Vec2 cachedCursorPosition = Vec2.zero;
+        private Vec2 cachedScreenDimensions = Vec2.zero;
+        private bool cachedLeftMouseDown;
+
+        public bool WantsRealtimeRendering { get; private set; } = true;
+        public bool WantsContinuousRendering { get; private set; } = true;
 
         public RendererMain()
         {
@@ -70,10 +119,6 @@ namespace DynamicWin.Main
             MainForm.Instance.DragLeave += MainForm.Instance.MainForm_DragLeave;
             MainForm.Instance.Drop += MainForm.Instance.OnDrop;
             MainForm.Instance.MouseWheel += MainForm.Instance.OnScroll;
-
-            // Get refresh rate via centralized helper
-            int refreshRate = DisplayHelper.GetRefreshRate();
-            Debug.WriteLine($"Monitor Refresh Rate: {refreshRate} Hz");
 
             // Register to MainForm's centrally throttled render callback instead of subscribing directly to CompositionTarget.Rendering.
             MainForm.Instance.onMainFormRender += Frame;
@@ -219,6 +264,8 @@ namespace DynamicWin.Main
 
         private void Update()
         {
+            CaptureInputSnapshot();
+
             if (updateStopwatch != null)
             {
                 updateStopwatch.Stop();
@@ -233,17 +280,23 @@ namespace DynamicWin.Main
 
             onUpdate?.Invoke(DeltaTime);
 
-            if (BrightnessAdjustMenu.GetBrightness() != initialScreenBrightness && PopupOptions.saveData.brightnessPopup)
+            if (PopupOptions.saveData.brightnessPopup && (DateTime.UtcNow - lastBrightnessPoll) >= brightnessPollInterval)
             {
-                initialScreenBrightness = BrightnessAdjustMenu.GetBrightness();
-                if (MenuManager.Instance.ActiveMenu is HomeMenu)
+                lastBrightnessPoll = DateTime.UtcNow;
+
+                int currentBrightness = BrightnessAdjustMenu.GetBrightness();
+                if (currentBrightness != initialScreenBrightness)
                 {
-                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu());
-                }
-                else if (BrightnessAdjustMenu.timerUntilClose != null)
-                {
-                    BrightnessAdjustMenu.PressBK();
-                    BrightnessAdjustMenu.timerUntilClose = 0f;
+                    initialScreenBrightness = currentBrightness;
+                    if (MenuManager.Instance.ActiveMenu is HomeMenu)
+                    {
+                        MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu());
+                    }
+                    else if (BrightnessAdjustMenu.timerUntilClose != null)
+                    {
+                        BrightnessAdjustMenu.PressBK();
+                        BrightnessAdjustMenu.timerUntilClose = 0f;
+                    }
                 }
             }
 
@@ -298,7 +351,11 @@ namespace DynamicWin.Main
             // Update island shadow to follow island
             islandShadow?.UpdateCall(DeltaTime);
 
-            if (MainIsland.hidden) return;
+            if (MainIsland.hidden)
+            {
+                UpdateRenderDemand();
+                return;
+            }
 
             // Take a stable snapshot of the menu object list to avoid InvalidOperationException
             var uiObjectsSnapshot = objects?.ToArray();
@@ -311,6 +368,77 @@ namespace DynamicWin.Main
                     uiObject.UpdateCall(DeltaTime);
                 }
             }
+
+            UpdateRenderDemand();
+        }
+
+        private void CaptureInputSnapshot()
+        {
+            try
+            {
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible)
+                    ?? MainForm.Instance;
+
+                var pos = Mouse.GetPosition(active);
+                cachedCursorPosition = new Vec2((float)pos.X, (float)pos.Y);
+
+                double width = active.ActualWidth > 0 ? active.ActualWidth : active.Width;
+                double height = active.ActualHeight > 0 ? active.ActualHeight : active.Height;
+                cachedScreenDimensions = new Vec2((float)width, (float)height);
+                cachedLeftMouseDown = Mouse.LeftButton == MouseButtonState.Pressed;
+                inputSnapshotValid = true;
+            }
+            catch
+            {
+                inputSnapshotValid = false;
+                cachedLeftMouseDown = Mouse.LeftButton == MouseButtonState.Pressed;
+            }
+        }
+
+        private void UpdateRenderDemand()
+        {
+            bool realtime = false;
+            bool continuous = false;
+
+            try
+            {
+                realtime |= MenuManager.Instance?.IsAnimating == true;
+                realtime |= islandObject.SubtreeWantsRealtimeUpdate();
+                continuous |= islandObject.SubtreeWantsContinuousUpdate();
+
+                if (islandShadow != null)
+                {
+                    realtime |= islandShadow.SubtreeWantsRealtimeUpdate();
+                    continuous |= islandShadow.SubtreeWantsContinuousUpdate();
+                }
+
+                var activeObjects = objects;
+                if (activeObjects != null)
+                {
+                    for (int i = 0; i < activeObjects.Count; i++)
+                    {
+                        var obj = activeObjects[i];
+                        if (obj == null) continue;
+
+                        if (!realtime && obj.SubtreeWantsRealtimeUpdate())
+                            realtime = true;
+
+                        if (!continuous && obj.SubtreeWantsContinuousUpdate())
+                            continuous = true;
+
+                        if (realtime && continuous)
+                            break;
+                    }
+                }
+            }
+            catch
+            {
+                realtime = true;
+                continuous = true;
+            }
+
+            WantsRealtimeRendering = realtime;
+            WantsContinuousRendering = continuous || realtime;
         }
 
         protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)

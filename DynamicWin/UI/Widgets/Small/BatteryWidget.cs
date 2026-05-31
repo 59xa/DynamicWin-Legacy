@@ -29,6 +29,10 @@ namespace DynamicWin.UI.Widgets.Small
         DWImage batteryCharging;
 
         float imageScale = 1.75f;
+        private DateTime lastPowerStatusPoll = DateTime.MinValue;
+        private readonly TimeSpan powerStatusPollInterval = TimeSpan.FromSeconds(5);
+        private PowerStatusChecker.SYSTEM_POWER_STATUS cachedPowerStatus;
+        private bool hasCachedPowerStatus;
 
         public BatteryWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
@@ -51,7 +55,15 @@ namespace DynamicWin.UI.Widgets.Small
         {
             base.Update(deltaTime);
 
-            var batteryStatus = PowerStatusChecker.GetPowerStatus();
+            var now = DateTime.UtcNow;
+            if (!hasCachedPowerStatus || (now - lastPowerStatusPoll) >= powerStatusPollInterval)
+            {
+                cachedPowerStatus = PowerStatusChecker.GetPowerStatus();
+                hasCachedPowerStatus = true;
+                lastPowerStatusPoll = now;
+            }
+
+            var batteryStatus = cachedPowerStatus;
 
             if (batteryStatus.BatteryFlag != ((byte)128))
             {

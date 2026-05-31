@@ -276,6 +276,7 @@ namespace DynamicWin.UI.Widgets.Big
         }
 
         WeatherData lastWeatherData;
+        string lastTemperatureText = string.Empty;
         // Logic to handle weather display updates
         void OnWeatherDataReceived(WeatherData weatherData)
         {
@@ -386,7 +387,12 @@ namespace DynamicWin.UI.Widgets.Big
         {
             base.Update(deltaTime);
 
-            _TemperatureText.SetText(RegisterWeatherWidgetSettings.saveData.useCelsius ? lastWeatherData.celsius : lastWeatherData.fahrenheit);
+            string nextTemperature = RegisterWeatherWidgetSettings.saveData.useCelsius ? lastWeatherData.celsius : lastWeatherData.fahrenheit;
+            if (nextTemperature != lastTemperatureText)
+            {
+                lastTemperatureText = nextTemperature;
+                _TemperatureText.SetText(nextTemperature);
+            }
         }
 
         // Override logic for widget aesthetics

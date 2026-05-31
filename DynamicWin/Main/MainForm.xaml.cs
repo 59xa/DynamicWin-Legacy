@@ -2,6 +2,7 @@
 using DynamicWin.UI.Menu;
 using DynamicWin.UI.Menu.Menus;
 using DynamicWin.Utils;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
@@ -25,6 +26,7 @@ namespace DynamicWin.Main
 
         internal Forms.ToolStripMenuItem _settingsTrayItem;
 
+        public static IntPtr Handle { get; private set; }
 
         private DateTime _lastRenderTime;
         // Target interval driven by monitor refresh rate (set in ctor)
@@ -35,10 +37,23 @@ namespace DynamicWin.Main
         // Mouse/motion tracking for idle detection
         private System.Windows.Point _lastMousePos = new System.Windows.Point(-1, -1);
         private DateTime _lastMouseMoveTime = DateTime.MinValue;
-        private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromSeconds(1.0);
+        private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromMilliseconds(180);
+        private readonly TimeSpan _refreshRatePollInterval = TimeSpan.FromSeconds(2.0);
+        private int _cachedRefreshRate = 60;
+        private DateTime _lastRefreshRateCheck = DateTime.MinValue;
+        private DateTime _renderBurstUntil = DateTime.MinValue;
+        private const int ContinuousRenderHz = 60;
+        private const int StaticIdleRenderHz = 8;
 
         // Rendering pause flag (used for suspend/hibernate)
         private bool _renderPaused = false;
+
+        public void RequestRenderBurst(int milliseconds = 350)
+        {
+            var until = DateTime.UtcNow.AddMilliseconds(Math.Max(1, milliseconds));
+            if (until > _renderBurstUntil)
+                _renderBurstUntil = until;
+        }
 
         #region Win32 API Definitions
 
@@ -76,18 +91,10 @@ namespace DynamicWin.Main
             // Initialise mouse tracking
             _lastMouseMoveTime = DateTime.UtcNow;
 
-            // Compute initial target frame interval from monitor refresh rate
-            try
-            {
-                int refresh = DisplayHelper.GetRefreshRate();
-                if (refresh <= 0) refresh = 60;
-                _targetElapsedTime = TimeSpan.FromMilliseconds(1000.0 / refresh);
-                Debug.WriteLine($"[MAIN FORM] Initial target frame interval: {_targetElapsedTime.TotalMilliseconds} ms ({refresh} Hz)");
-            }
-            catch
-            {
-                _targetElapsedTime = TimeSpan.FromMilliseconds(16);
-            }
+            // Compute initial target frame interval from the configured monitor.
+            RefreshCachedRefreshRate(DateTime.UtcNow, true);
+            _targetElapsedTime = TimeSpan.FromMilliseconds(1000.0 / _cachedRefreshRate);
+            Debug.WriteLine($"[MAIN FORM] Initial target frame interval: {_targetElapsedTime.TotalMilliseconds} ms ({_cachedRefreshRate} Hz)");
 
             CompositionTarget.Rendering += OnRendering;
 
@@ -96,6 +103,11 @@ namespace DynamicWin.Main
             this.WindowStyle = WindowStyle.None;
             this.WindowState = WindowState.Maximized;
             this.ResizeMode = ResizeMode.NoResize;
+            this.SourceInitialized += (s, e) =>
+            {
+                Handle = new WindowInteropHelper(this).Handle;
+                UpdateWindowConfiguration();
+            };
             this.Topmost = true;
             this.AllowsTransparency = true;
             this.ShowInTaskbar = false;
@@ -138,7 +150,7 @@ namespace DynamicWin.Main
                 this.Topmost = true;
             };
 
-            _trayIcon.ContextMenuStrip.Items.Add("Restart Control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
+            _trayIcon.ContextMenuStrip.Items.Add("Restart control", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/refresh.png"), (x, y) =>
             {
                 if (RendererMain.Instance != null) RendererMain.Instance.Destroy();
                 this.Content = new Grid();
@@ -157,8 +169,9 @@ namespace DynamicWin.Main
 
             _trayIcon.ContextMenuStrip.Items.Add("Exit", ContextMenuUtils.LoadTrayBitmap("Resources/icons/context/exit.png"), (x, y) =>
             {
-                SaveManager.SaveAll();
-                Process.GetCurrentProcess().Kill();
+                _trayIcon.Visible = false;
+                AppBarHelper.UnregisterAppBar(this);
+                Application.Current.Shutdown();
             });
 
             _trayIcon.Visible = true;
@@ -188,14 +201,27 @@ namespace DynamicWin.Main
             this.WindowState = WindowState.Normal;
             this.ResizeMode = ResizeMode.CanResize;
 
-            WindowPositionHelper.CenterWindowOnMonitor(this, clampedIndex);
+            UpdateWindowConfiguration();
             this.ResizeMode = ResizeMode.NoResize;
+            RefreshCachedRefreshRate(DateTime.UtcNow, true);
+        }
 
-            // Move the window in App.xaml.cs as well
-            if (System.Windows.Application.Current is DynamicWinMain app)
-            {
-                app.MoveToMonitor(clampedIndex);
-            }
+        public void UpdateWindowConfiguration()
+        {
+            WindowPositionHelper.CenterWindowOnMonitor(this, Settings.ScreenIndex);
+            ApplyWorkingArea();
+        }
+
+        private void ApplyWorkingArea()
+        {
+            if (Settings.ReduceWorkingArea) AppBarHelper.RegisterAppBar(this, 40);
+            else AppBarHelper.UnregisterAppBar(this);
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            AppBarHelper.UnregisterAppBar(this);
+            base.OnClosing(e);
         }
 
         public static int GetMonitorCount()
@@ -205,6 +231,8 @@ namespace DynamicWin.Main
 
         private void OnRendering(object? sender, EventArgs e)
         {
+            if (_renderPaused) return;
+
             var now = DateTime.UtcNow;
 
             // Track mouse movement to detect idle while hovering the island
@@ -222,45 +250,90 @@ namespace DynamicWin.Main
             // Decide refresh rate dynamically based on settings and idle state
             try
             {
-                TimeSpan desiredInterval = TimeSpan.FromMilliseconds(16);
+                RefreshCachedRefreshRate(now);
+                int displayRefresh = _cachedRefreshRate;
+                if (displayRefresh <= 0) displayRefresh = 60;
+
+                int fullRefreshHz = Settings.ToggleHighRefreshRate
+                    ? displayRefresh
+                    : Math.Min(60, displayRefresh);
+                int targetHz = fullRefreshHz;
 
                 if (Settings.ToggleHighRefreshRate)
                 {
-                    int displayRefresh = DisplayHelper.GetRefreshRate();
-                    if (displayRefresh <= 0) displayRefresh = 60;
-
-                    int targetHz = displayRefresh;
-
-                    if (Settings.LimitRefreshRateWhenIdle)
-                    {
-                        bool islandHover = false;
-                        try
-                        {
-                            islandHover = RendererMain.Instance?.MainIsland?.IsHovering ?? false;
-                        }
-                        catch { }
-
-                        bool idle = !islandHover ||
-                                    ((now - _lastMouseMoveTime) > _idleMouseThreshold);
-
-                        if (idle)
-                            targetHz = 60;
-                    }
-
-                    desiredInterval = TimeSpan.FromMilliseconds(1000.0 / targetHz);
+                    fullRefreshHz = displayRefresh;
                 }
 
-                _targetElapsedTime = desiredInterval;
+                if (Settings.LimitRefreshRateWhenIdle)
+                {
+                    bool leftMouseDown = false;
+                    try { leftMouseDown = System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed; } catch { }
+
+                    var renderer = RendererMain.Instance;
+                    bool islandHover = renderer?.MainIsland?.IsHovering == true;
+                    bool inputActive = leftMouseDown ||
+                                       now <= _renderBurstUntil ||
+                                       (islandHover && (now - _lastMouseMoveTime) <= _idleMouseThreshold);
+                    bool wantsRealtime = renderer?.WantsRealtimeRendering == true;
+                    bool wantsContinuous = renderer?.WantsContinuousRendering == true;
+
+                    if (inputActive || wantsRealtime)
+                    {
+                        targetHz = fullRefreshHz;
+                    }
+                    else if (wantsContinuous)
+                    {
+                        targetHz = Math.Min(ContinuousRenderHz, fullRefreshHz);
+                    }
+                    else
+                    {
+                        targetHz = Math.Min(StaticIdleRenderHz, fullRefreshHz);
+                    }
+                }
+                else
+                {
+                    targetHz = fullRefreshHz;
+                }
+
+                if (!Settings.ToggleHighRefreshRate)
+                    targetHz = Math.Min(targetHz, 60);
+
+                targetHz = Math.Max(1, targetHz);
+                _targetElapsedTime = TimeSpan.FromMilliseconds(1000.0 / targetHz);
+
+                if (targetHz >= displayRefresh)
+                {
+                    _lastRenderTime = now;
+                    onMainFormRender?.Invoke();
+                    return;
+                }
             }
             catch { }
 
-            var currentTime = DateTime.Now;
-            if (currentTime - _lastRenderTime >= _targetElapsedTime)
+            if (now - _lastRenderTime >= _targetElapsedTime)
             {
-                _lastRenderTime = currentTime;
+                _lastRenderTime = now;
 
                 onMainFormRender?.Invoke();
             }
+        }
+
+        private void RefreshCachedRefreshRate(DateTime now, bool force = false)
+        {
+            if (!force && (now - _lastRefreshRateCheck) < _refreshRatePollInterval)
+                return;
+
+            try
+            {
+                int refresh = DisplayHelper.GetRefreshRate(Settings.ScreenIndex);
+                if (refresh > 0) _cachedRefreshRate = refresh;
+            }
+            catch
+            {
+                if (_cachedRefreshRate <= 0) _cachedRefreshRate = 60;
+            }
+
+            _lastRefreshRateCheck = now;
         }
 
         public bool isDragging = false;
@@ -281,8 +354,7 @@ namespace DynamicWin.Main
 
             this.Content = parent;
 
-            // Ensure the new renderer is called from the centralised, throttled MainForm loop
-            onMainFormRender += customControl.Frame;
+            // RendererMain registers itself with the centralised, throttled MainForm loop.
         }
 
         // Allow external modules to pause/resume the rendering loop during suspend/hibernate
@@ -294,7 +366,7 @@ namespace DynamicWin.Main
         public void ResumeRendering()
         {
             _renderPaused = false;
-            _lastRenderTime = DateTime.Now; // Reset timing to avoid immediate large update
+            _lastRenderTime = DateTime.UtcNow; // Reset timing to avoid immediate large update
         }
 
         public void MainForm_DragEnter(object? sender, DragEventArgs e)

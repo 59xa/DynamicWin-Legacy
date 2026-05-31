@@ -39,6 +39,34 @@ namespace DynamicWin.UI.Widgets.Small
 
         public static SmallVisualiserSave saveData;
 
+        // Shared setting between visualiser and media thumbnail widgets
+        public static class SharedMediaSettings
+        {
+            public const string SettingKey = "Setting.HideMediaWhenIdle";
+            public static bool HideMediaWhenIdle = false;
+
+            public static void Load()
+            {
+                try
+                {
+                    if (SaveManager.Contains(SettingKey))
+                    {
+                        HideMediaWhenIdle = (bool)SaveManager.Get(SettingKey);
+                    }
+                    else
+                    {
+                        HideMediaWhenIdle = false;
+                    }
+                }
+                catch { HideMediaWhenIdle = false; }
+            }
+
+            public static void Save()
+            {
+                try { SaveManager.Add(SettingKey, HideMediaWhenIdle); } catch { }
+            }
+        }
+
         public struct SmallVisualiserSave
         {
             public bool displayDotWhenIdle;
@@ -47,7 +75,7 @@ namespace DynamicWin.UI.Widgets.Small
         }
 
         /// <summary>
-        /// Loads the visualizer settings from persistent storage or initializes them with default values if no saved
+        /// Loads the visualiser settings from persistent storage or initialises them with default values if no saved
         /// settings are found.
         /// </summary>
         /// <remarks>This method attempts to retrieve previously saved settings using the current setting
@@ -68,6 +96,9 @@ namespace DynamicWin.UI.Widgets.Small
                     useThumbnailBackground = true
                 };
             }
+
+            // Load shared setting
+            SharedMediaSettings.Load();
         }
 
         /// <summary>
@@ -79,6 +110,9 @@ namespace DynamicWin.UI.Widgets.Small
         public void SaveSettings()
         {
             SaveManager.Add(SettingID, JsonConvert.SerializeObject(saveData));
+
+            // Persist shared setting
+            SharedMediaSettings.Save();
         }
 
         /// <summary>
@@ -96,7 +130,9 @@ namespace DynamicWin.UI.Widgets.Small
             var displayDotWhenIdle = new DWCheckbox(null, "Display visualiser dots when idle", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
             var enableColourTransition = new DWCheckbox(null, "Enable visualiser colour transitioning", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
             var useThumbnailBackground = new DWCheckbox(null, "Use media thumbnail as background", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
-            var thumbnailDisclaimer = new DWText(null, "By enabling this option, colour transitioning will be bypassed.", new Vec2(25, 0), UIAlignment.TopLeft);
+            var thumbnailDisclaimer = new DWText(null, "Colour transition and media thumbnail options are mutually exclusive.", new Vec2(25, 0), UIAlignment.TopLeft);
+            var hideMediaWhenIdle = new DWCheckbox(null, "Hide media thumbnail when idle (shared)", new Vec2(25, 0), new Vec2(25, 25), null, UIAlignment.TopLeft);
+            var hideMediaDisclaimer = new DWText(null, "Hides media thumbnail and visualiser after 30 seconds when paused.", new Vec2(25, 0), UIAlignment.TopLeft);
 
             displayDotWhenIdle.clickCallback += () =>
             {
@@ -106,26 +142,51 @@ namespace DynamicWin.UI.Widgets.Small
             enableColourTransition.clickCallback += () =>
             {
                 saveData.enableColourTransition = enableColourTransition.IsChecked;
+
+                if (enableColourTransition.IsChecked)
+                {
+                    // If enabling colour transition, disable thumbnail background
+                    saveData.useThumbnailBackground = false;
+                    useThumbnailBackground.IsChecked = false;
+                }
             };
 
             useThumbnailBackground.clickCallback += () =>
             {
                 saveData.useThumbnailBackground = useThumbnailBackground.IsChecked;
+
+                if (useThumbnailBackground.IsChecked)
+                {
+                    // If enabling thumbnail background, disable colour transition
+                    saveData.enableColourTransition = false;
+                    enableColourTransition.IsChecked = false;
+                }
+            };
+
+            hideMediaWhenIdle.clickCallback += () =>
+            {
+                SharedMediaSettings.HideMediaWhenIdle = hideMediaWhenIdle.IsChecked;
+                // Save immediately so other widget instances can read it
+                SharedMediaSettings.Save();
             };
 
             displayDotWhenIdle.IsChecked = saveData.displayDotWhenIdle;
             enableColourTransition.IsChecked = saveData.enableColourTransition;
             useThumbnailBackground.IsChecked = saveData.useThumbnailBackground;
+            hideMediaWhenIdle.IsChecked = SharedMediaSettings.HideMediaWhenIdle;
 
             displayDotWhenIdle.Anchor.X = 0;
             enableColourTransition.Anchor.X = 0;
             thumbnailDisclaimer.Anchor.X = 0;
             useThumbnailBackground.Anchor.X = 0;
+            hideMediaWhenIdle.Anchor.X = 0;
 
             objects.Add(displayDotWhenIdle);
-            objects.Add(enableColourTransition);
             objects.Add(thumbnailDisclaimer);
+            objects.Add(enableColourTransition);
             objects.Add(useThumbnailBackground);
+            objects.Add(hideMediaDisclaimer);
+            objects.Add(hideMediaWhenIdle);
 
             return objects;
         }
@@ -156,6 +217,7 @@ namespace DynamicWin.UI.Widgets.Small
             audioVisualiser.UseThumbnailBackground = RegisterSmallVisualiserWidgetSettings.saveData.useThumbnailBackground;
             audioVisualiser.EnableDotWhenLow = RegisterSmallVisualiserWidgetSettings.saveData.displayDotWhenIdle;
             audioVisualiser.BlurAmount = 0.3f;
+            audioVisualiser.BarSpacing = 1.8f;
 
             AddLocalObject(audioVisualiser);
 
@@ -181,15 +243,41 @@ namespace DynamicWin.UI.Widgets.Small
                     return;
                 }
 
+                // Check if this is a transition from no-media to has-media
+                bool wasNoMedia = !hasMedia || collapseProgress <= 0.001f;
+
                 // On metadata present, fetch timeline once (service will have invalidated timeline on metadata change)
                 try
                 {
                     var tl = await MediaInfo.FetchCurrentTimelineAsync().ConfigureAwait(false);
-                    bool shouldExpand = tl != null && tl.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
 
                     hasMedia = true;
-                    targetExpanded = shouldExpand;
 
+                    // Evaluate shared setting: if HideMediaWhenIdle is enabled and media has been paused for >= 30 seconds, collapse
+                    bool hideWhenIdle = RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.HideMediaWhenIdle;
+                    bool shouldExpand;
+
+                    if (hideWhenIdle)
+                    {
+                        // When playing, always expand
+                        // When transitioning from no-media to media, always expand (even if paused)
+                        // When paused and already had media, only hide if paused 30+ seconds
+                        bool isPlaying = tl == null || tl.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                        shouldExpand = isPlaying || wasNoMedia;
+
+                        if (!isPlaying && !wasNoMedia)
+                        {
+                            // Was already showing media and now paused - check if paused long enough to hide
+                            bool pausedLong = MediaThumbnailService.Instance.IsPausedLongerThan(TimeSpan.FromSeconds(30));
+                            shouldExpand = !pausedLong;
+                        }
+                    }
+                    else
+                    {
+                        shouldExpand = true;
+                    }
+
+                    targetExpanded = shouldExpand;
                     BeginInvokeUI(() => StartCollapseOrExpand(shouldExpand));
                 }
                 catch
@@ -219,6 +307,8 @@ namespace DynamicWin.UI.Widgets.Small
 
             collapseAnim = new Animator(300, 1);
             bool expanding = expand;
+            if (expanding)
+                audioVisualiser.SetCapturing(IsEnabled);
 
             collapseAnim.onAnimationUpdate += (t) =>
             {
@@ -234,6 +324,7 @@ namespace DynamicWin.UI.Widgets.Small
             {
                 collapseProgress = expanding ? 1f : 0f;
                 audioVisualiser.SilentSetActive(expanding);
+                audioVisualiser.SetCapturing(expanding && IsEnabled);
 
                 try { DestroyLocalObject(collapseAnim); } catch { }
                 collapseAnim = null;
@@ -241,6 +332,12 @@ namespace DynamicWin.UI.Widgets.Small
 
             AddLocalObject(collapseAnim);
             collapseAnim.Start();
+        }
+
+        protected override void OnActiveChanged(bool isEnabled)
+        {
+            base.OnActiveChanged(isEnabled);
+            audioVisualiser.SetCapturing(isEnabled && collapseProgress > 0.001f);
         }
 
         protected override float GetWidgetWidth()

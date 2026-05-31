@@ -1,5 +1,13 @@
 # Creating/modifying DynamicWin-Legacy with custom extensions
 
+**We support mod extensions. You can add your own small widgets and big widgets by creating a custom extension.** <br>
+Loading an extension from someone else is very simple. Drag the **`Mod.dll`** file you have created to the `Extensions` folder located in the `%appdata%/DynamicWin` directory. 
+
+> [!WARNING]
+> **Please never load a mod that is not tested to be safe.**
+
+Mods may contain malicious code that can mess up your system, so always check a mod's source code or let a trustworthy person check it for you.
+
 To create an extension you need an IDE like [Visual Studio 2026](https://visualstudio.microsoft.com/vs/community/).
 - Create a new C# project of the type `Class Library`. Ensure that the target framework is **`.NET 9.0`**.
 - It is required to add `DynamicWin.dll` and SkiaSharp DLLs as assembly dependencies to your project. [More information regarding this through here.](https://learn.microsoft.com/en-gb/visualstudio/ide/how-to-add-or-remove-references-by-using-the-reference-manager?view=vs-2022)

@@ -37,24 +37,21 @@ namespace DynamicWin.UI.UIElements
             Text.TextSize = normalTextSize;
         }
 
+        public override bool WantsRealtimeUpdate
+        {
+            get
+            {
+                float targetTextSize = normalTextSize * GetTargetScaleMultiplier().Magnitude;
+                return base.WantsRealtimeUpdate || Math.Abs(Text.TextSize - targetTextSize) > 0.05f;
+            }
+        }
+
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            float currentTextSize = normalTextSize;
-
             Image.Size = Vec2.one * Size.Y * imageScale;
-
-            if (IsHovering && !IsMouseDown)
-                currentTextSize *= hoverScaleMulti.Magnitude;
-            else if (IsMouseDown)
-                currentTextSize *= clickScaleMulti.Magnitude;
-            else if (!IsHovering && !IsMouseDown)
-                currentTextSize *= normalScaleMulti.Magnitude;
-            else
-                currentTextSize *= normalScaleMulti.Magnitude;
-
-            Text.TextSize = Mathf.Lerp(Text.TextSize, currentTextSize, textSizeSmoothSpeed * deltaTime);
+            Text.TextSize = Mathf.Lerp(Text.TextSize, normalTextSize * GetTargetScaleMultiplier().Magnitude, textSizeSmoothSpeed * deltaTime);
         }
     }
 }

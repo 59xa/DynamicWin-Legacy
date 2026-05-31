@@ -17,6 +17,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Controls;
+using System.Windows.Forms;
 using System.Windows.Input;
 using System.Windows.Navigation;
 using System.Xml.Linq;
@@ -28,13 +29,18 @@ namespace DynamicWin.UI.Menu.Menus
     public class SettingsMenu : BaseMenu
     {
         private static List<IRegisterableSetting> _cachedCustomOptions;
+        private readonly Action<MouseWheelEventArgs> scrollHandler;
 
         public SettingsMenu()
         {
-            MainForm.onScrollEvent += (MouseWheelEventArgs x) =>
-            {
-                yScrollOffset += x.Delta * 0.50f;
-            };
+            scrollHandler = OnScroll;
+            MainForm.onScrollEvent += scrollHandler;
+        }
+
+        private void OnScroll(MouseWheelEventArgs x)
+        {
+            if (!ReferenceEquals(MenuManager.Instance?.ActiveMenu, this)) return;
+            yScrollOffset += x.Delta * 0.50f;
         }
 
         bool changedTheme = false;
@@ -52,6 +58,8 @@ namespace DynamicWin.UI.Menu.Menus
             Settings.ToggleHomeMenuShadow = toggleHomeMenuShadow.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
+            Settings.AlwaysTopmost = alwaysTopmost.IsChecked;
+            Settings.ReduceWorkingArea = reduceWorkingArea.IsChecked;
 
             // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
@@ -88,12 +96,14 @@ namespace DynamicWin.UI.Menu.Menus
         DWCheckbox antiAliasing;
         DWCheckbox runOnStartup;
         DWCheckbox allowAutomaticUpdates;
+        DWCheckbox alwaysTopmost;
+        DWCheckbox reduceWorkingArea;
         DWCheckbox toggleIslandShadow;
         DWCheckbox toggleHomeMenuShadow;
         DWCheckbox toggleHighRefreshRate;
         DWCheckbox limitRefreshRateWhenIdle;
 
-        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2;
+        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2, topmostDisclaimer, topmostDisclaimer2, workingAreaDisclaimer;
 
         UIObject bottomMask;
 
@@ -131,6 +141,36 @@ namespace DynamicWin.UI.Menu.Menus
                 };
                 objects.Add(islandMode);
             }
+
+            topmostDisclaimer = new DWText(island, "Renders the interface to its minimum height and width possible, also improves performance.", new Vec2(25, 0), UIAlignment.TopLeft);
+            topmostDisclaimer.Font = Res.SFProRegular;
+            topmostDisclaimer.TextSize = 12;
+            topmostDisclaimer.Anchor.X = 0;
+
+            topmostDisclaimer2 = new DWText(island, "Disabling this setting may prevent the interface from being placed correctly at the top.", new Vec2(25, 0), UIAlignment.TopLeft);
+            topmostDisclaimer2.Font = Res.SFProRegular;
+            topmostDisclaimer2.TextSize = 12;
+            topmostDisclaimer2.Anchor.X = 0;
+
+            objects.Add(topmostDisclaimer);
+            objects.Add(topmostDisclaimer2);
+
+            alwaysTopmost = new DWCheckbox(island, "Keep interface always topmost", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            alwaysTopmost.IsChecked = Settings.AlwaysTopmost;
+            alwaysTopmost.Anchor.X = 0;
+            objects.Add(alwaysTopmost);
+
+            workingAreaDisclaimer = new DWText(island, "Prevents the interface from overlapping on top of other windows.", new Vec2(25, 0), UIAlignment.TopLeft);
+            workingAreaDisclaimer.TextSize = 12;
+            workingAreaDisclaimer.Font = Res.SFProRegular;
+            workingAreaDisclaimer.Anchor.X = 0;
+
+            reduceWorkingArea = new DWCheckbox(island, "Reduce working area", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
+            reduceWorkingArea.IsChecked = Settings.ReduceWorkingArea;
+            reduceWorkingArea.Anchor.X = 0;
+
+            objects.Add(workingAreaDisclaimer);
+            objects.Add(reduceWorkingArea);
 
             allowBlur = new DWCheckbox(island, "Toggle blur", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
             allowBlur.IsChecked = Settings.AllowBlur;
@@ -575,6 +615,11 @@ namespace DynamicWin.UI.Menu.Menus
 
         float yScrollOffset = 0f;
         float ySmoothScroll = 0f;
+        float cachedScrollLimit = 0f;
+        float lastLayoutScroll = float.NaN;
+        float lastBigWidgetAdderHeight = float.NaN;
+        float lastSmallWidgetAdderWidth = float.NaN;
+        int lastLayoutObjectCount = -1;
 
         public override void Update()
         {
@@ -585,23 +630,45 @@ namespace DynamicWin.UI.Menu.Menus
 
             bottomMask.blurAmount = 15;
 
-            var yScrollLim = 0f;
-            var yPos = 35f;
-            var spacing = 15f;
+            bool layoutDirty =
+                float.IsNaN(lastLayoutScroll) ||
+                Math.Abs(ySmoothScroll - lastLayoutScroll) > 0.05f ||
+                lastLayoutObjectCount != UiObjects.Count ||
+                (bigWidgetAdder != null && Math.Abs(bigWidgetAdder.Size.Y - lastBigWidgetAdderHeight) > 0.05f) ||
+                (smallWidgetAdder != null && Math.Abs(smallWidgetAdder.Size.X - lastSmallWidgetAdderWidth) > 0.05f);
 
-            for (int i = 0; i < UiObjects.Count - 2; i++)
+            if (layoutDirty)
             {
-                var uiObject = UiObjects[i];
-                if (!uiObject.IsEnabled) continue;
+                var yScrollLim = 0f;
+                var yPos = 35f;
+                var spacing = 15f;
 
-                uiObject.LocalPosition.Y = yPos + ySmoothScroll;
-                yPos += uiObject.Size.Y + spacing;
+                for (int i = 0; i < UiObjects.Count - 2; i++)
+                {
+                    var uiObject = UiObjects[i];
+                    if (!uiObject.IsEnabled) continue;
 
-                if (yPos > IslandSize().Y - 50) yScrollLim += uiObject.Size.Y + spacing;
+                    uiObject.LocalPosition.Y = yPos + ySmoothScroll;
+                    yPos += uiObject.Size.Y + spacing;
+
+                    if (yPos > IslandSize().Y - 50) yScrollLim += uiObject.Size.Y + spacing;
+                }
+
+                cachedScrollLimit = yScrollLim;
+                lastLayoutScroll = ySmoothScroll;
+                lastLayoutObjectCount = UiObjects.Count;
+                lastBigWidgetAdderHeight = bigWidgetAdder?.Size.Y ?? 0f;
+                lastSmallWidgetAdderWidth = smallWidgetAdder?.Size.X ?? 0f;
             }
 
             yScrollOffset = Mathf.Lerp(yScrollOffset,
-                Mathf.Clamp(yScrollOffset, -yScrollLim, 0f), 15f * RendererMain.Instance.DeltaTime);
+                Mathf.Clamp(yScrollOffset, -cachedScrollLimit, 0f), 15f * RendererMain.Instance.DeltaTime);
+        }
+
+        public override void OnDispose()
+        {
+            MainForm.onScrollEvent -= scrollHandler;
+            base.OnDispose();
         }
 
         public override Vec2 IslandSize()

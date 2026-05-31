@@ -20,7 +20,7 @@ namespace DynamicWin
         public static MMDevice? defaultDevice;
         public static MMDevice? defaultMicrophone;
 
-        public static string Version => "v1.6.1r";
+        public static string Version => "v1.7.0r";
         public static Channel ReleaseStream => Channel.Release;
         public static Architecture ProcessArchitecture => RuntimeInformation.ProcessArchitecture;
 
@@ -96,6 +96,8 @@ namespace DynamicWin
             try
             {
                 MediaInfo.Initialize();
+                // Also initialise the thumbnail service to start event loop
+                _ = MediaThumbnailService.Instance;
             }
             catch { }
 
@@ -134,6 +136,7 @@ namespace DynamicWin
 
         protected override void OnExit(ExitEventArgs e)
         {
+            AppBarHelper.ForceUnregisterLast();
             base.OnExit(e);
 
             try
@@ -200,7 +203,7 @@ namespace DynamicWin
             try
             {
                 if (mainForm == null) return;
-                WindowPositionHelper.CenterWindowOnMonitor(mainForm, Settings.ScreenIndex);
+                mainForm.UpdateWindowConfiguration();
             }
             catch { }
         }

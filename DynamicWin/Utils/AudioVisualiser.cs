@@ -6,7 +6,6 @@ using System.Numerics;
 using System.Linq;
 using System.Threading.Tasks;
 using System;
-using System.Diagnostics;
 
 /*
  * 
@@ -30,7 +29,7 @@ namespace DynamicWin.Utils
     {
         // Initialise variables
         private const int V = 5;
-        private readonly int fftLength = 2048;
+        private readonly int fftLength = 1024;
         private readonly int barCount = 6;
 
         private float[] fftMagnitudes;
@@ -39,9 +38,10 @@ namespace DynamicWin.Utils
 
         private float[] targetHeights; // Re-use per-frame to avoid allocations
 
-        private float[] bandBalance = new float[] { 1f, 0.75f, 1.15f, 1.10f, 1.25f, 1.35f };
+        private float[] bandBalance = new float[] { 1f, 1f, 1.15f, 1.10f, 1.25f, 1.35f };
 
-        private WasapiLoopbackCapture capture;
+        private WasapiLoopbackCapture? capture;
+        private bool captureRequested = true;
         private readonly object fftLock = new object();
 
         // Precomputed
@@ -79,9 +79,24 @@ namespace DynamicWin.Utils
         private float thumbnailFade = 3f;
         public float ThumbnailFadeDuration { get; set; } = 0.35f;
         private readonly object thumbLock = new object();
-        public bool UseThumbnailBackground { get; set; } = false;
+        private bool useThumbnailBackground = false;
+        public bool UseThumbnailBackground
+        {
+            get => useThumbnailBackground;
+            set
+            {
+                if (useThumbnailBackground == value) return;
+
+                useThumbnailBackground = value;
+                if (useThumbnailBackground && IsEnabled)
+                    SetThumbnailSubscription(true);
+                else
+                    SetThumbnailSubscription(false);
+            }
+        }
         public float ThumbnailFetchInterval { get; set; } = 1.0f;
         public float ThumbnailBlurAmount { get; set; } = 5f;
+        private bool thumbnailServiceSubscribed;
 
         public Col Primary;
         public Col Secondary;
@@ -96,7 +111,14 @@ namespace DynamicWin.Utils
         private bool enableDotWhenLow = true;
         public bool EnableDotWhenLow { get => enableDotWhenLow; set => enableDotWhenLow = value; }
         public float BlurAmount { get; set; } = 0f;
-        public float BarSpacing { get; set; } = 1f;
+
+        private float barSpacing = 1.5f;
+        public float BarSpacing
+        {
+            get => barSpacing;
+            set => barSpacing = Math.Clamp(value, 0f, 20f);
+        }
+        public float BarGap { get => BarSpacing; set => BarSpacing = value; }
 
         // Initialise class
         public AudioVisualiser(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopRight, Col Primary = null, Col Secondary = null) : base(parent, position, size, alignment)
@@ -137,38 +159,9 @@ namespace DynamicWin.Utils
 
             barSumSquares = new float[barCount];
 
-            if (DynamicWinMain.defaultDevice != null)
-            {
-                capture = new WasapiLoopbackCapture(DynamicWinMain.defaultDevice);
-                capture.DataAvailable += OnDataAvailable;
-                capture.StartRecording();
-            }
-
             // Precompute FFT bin mapping
-            InitBarBinMapping(capture?.WaveFormat.SampleRate ?? 44100f);
-
-            // Subscribe to central thumbnail service. Only capture bytes in event handlers to avoid
-            // creating Skia objects on background threads which can cause native crashes.
-            MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
-            MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
-
-            // Prime thumbnail cache from central service using bytes if available. Avoid creating SKImage here.
-            try
-            {
-                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
-                if (bytes != null && bytes.Length > 0)
-                {
-                    lock (thumbLock)
-                    {
-                        cachedThumbnailBytes = (byte[])bytes.Clone();
-                        pendingThumbnailBytes = cachedThumbnailBytes;
-                        thumbnailDirty = true;
-                        thumbnailFade = 0f;
-                        lastDecodeTime = DateTime.MinValue;
-                    }
-                }
-            }
-            catch { }
+            InitBarBinMapping(44100f);
+            SetCapturing(true);
         }
 
         private void InitBarBinMapping(float sampleRate)
@@ -189,7 +182,7 @@ namespace DynamicWin.Utils
             }
 
             double minFreq = 20.0;  // 20Hz - human hearing start
-            double maxFreq = 12000.0; // 12kHz - frequency end
+            double maxFreq = 6000.0; // 12kHz - frequency end
 
             // Use Logarithmic scale for natural frequency distribution
             double logMin = Math.Log10(minFreq);
@@ -222,15 +215,148 @@ namespace DynamicWin.Utils
             }
         }
 
+        public void SetCapturing(bool enabled)
+        {
+            SetCapturing(enabled, resetBarsOnStop: true);
+        }
+
+        public void SetCapturing(bool enabled, bool resetBarsOnStop)
+        {
+            captureRequested = enabled;
+            if (enabled)
+            {
+                if (IsEnabled)
+                    StartCapture();
+            }
+            else
+            {
+                StopCapture(resetBars: resetBarsOnStop, clearInput: true);
+            }
+        }
+
+        protected override void OnActiveChanged(bool isEnabled)
+        {
+            base.OnActiveChanged(isEnabled);
+
+            if (isEnabled && captureRequested)
+                StartCapture();
+            else
+                StopCapture(resetBars: true, clearInput: true);
+
+            SetThumbnailSubscription(isEnabled && UseThumbnailBackground);
+        }
+
+        public void SetThumbnailSubscription(bool enabled)
+        {
+            if (thumbnailServiceSubscribed == enabled) return;
+
+            if (enabled)
+            {
+                MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
+                MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
+                thumbnailServiceSubscribed = true;
+                PrimeThumbnailCache();
+                return;
+            }
+
+            try { MediaThumbnailService.Instance.Unsubscribe(OnThumbnailChanged); } catch { }
+            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChangedEvent; } catch { }
+            thumbnailServiceSubscribed = false;
+
+            lock (thumbLock)
+            {
+                cachedThumbnailBytes = null;
+                pendingThumbnailBytes = null;
+                thumbnailDirty = false;
+                cachedThumbnailImage?.Dispose();
+                cachedThumbnailImage = null;
+                previousThumbnailImage?.Dispose();
+                previousThumbnailImage = null;
+            }
+        }
+
+        private void PrimeThumbnailCache()
+        {
+            try
+            {
+                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                if (bytes != null && bytes.Length > 0)
+                {
+                    lock (thumbLock)
+                    {
+                        cachedThumbnailBytes = (byte[])bytes.Clone();
+                        pendingThumbnailBytes = cachedThumbnailBytes;
+                        thumbnailDirty = true;
+                        thumbnailFade = 0f;
+                        lastDecodeTime = DateTime.MinValue;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void StartCapture()
+        {
+            if (capture != null || DynamicWinMain.defaultDevice == null) return;
+
+            try
+            {
+                capture = new WasapiLoopbackCapture(DynamicWinMain.defaultDevice);
+                capture.DataAvailable += OnDataAvailable;
+                InitBarBinMapping(capture.WaveFormat.SampleRate);
+                capture.StartRecording();
+            }
+            catch
+            {
+                StopCapture(resetBars: true, clearInput: true);
+            }
+        }
+
+        private void StopCapture(bool resetBars, bool clearInput = true)
+        {
+            var activeCapture = capture;
+            capture = null;
+
+            if (activeCapture != null)
+            {
+                try { activeCapture.DataAvailable -= OnDataAvailable; } catch { }
+                try { activeCapture.StopRecording(); } catch { }
+                try { activeCapture.Dispose(); } catch { }
+            }
+
+            if (resetBars || clearInput)
+            {
+                lock (fftLock)
+                {
+                    Array.Clear(barSumSquares, 0, barSumSquares.Length);
+                    Array.Clear(targetHeights, 0, targetHeights.Length);
+                    if (resetBars)
+                    {
+                        Array.Clear(barHeight, 0, barHeight.Length);
+                        averageAmplitude = 0f;
+                    }
+                }
+            }
+        }
+
         private void OnThumbnailChanged(Media? m)
         {
             try
             {
-                // Only capture raw bytes and mark dirty. Avoid creating or disposing SKImage here.
+                // Prefer ThumbnailData from media object; fall back to service cache for compatibility
+                byte[]? bytes = m?.ThumbnailData;
+                if (bytes == null || bytes.Length == 0)
+                {
+                    try
+                    {
+                        bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                    }
+                    catch { }
+                }
+
                 lock (thumbLock)
                 {
-                    pendingThumbnailBytes = m?.ThumbnailData != null ? (byte[])m.ThumbnailData.Clone() : null;
-                    // Update cached bytes reference so Draw sees latest available
+                    pendingThumbnailBytes = bytes != null && bytes.Length > 0 ? (byte[])bytes.Clone() : null;
                     cachedThumbnailBytes = pendingThumbnailBytes;
                     thumbnailDirty = true;
                     thumbnailFade = 0f;
@@ -254,9 +380,21 @@ namespace DynamicWin.Utils
                         return;
                     }
 
-                    pendingThumbnailBytes = e.ThumbnailBytes != null ? (byte[])e.ThumbnailBytes.Clone() : null;
+                    // Prefer bytes from event; fall back to service cache
+                    byte[]? bytes = e.ThumbnailBytes;
+                    if (bytes == null || bytes.Length == 0)
+                    {
+                        try
+                        {
+                            bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                        }
+                        catch { }
+                    }
+
+                    pendingThumbnailBytes = bytes != null && bytes.Length > 0 ? (byte[])bytes.Clone() : null;
                     cachedThumbnailBytes = pendingThumbnailBytes;
                     thumbnailDirty = true;
+                    thumbnailFade = 0f;
                 }
             }
             catch { }
@@ -270,19 +408,9 @@ namespace DynamicWin.Utils
             base.OnDestroy();
 
             // Unsubscribe
-            try { MediaThumbnailService.Instance.Unsubscribe(OnThumbnailChanged); } catch { }
-            try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChangedEvent; } catch { }
+            SetThumbnailSubscription(false);
 
-            try
-            {
-                if (capture != null)
-                {
-                    capture.DataAvailable -= OnDataAvailable;
-                    capture.StopRecording();
-                    capture.Dispose();
-                }
-            }
-            catch (ThreadInterruptedException) { }
+            StopCapture(resetBars: false, clearInput: true);
 
             // Dispose cached thumbnail image
             lock (thumbLock)
@@ -329,7 +457,7 @@ namespace DynamicWin.Utils
                 // Bar 0: Sub (1.2x) -> Strongest
                 // Bar 1: Bass (0.8x) -> Dipped to let bar 0 lead
                 // Bar 5: Highs (2.5x) -> Extreme boost for hi-hat visibility
-                float[] barWeights = { 1.0f, 0.85f, 1.15f, 1.5f, 2.0f, 2.5f };
+                float[] barWeights = { 1.0f, 0.9f, 1.15f, 1.5f, 2.0f, 2.5f };
 
                 for (int i = 0; i < barCount; i++)
                 {
@@ -477,7 +605,7 @@ namespace DynamicWin.Utils
 
         public override void Draw(SKCanvas canvas)
         {
-            if (capture == null) return;
+            if (capture == null && !HasVisibleBars()) return;
 
             SKImage? thumbnailImage = null;
             SKImage? prevThumb = null;
@@ -565,9 +693,10 @@ namespace DynamicWin.Utils
             float height = Size.Y;
             float centerY = Position.Y + height / 2;
 
-            float spacing2 = BarSpacing;
+            float maxSpacing = barCount > 1 ? Math.Max(0f, (width - barCount * 0.5f) / (barCount - 1)) : 0f;
+            float spacing2 = Math.Clamp(BarSpacing, 0f, maxSpacing);
             float totalSpacing2 = spacing2 * (barCount - 1);
-            float barWidth2 = (width - totalSpacing2) / barCount;
+            float barWidth2 = Math.Max(0.5f, (width - totalSpacing2) / barCount);
             float visualBoost = 1.5f;
             float dotHeight = barWidth2;
 
@@ -577,21 +706,14 @@ namespace DynamicWin.Utils
                 float rawHeight = barHeight[i] * visualBoost;
                 float dynamicHeight = rawHeight * height * 0.8f;
 
-                float bH = dynamicHeight;
+                float bH = EnableDotWhenLow
+                    ? Math.Max(dotHeight, dynamicHeight)
+                    : dynamicHeight;
 
-                // Handle dot clamping
-                if (EnableDotWhenLow)
-                {
-                    // The dot should be a perfect circle/square, so its height equals its width
-                    // Clamp the height so it never gets smaller than the dot
-                    bH = Math.Max(dotHeight, dynamicHeight);
-                }
-
-                // Positioning
-                float x = Position.X + i * (barWidth2 + spacing2);
+                float xBase = Position.X + i * (barWidth2 + spacing2);
                 float barTopY = centerY - bH / 2;
 
-                var rect = SKRect.Create(x, barTopY, barWidth2, bH);
+                var rect = SKRect.Create(xBase, barTopY, barWidth2, bH);
                 var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
 
                 // Color logic: dot must stay at the "Secondary" color until it starts growing
@@ -656,6 +778,19 @@ namespace DynamicWin.Utils
             }
 
             // Do not dispose cached images here - they are owned by this object and will be disposed in OnDestroy or when replaced
+        }
+
+        public override bool WantsContinuousUpdate => capture != null || HasVisibleBars() || (UseThumbnailBackground && thumbnailFade < 1f);
+
+        private bool HasVisibleBars()
+        {
+            for (int i = 0; i < barHeight.Length; i++)
+            {
+                if (barHeight[i] > 0.003f)
+                    return true;
+            }
+
+            return false;
         }
 
         private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage current, SKImage? previous, float totalWidth, float totalHeight, float fade)

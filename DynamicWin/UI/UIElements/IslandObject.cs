@@ -65,6 +65,28 @@ namespace DynamicWin.UI.UIElements
             _morphT = Settings.IslandMode == IslandMode.Notch ? 1f : 0f;
         }
 
+        public override bool WantsRealtimeUpdate
+        {
+            get
+            {
+                float targetMorph = (Settings.IslandMode == IslandMode.Notch) ? 1f : 0f;
+                float targetSquircleState = (_morphT > 0.5f)
+                    ? 1f
+                    : (IsHovering ? 1f : (Size.Y > 20f ? 1f : 0f));
+                float targetY = Mathf.Lerp((mode == IslandMode.Island ? 7.5f : 15f), -2.5f, _morphT);
+                float targetShadowStrength = IsHovering ? 0.75f : 0.25f;
+                float targetShadowSize = IsHovering ? 35f : 7.5f;
+
+                return Math.Abs(_morphT - targetMorph) > 0.001f ||
+                       Math.Abs(cornerSquircleT - targetSquircleState) > 0.001f ||
+                       Math.Abs(LocalPosition.Y - targetY) > 0.1f ||
+                       Math.Abs(dropShadowStrength - targetShadowStrength) > 0.001f ||
+                       Math.Abs(dropShadowSize - targetShadowSize) > 0.1f ||
+                       Math.Abs(Size.X - currSize.X) > 0.25f ||
+                       Math.Abs(Size.Y - currSize.Y) > 0.25f;
+            }
+        }
+
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);

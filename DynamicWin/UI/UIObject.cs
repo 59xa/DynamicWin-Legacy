@@ -23,6 +23,8 @@ namespace DynamicWin.UI
         public Vec2 LocalPosition { get => localPosition; set => localPosition = value; }
         public Vec2 Anchor { get => anchor; set => anchor = value; }
 
+        private const float DirtyFloatTolerance = 0.001f;
+
         public Vec2 Size
         {
             get
@@ -38,24 +40,41 @@ namespace DynamicWin.UI
             }
             set
             {
+                float nextX;
+                float nextY;
+
                 // 59xa: what even
                 if (value == null)
                 {
-                    size = Vec2.one ?? new Vec2(1f, 1f);
+                    nextX = 1f;
+                    nextY = 1f;
                 }
                 else
                 {
-                    size = new Vec2(
-                        Math.Max(1f, value.X),
-                        Math.Max(1f, value.Y)
-                    );
+                    nextX = Math.Max(1f, value.X);
+                    nextY = Math.Max(1f, value.Y);
                 }
 
+                if (size != null && NearlyEqual(size.X, nextX) && NearlyEqual(size.Y, nextY))
+                    return;
+
+                size = new Vec2(nextX, nextY);
                 MarkGpuDirty();
             }
         }
 
-        public Col Color { get => new Col(color.r, color.g, color.b, color.a * Alpha); set { color = value; MarkGpuDirty(); } }
+        public Col Color
+        {
+            get => new Col(color.r, color.g, color.b, color.a * Alpha);
+            set
+            {
+                if (value == null) value = Col.Transparent;
+                if (ColorsClose(color, value)) return;
+
+                color = value;
+                MarkGpuDirty();
+            }
+        }
 
         private bool isHovering = false;
         private bool isMouseDown = false;
@@ -83,7 +102,17 @@ namespace DynamicWin.UI
         private float pAlpha = 1f;
         private float oAlpha = 1f;
 
-        public float Alpha { get => (float) Math.Min(pAlpha, Math.Min(oAlpha, RendererMain.Instance.alphaOverride)); set { oAlpha = value; MarkGpuDirty(); } }
+        public float Alpha
+        {
+            get => (float)Math.Min(pAlpha, Math.Min(oAlpha, RendererMain.Instance.alphaOverride));
+            set
+            {
+                if (NearlyEqual(oAlpha, value)) return;
+
+                oAlpha = value;
+                MarkGpuDirty();
+            }
+        }
 
         protected void AddLocalObject(UIObject obj)
         {
@@ -301,31 +330,33 @@ namespace DynamicWin.UI
 
             if (canInteract)
             {
-                var rect = SKRect.Create(RendererMain.CursorPosition.X, RendererMain.CursorPosition.Y, 1, 1);
+                var cursor = RendererMain.CursorPosition;
+                bool leftMouseDown = RendererMain.IsLeftMouseButtonDown;
+                var rect = SKRect.Create(cursor.X, cursor.Y, 1, 1);
                 isHovering = GetInteractionRect().Contains(rect);
 
-                if (!isGlobalMouseDown && Mouse.LeftButton == MouseButtonState.Pressed)
+                if (!isGlobalMouseDown && leftMouseDown)
                 {
                     isGlobalMouseDown = true;
                     OnGlobalMouseDown();
                 }
-                else if (isGlobalMouseDown && !(Mouse.LeftButton == MouseButtonState.Pressed))
+                else if (isGlobalMouseDown && !leftMouseDown)
                 {
                     isGlobalMouseDown = false;
                     OnGlobalMouseUp();
                 }
 
-                if (IsHovering && !IsMouseDown && Mouse.LeftButton == MouseButtonState.Pressed)
+                if (IsHovering && !IsMouseDown && leftMouseDown)
                 {
                     IsMouseDown = true;
                     OnMouseDown();
                 }
-                else if (IsHovering && IsMouseDown && !(Mouse.LeftButton == MouseButtonState.Pressed))
+                else if (IsHovering && IsMouseDown && !leftMouseDown)
                 {
                     IsMouseDown = false;
                     OnMouseUp();
                 }
-                else if (IsMouseDown && !(Mouse.LeftButton == MouseButtonState.Pressed))
+                else if (IsMouseDown && !leftMouseDown)
                 {
                     IsMouseDown = false;
                 }
@@ -347,6 +378,41 @@ namespace DynamicWin.UI
 
         public virtual void Update(float deltaTime) { }
 
+        public virtual bool WantsRealtimeUpdate => false;
+        public virtual bool WantsContinuousUpdate => false;
+
+        public bool SubtreeWantsRealtimeUpdate()
+        {
+            if (!isEnabled) return false;
+            if (WantsRealtimeUpdate) return true;
+            if (!drawLocalObjects) return false;
+
+            for (int i = 0; i < localObjects.Count; i++)
+            {
+                var obj = localObjects[i];
+                if (obj != null && obj.SubtreeWantsRealtimeUpdate())
+                    return true;
+            }
+
+            return false;
+        }
+
+        public bool SubtreeWantsContinuousUpdate()
+        {
+            if (!isEnabled) return false;
+            if (WantsContinuousUpdate || WantsRealtimeUpdate) return true;
+            if (!drawLocalObjects) return false;
+
+            for (int i = 0; i < localObjects.Count; i++)
+            {
+                var obj = localObjects[i];
+                if (obj != null && obj.SubtreeWantsContinuousUpdate())
+                    return true;
+            }
+
+            return false;
+        }
+
         // GPU caching fields
         private SKImage? gpuCache = null;
         private bool gpuCacheDirty = true;
@@ -355,8 +421,11 @@ namespace DynamicWin.UI
         // Flag to indicate Draw() already rendered full subtree (so DrawCall won't draw children again)
         private bool lastDrawRenderedSubtree = false;
 
-        private void MarkGpuDirty()
+        protected void MarkGpuDirty()
         {
+            if (gpuCacheDirty && gpuCache == null)
+                return;
+
             gpuCacheDirty = true;
             try
             {
@@ -364,6 +433,21 @@ namespace DynamicWin.UI
             }
             catch { }
             gpuCache = null;
+        }
+
+        protected static bool NearlyEqual(float a, float b, float epsilon = DirtyFloatTolerance)
+        {
+            return Math.Abs(a - b) <= epsilon;
+        }
+
+        protected static bool ColorsClose(Col a, Col b, float epsilon = DirtyFloatTolerance)
+        {
+            if (a == null || b == null) return a == b;
+
+            return NearlyEqual(a.r, b.r, epsilon)
+                && NearlyEqual(a.g, b.g, epsilon)
+                && NearlyEqual(a.b, b.b, epsilon)
+                && NearlyEqual(a.a, b.a, epsilon);
         }
 
         public void DrawCall(SKCanvas canvas)
@@ -402,7 +486,7 @@ namespace DynamicWin.UI
             var rect = SKRect.Create(0, 0, Size.X, Size.Y);
             var roundRect = new SKRoundRect(rect, roundRadius);
 
-            var paint = GetPaint();
+            using var paint = GetPaint();
 
             canvas.DrawRoundRect(roundRect, paint);
         }
@@ -473,7 +557,7 @@ namespace DynamicWin.UI
                         // Draw the cached image at the object's position
                         canvas.Save();
                         canvas.Translate(Position.X, Position.Y);
-                        var paint = new SKPaint { FilterQuality = SKFilterQuality.None };
+                        using var paint = new SKPaint { FilterQuality = SKFilterQuality.None };
                         canvas.DrawImage(gpuCache, 0, 0, paint);
                         canvas.Restore();
 
@@ -573,6 +657,9 @@ namespace DynamicWin.UI
 
         public void SilentSetActive(bool isEnabled)
         {
+            if (this.isEnabled == isEnabled && lastSetActiveCall == isEnabled) return;
+            lastSetActiveCall = isEnabled;
+            OnActiveChanged(isEnabled);
             this.isEnabled = isEnabled;
         }
 

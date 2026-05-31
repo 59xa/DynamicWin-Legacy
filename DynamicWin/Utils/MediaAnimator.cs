@@ -46,6 +46,7 @@ namespace DynamicWin.Utils
         {
             bool hasPendingNow = false;
             try { hasPendingNow = hasPending(); } catch { hasPendingNow = false; }
+            bool resetPendingEdge = false;
 
             if (State != AnimState.Idle)
                 AnimTimer += deltaTime;
@@ -90,6 +91,7 @@ namespace DynamicWin.Utils
                     State = AnimState.Idle;
                     AnimTimer = 0f;
                     try { onFinish?.Invoke(); } catch { }
+                    resetPendingEdge = true;
                 }
             }
             else // Idle
@@ -106,7 +108,7 @@ namespace DynamicWin.Utils
 
             // Update lastHasPending for edge detection on next frame. When animation is running we still track
             // the pending state so mid-swap logic can use hasPendingNow above.
-            lastHasPending = hasPendingNow;
+            lastHasPending = resetPendingEdge ? false : hasPendingNow;
         }
 
         /// <summary>

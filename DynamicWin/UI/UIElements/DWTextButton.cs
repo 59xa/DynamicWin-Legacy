@@ -25,22 +25,25 @@ namespace DynamicWin.UI.UIElements
             Text.TextSize = normalTextSize;
         }
 
+        public override bool WantsRealtimeUpdate
+        {
+            get
+            {
+                float targetTextSize = GetTargetTextSize();
+                return base.WantsRealtimeUpdate || Math.Abs(Text.TextSize - targetTextSize) > 0.05f;
+            }
+        }
+
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            float currentTextSize = normalTextSize;
+            Text.TextSize = Mathf.Lerp(Text.TextSize, GetTargetTextSize(), textSizeSmoothSpeed * deltaTime);
+        }
 
-            if (IsHovering && !IsMouseDown)
-                currentTextSize *= hoverScaleMulti.Magnitude;
-            else if (IsMouseDown)
-                currentTextSize *= clickScaleMulti.Magnitude;
-            else if (!IsHovering && !IsMouseDown)
-                currentTextSize *= normalScaleMulti.Magnitude;
-            else
-                currentTextSize *= normalScaleMulti.Magnitude;
-
-            Text.TextSize = Mathf.Lerp(Text.TextSize, currentTextSize, textSizeSmoothSpeed * deltaTime);
+        private float GetTargetTextSize()
+        {
+            return normalTextSize * GetTargetScaleMultiplier().Magnitude;
         }
     }
 }

@@ -14,12 +14,37 @@ namespace DynamicWin.UI.UIElements
         public string Text { get { return text; } set { SetText(value); } }
 
         private float textSize = 24;
-        public float TextSize { get => textSize; set => textSize = value; }
+        public float TextSize
+        {
+            get => textSize;
+            set
+            {
+                if (NearlyEqual(textSize, value)) return;
 
-        private Vec2 textBounds;
+                textSize = value;
+                InvalidateTextCache();
+            }
+        }
+
+        private Vec2 textBounds = Vec2.zero;
 
         private SKTypeface font;
-        public SKTypeface Font { get => font; set => font = value; }
+        public SKTypeface Font
+        {
+            get => font;
+            set
+            {
+                if (ReferenceEquals(font, value)) return;
+
+                font = value;
+                InvalidateTextCache();
+            }
+        }
+
+        private SKTextBlob? cachedBlob;
+        private SKFont? cachedFont;
+        private Vec2 drawAlignmentSize = Vec2.one;
+        private bool textCacheDirty = true;
 
         public Vec2 TextBounds
         {
@@ -35,47 +60,83 @@ namespace DynamicWin.UI.UIElements
             this.text = text;
             Color = Theme.TextMain;
             font = Resources.Res.SFProRegular;
+            UseGpuCaching = true;
         }
 
         public override void Draw(SKCanvas canvas)
         {
-            var paint = GetPaint();
+            EnsureTextCache();
+
+            using var paint = GetPaint();
             paint.Color = Color.Value();
             paint.TextSize = textSize;
             paint.Typeface = font;
 
-            // Measure the width of the text
-            Size.X = paint.MeasureText(text);
-
-            // Measure the height of the text
-            var fontMetrics = paint.FontMetrics;
-            Size.Y = fontMetrics.Descent + fontMetrics.Ascent;
-
-            SKTextBlob blob = SKTextBlob.Create(text, new SKFont(paint.Typeface, textSize));
-
-            if (blob != null)
+            if (cachedBlob != null)
             {
-                canvas.DrawText(blob, Position.X, Position.Y, paint);
-                textBounds = new Vec2(blob.Bounds.Width, blob.Bounds.Height);
+                var drawPosition = GetScreenPosFromRawPosition(RawPosition, drawAlignmentSize) + LocalPosition;
+                canvas.DrawText(cachedBlob, drawPosition.X, drawPosition.Y, paint);
             }
-
-            Size = textBounds;
 
             //canvas.DrawRoundRect(GetRect(), paint);
         }
 
         public Vec2 GetBoundsForString(string text)
         {
-            SKTextBlob blob = SKTextBlob.Create(text, new SKFont(Font, textSize));
+            using var font = new SKFont(Font, textSize);
+            using var blob = SKTextBlob.Create(text, font);
 
-            return new Vec2(blob.Bounds.Width, blob.Bounds.Height);
+            return blob == null ? Vec2.zero : new Vec2(blob.Bounds.Width, blob.Bounds.Height);
+        }
+
+        private void EnsureTextCache()
+        {
+            if (!textCacheDirty) return;
+
+            cachedBlob?.Dispose();
+            cachedFont?.Dispose();
+
+            cachedFont = new SKFont(font, textSize);
+            cachedBlob = SKTextBlob.Create(text ?? string.Empty, cachedFont);
+
+            using var measurePaint = GetPaint();
+            measurePaint.TextSize = textSize;
+            measurePaint.Typeface = font;
+
+            var fontMetrics = measurePaint.FontMetrics;
+            drawAlignmentSize = new Vec2(
+                measurePaint.MeasureText(text ?? string.Empty),
+                fontMetrics.Descent + fontMetrics.Ascent
+            );
+
+            if (cachedBlob != null)
+            {
+                textBounds = new Vec2(cachedBlob.Bounds.Width, cachedBlob.Bounds.Height);
+                Size = textBounds;
+            }
+            else
+            {
+                textBounds = Vec2.zero;
+                Size = Vec2.one;
+            }
+
+            textCacheDirty = false;
+        }
+
+        private void InvalidateTextCache()
+        {
+            textCacheDirty = true;
+            MarkGpuDirty();
         }
 
         Animator changeTextAnim;
 
         public void SilentSetText(string text)
         {
+            if (this.text == text) return;
+
             this.text = text;
+            InvalidateTextCache();
         }
 
         public void SetText(string text)
@@ -93,17 +154,17 @@ namespace DynamicWin.UI.UIElements
                 {
                     float t = Easings.EaseInQuint(x * 2);
 
-                    textSize = Mathf.Lerp(ogTextSize, ogTextSize / 1.5f, t);
+                    TextSize = Mathf.Lerp(ogTextSize, ogTextSize / 1.5f, t);
                     localBlurAmount = Mathf.Lerp(0, 10, t);
                     Alpha = Mathf.Lerp(1, 0, x);
                 }
                 else
                 {
-                    this.text = text;
+                    SilentSetText(text);
 
                     float t = Easings.EaseOutQuint((x - 0.5f) * 2);
 
-                    textSize = Mathf.Lerp(ogTextSize / 2.5f, ogTextSize, t);
+                    TextSize = Mathf.Lerp(ogTextSize / 2.5f, ogTextSize, t);
                     localBlurAmount = Mathf.Lerp(10, 0, t);
                     Alpha = Mathf.Lerp(0, 1, x);
                 }
@@ -113,10 +174,19 @@ namespace DynamicWin.UI.UIElements
             changeTextAnim.Start();
             changeTextAnim.onAnimationEnd += () =>
             {
-                this.text = text;
-                textSize = ogTextSize;
+                SilentSetText(text);
+                TextSize = ogTextSize;
                 DestroyLocalObject(changeTextAnim);
             };
+        }
+
+        public override void OnDestroy()
+        {
+            base.OnDestroy();
+            cachedBlob?.Dispose();
+            cachedBlob = null;
+            cachedFont?.Dispose();
+            cachedFont = null;
         }
 
         public static string Truncate(string value, int maxLength)

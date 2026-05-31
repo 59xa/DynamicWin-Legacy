@@ -10,15 +10,35 @@ namespace DynamicWin.Utils
         private static readonly string MicrophoneSubkey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
         private static readonly string WebcamSubkey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam";
         private static readonly string TimestampValueName = "LastUsedTimeStop";
+        private static readonly TimeSpan CacheDuration = TimeSpan.FromMilliseconds(750);
+        private static readonly object cacheLock = new object();
+        private static DateTime lastMicrophoneCheck = DateTime.MinValue;
+        private static DateTime lastWebcamCheck = DateTime.MinValue;
+        private static bool cachedMicrophoneInUse;
+        private static bool cachedWebcamInUse;
 
         public static bool IsMicrophoneInUse()
         {
-            return IsDeviceInUse(MicrophoneSubkey);
+            return IsDeviceInUseCached(MicrophoneSubkey, ref lastMicrophoneCheck, ref cachedMicrophoneInUse);
         }
 
         public static bool IsWebcamInUse()
         {
-            return IsDeviceInUse(WebcamSubkey);
+            return IsDeviceInUseCached(WebcamSubkey, ref lastWebcamCheck, ref cachedWebcamInUse);
+        }
+
+        private static bool IsDeviceInUseCached(string subkey, ref DateTime lastCheck, ref bool cachedValue)
+        {
+            var now = DateTime.UtcNow;
+            lock (cacheLock)
+            {
+                if ((now - lastCheck) < CacheDuration)
+                    return cachedValue;
+
+                cachedValue = IsDeviceInUse(subkey);
+                lastCheck = now;
+                return cachedValue;
+            }
         }
 
         private static bool IsDeviceInUse(string subkey)

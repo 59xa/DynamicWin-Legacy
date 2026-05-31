@@ -72,7 +72,7 @@ namespace DynamicWin.UI.Widgets
 
             if (hoverProgress > 0.025f)
             {
-                var paint = GetPaint();
+                using var paint = GetPaint();
                 paint.ImageFilter = SKImageFilter.CreateDropShadowOnly(
                     0, 0,
                     hoverProgress * 10, hoverProgress * 10,
@@ -86,7 +86,7 @@ namespace DynamicWin.UI.Widgets
                 canvas.Scale(1 + hoverProgress / 60, 1 + hoverProgress / 60, p.X, p.Y);
 
                 // Build squircle path for hover shadow
-                var shadowPath = BuildSuperellipsePath(GetRawRect(), radius: roundRadius, t: 1.0f);
+                using var shadowPath = BuildSuperellipsePath(GetRawRect(), radius: roundRadius, t: 1.0f);
 
                 // Clip outside the widget rect and draw shadow
                 int clipSave = canvas.Save();
@@ -102,7 +102,7 @@ namespace DynamicWin.UI.Widgets
 
             if (isEditMode)
             {
-                var paint = GetPaint();
+                using var paint = GetPaint();
 
                 paint.IsStroke = true;
                 paint.StrokeCap = SKStrokeCap.Round;
@@ -113,7 +113,7 @@ namespace DynamicWin.UI.Widgets
                 var brect = SKRect.Create(Position.X - expand / 2, Position.Y - expand / 2, Size.X + expand, Size.Y + expand);
 
                 // Squircle path for edit mode border
-                var borderPath = BuildSuperellipsePath(brect, radius: roundRadius, t: 1.0f);
+                using var borderPath = BuildSuperellipsePath(brect, radius: roundRadius, t: 1.0f);
 
                 int noClip = canvas.Save();
                 paint.Color = SKColors.DimGray;
@@ -183,23 +183,9 @@ namespace DynamicWin.UI.Widgets
         /// IMPORTANT: Do not touch UI objects directly from this method. Marshal to UI thread via BeginInvokeUI(...) OR update thread-safe fields and read them on UI thread
         /// Default implementation is a simple no-op loop
         /// </summary>
-        protected virtual async Task RunBackgroundAsync(CancellationToken token)
+        protected virtual Task RunBackgroundAsync(CancellationToken token)
         {
-            // Default: nothing heavy, but keep an awaitable loop so derived classes can override without re-implementing the loop
-            try
-            {
-                // Use a short non-cancelable delay to avoid throwing TaskCanceledException when the token is cancelled
-                // Checking the token between delays keeps shutdown responsive without generating exceptions
-                while (!token.IsCancellationRequested)
-                {
-                    await Task.Delay(200).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
-            {
-                // Log unexpected exceptions but avoid noisy cancellation exceptions
-                System.Diagnostics.Debug.WriteLine("[WIDGET BASE] RunBackgroundAsync exception: " + ex);
-            }
+            return Task.CompletedTask;
         }
 
         /// <summary>

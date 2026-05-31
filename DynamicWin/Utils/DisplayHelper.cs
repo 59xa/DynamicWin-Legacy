@@ -43,11 +43,32 @@ namespace DynamicWin.Utils
 
         public static int GetRefreshRate()
         {
+            return GetRefreshRate((string?)null);
+        }
+
+        public static int GetRefreshRate(int monitorIndex)
+        {
+            try
+            {
+                var screens = System.Windows.Forms.Screen.AllScreens;
+                if (screens.Length <= 0) return GetRefreshRate();
+
+                int clampedIndex = Math.Clamp(monitorIndex, 0, screens.Length - 1);
+                return GetRefreshRate(screens[clampedIndex].DeviceName);
+            }
+            catch
+            {
+                return GetRefreshRate();
+            }
+        }
+
+        private static int GetRefreshRate(string? deviceName)
+        {
             try
             {
                 DEVMODE devMode = new DEVMODE();
                 devMode.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
-                if (EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref devMode))
+                if (EnumDisplaySettings(deviceName, ENUM_CURRENT_SETTINGS, ref devMode))
                     return (int)devMode.dmDisplayFrequency;
             }
             catch
