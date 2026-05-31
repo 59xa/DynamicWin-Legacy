@@ -51,9 +51,14 @@ namespace DynamicWin.UI.Widgets.Small
         private ulong? currentBitmapFingerprint = null;
         private ulong? pendingBitmapFingerprint = null;
 
+        // Cancellation token for pending decode tasks
+        private CancellationTokenSource? decodeCts = null;
+        private CancellationTokenSource? thumbnailRetryCts = null;
+        private int decodeVersion = 0;
+
         public MediaThumbnailWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
-            UseGpuCaching = true;
+            UseGpuCaching = false;
 
             // Ensure shared setting loaded
             try { RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.Load(); } catch { }
@@ -107,6 +112,16 @@ namespace DynamicWin.UI.Widgets.Small
 
         private void OnThumbnailChanged(object? sender, MediaChangedEventArgs e)
         {
+            int changeVersion = Interlocked.Increment(ref decodeVersion);
+
+            // Cancel any pending decode tasks when media changes (but don't dispose yet - task might still reference it)
+            try
+            {
+                decodeCts?.Cancel();
+                thumbnailRetryCts?.Cancel();
+            }
+            catch { }
+
             // Adopt metadata immediately and ensure widget expanded when media exists
             lock (mediaLock)
             {
@@ -116,24 +131,31 @@ namespace DynamicWin.UI.Widgets.Small
 
                 if (e.Media != null)
                 {
+                    // Check if this is a transition from no-media to has-media
+                    bool wasNoMedia = !hasMedia || collapseProgress <= 0.001f;
                     hasMedia = true;
 
                     // If hideWhenIdle is enabled, determine expand state based on playback status and pause duration
+                    // BUT: when NEW media arrives (transition from null to non-null), always show it immediately
                     if (hideWhenIdle)
                     {
                         try
                         {
                             var status = DynamicWin.Utils.MediaThumbnailService.Instance?.LastPlaybackStatus;
-                            bool playing = status.HasValue && status.Value == Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-                            
-                            // If not playing, check if paused longer than 30 seconds
-                            bool shouldExpand = playing;
-                            if (!playing)
+                            bool playing = !status.HasValue || status.Value == Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+
+                            // When playing, always show
+                            // When transitioning from no-media to media, always show (even if paused)
+                            // When paused and already had media, only hide if paused 30+ seconds
+                            bool shouldExpand = playing || wasNoMedia;
+
+                            if (!playing && !wasNoMedia)
                             {
+                                // Was already showing media and now paused - check if paused long enough to hide
                                 bool pausedLong = MediaThumbnailService.Instance.IsPausedLongerThan(TimeSpan.FromSeconds(30));
                                 shouldExpand = !pausedLong;
                             }
-                            
+
                             BeginInvokeUI(() => StartCollapseOrExpand(shouldExpand));
                         }
                         catch
@@ -143,13 +165,24 @@ namespace DynamicWin.UI.Widgets.Small
                     }
                     else
                     {
+                        // Always expand when media exists and hideWhenIdle is off
                         BeginInvokeUI(() => StartCollapseOrExpand(true));
                     }
                 }
                 else
                 {
-                    // No media -> collapse after a short delay to avoid flicker
+                    // No media -> collapse and immediately clear bitmaps to prevent stale display
                     hasMedia = false;
+                    animator.ForceFinish();
+
+                    // Immediately dispose bitmaps when media becomes null (don't wait for animation)
+                    if (thumbnailBitmap != null) { try { thumbnailBitmap.Dispose(); } catch { } thumbnailBitmap = null; currentBitmapFingerprint = null; }
+                    if (pendingBitmap != null) { try { pendingBitmap.Dispose(); } catch { } pendingBitmap = null; pendingBitmapFingerprint = null; }
+                    if (previousBitmap != null) { try { previousBitmap.Dispose(); } catch { } previousBitmap = null; }
+                    pendingMedia = null;
+                    currentMediaKey = null;
+                    pendingMediaKey = null;
+
                     BeginInvokeUI(() => StartCollapseOrExpand(false));
                 }
             }
@@ -158,11 +191,13 @@ namespace DynamicWin.UI.Widgets.Small
             byte[]? bytes = e.ThumbnailBytes;
             Media? media = e.Media;
 
-            if (bytes == null || bytes.Length == 0)
+            if (media != null && (bytes == null || bytes.Length == 0))
             {
                 // Try to read cached bytes from service (fast, non-blocking)
                 try { bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes(); } catch { bytes = null; }
             }
+
+            if (media == null) return;
 
             if (bytes != null && bytes.Length > 0)
             {
@@ -171,12 +206,23 @@ namespace DynamicWin.UI.Widgets.Small
                 if ((now - lastDecodeTime) < minDecodeInterval)
                 {
                     // Schedule a short delayed decode to coalesce rapid events
-                    Task.Delay((int)minDecodeInterval.TotalMilliseconds).ContinueWith(_ => DecodeAndQueue(bytes, media));
+                    decodeCts = new CancellationTokenSource();
+                    var cts = decodeCts;
+                    Task.Delay((int)minDecodeInterval.TotalMilliseconds, cts.Token).ContinueWith(_ =>
+                    {
+                        if (!cts.Token.IsCancellationRequested)
+                        {
+                            DecodeAndQueue(bytes, media, cts.Token, changeVersion);
+                        }
+                        // Let the CTS be replaced by next notification, not here
+                    }, TaskScheduler.Default);
                 }
                 else
                 {
                     lastDecodeTime = now;
-                    _ = Task.Run(() => DecodeAndQueue(bytes, media));
+                    decodeCts = new CancellationTokenSource();
+                    var cts = decodeCts;
+                    _ = Task.Run(() => DecodeAndQueue(bytes, media, cts.Token, changeVersion), cts.Token);
                 }
             }
             else
@@ -189,15 +235,67 @@ namespace DynamicWin.UI.Widgets.Small
                     {
                         currentMediaKey = $"{media.Title ?? string.Empty}|{media.Artist ?? string.Empty}|0";
                     }
+
+                    StartThumbnailRetry(media, changeVersion);
                 }
             }
         }
 
-        private void DecodeAndQueue(byte[] bytes, Media? media)
+        private void StartThumbnailRetry(Media media, int changeVersion)
         {
+            thumbnailRetryCts = new CancellationTokenSource();
+            var cts = thumbnailRetryCts;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    for (int attempt = 0; attempt < 16; attempt++)
+                    {
+                        if (cts.Token.IsCancellationRequested || changeVersion != Volatile.Read(ref decodeVersion)) return;
+
+                        byte[]? bytes = null;
+                        try { bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes(); } catch { bytes = null; }
+
+                        if (bytes == null || bytes.Length == 0)
+                        {
+                            try { bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: true).ConfigureAwait(false); }
+                            catch { bytes = null; }
+                        }
+
+                        if (cts.Token.IsCancellationRequested || changeVersion != Volatile.Read(ref decodeVersion)) return;
+
+                        if (bytes != null && bytes.Length > 0)
+                        {
+                            DecodeAndQueue((byte[])bytes.Clone(), media, cts.Token, changeVersion);
+                            return;
+                        }
+
+                        try { await Task.Delay(250, cts.Token).ConfigureAwait(false); }
+                        catch { return; }
+                    }
+                }
+                catch { }
+            }, cts.Token);
+        }
+
+        private void DecodeAndQueue(byte[] bytes, Media? media, CancellationToken ct, int changeVersion)
+        {
+            // Check cancellation early
+            try
+            {
+                if (ct.IsCancellationRequested || changeVersion != Volatile.Read(ref decodeVersion)) return;
+            }
+            catch
+            {
+                // CancellationToken might be disposed, just return
+                return;
+            }
+
             SKBitmap? bmp = null;
             try
             {
+                if (ct.IsCancellationRequested || changeVersion != Volatile.Read(ref decodeVersion)) return;
                 using var ms = new SKMemoryStream(bytes);
                 bmp = SKBitmap.Decode(ms);
             }
@@ -209,11 +307,41 @@ namespace DynamicWin.UI.Widgets.Small
 
             if (bmp == null) return;
 
+            // Check again before fingerprinting
+            try
+            {
+                if (ct.IsCancellationRequested || changeVersion != Volatile.Read(ref decodeVersion))
+                {
+                    bmp?.Dispose();
+                    return;
+                }
+            }
+            catch
+            {
+                bmp?.Dispose();
+                return;
+            }
+
             ulong? fp = null;
             try { fp = BitmapUtils.GetBitmapFingerprint(bmp); } catch { fp = null; }
 
             lock (mediaLock)
             {
+                // Final check before queuing
+                try
+                {
+                    if (ct.IsCancellationRequested || changeVersion != Volatile.Read(ref decodeVersion))
+                    {
+                        bmp?.Dispose();
+                        return;
+                    }
+                }
+                catch
+                {
+                    bmp?.Dispose();
+                    return;
+                }
+
                 // If image visually identical to currently displayed, adopt metadata only
                 if (fp.HasValue && currentBitmapFingerprint.HasValue && fp.Value == currentBitmapFingerprint.Value)
                 {
@@ -222,6 +350,16 @@ namespace DynamicWin.UI.Widgets.Small
                     {
                         currentMediaKey = $"{media.Title ?? string.Empty}|{media.Artist ?? string.Empty}|{bytes.Length}";
                     }
+                    return;
+                }
+
+                if (thumbnailBitmap == null)
+                {
+                    thumbnailBitmap = bmp;
+                    currentBitmapFingerprint = fp;
+                    currentMediaKey = (media == null) ? string.Empty : $"{media.Title ?? string.Empty}|{media.Artist ?? string.Empty}|{bytes.Length}";
+                    pendingMedia = null;
+                    pendingMediaKey = null;
                     return;
                 }
 
@@ -320,6 +458,8 @@ namespace DynamicWin.UI.Widgets.Small
                 {
                     lock (mediaLock)
                     {
+                        if (pendingBitmap == null) return;
+
                         if (thumbnailBitmap != null)
                         {
                             try { thumbnailBitmap.Dispose(); } catch { }
@@ -446,6 +586,9 @@ namespace DynamicWin.UI.Widgets.Small
         {
             base.OnDestroy();
             try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChanged; } catch { }
+            Interlocked.Increment(ref decodeVersion);
+            try { decodeCts?.Cancel(); } catch { }
+            try { thumbnailRetryCts?.Cancel(); } catch { }
             // Ensure animation is finished and thumbnail is visible
             ForceFinishAnimation();
             // Dispose owned bitmaps

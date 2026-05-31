@@ -6,7 +6,6 @@ using System.Numerics;
 using System.Linq;
 using System.Threading.Tasks;
 using System;
-using System.Diagnostics;
 
 /*
  * 
@@ -96,7 +95,14 @@ namespace DynamicWin.Utils
         private bool enableDotWhenLow = true;
         public bool EnableDotWhenLow { get => enableDotWhenLow; set => enableDotWhenLow = value; }
         public float BlurAmount { get; set; } = 0f;
-        public float BarSpacing { get; set; } = 1.5f;
+
+        private float barSpacing = 1.5f;
+        public float BarSpacing
+        {
+            get => barSpacing;
+            set => barSpacing = Math.Clamp(value, 0f, 20f);
+        }
+        public float BarGap { get => BarSpacing; set => BarSpacing = value; }
 
         // Initialise class
         public AudioVisualiser(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopRight, Col Primary = null, Col Secondary = null) : base(parent, position, size, alignment)
@@ -226,13 +232,16 @@ namespace DynamicWin.Utils
         {
             try
             {
-                // Media object has null ThumbnailData by design; fetch bytes from service instead
-                byte[]? bytes = null;
-                try
+                // Prefer ThumbnailData from media object; fall back to service cache for compatibility
+                byte[]? bytes = m?.ThumbnailData;
+                if (bytes == null || bytes.Length == 0)
                 {
-                    bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                    try
+                    {
+                        bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                    }
+                    catch { }
                 }
-                catch { }
 
                 lock (thumbLock)
                 {
@@ -583,9 +592,10 @@ namespace DynamicWin.Utils
             float height = Size.Y;
             float centerY = Position.Y + height / 2;
 
-            float spacing2 = BarSpacing;
+            float maxSpacing = barCount > 1 ? Math.Max(0f, (width - barCount * 0.5f) / (barCount - 1)) : 0f;
+            float spacing2 = Math.Clamp(BarSpacing, 0f, maxSpacing);
             float totalSpacing2 = spacing2 * (barCount - 1);
-            float barWidth2 = (width - totalSpacing2) / barCount;
+            float barWidth2 = Math.Max(0.5f, (width - totalSpacing2) / barCount);
             float visualBoost = 1.5f;
             float dotHeight = barWidth2;
 
@@ -595,48 +605,15 @@ namespace DynamicWin.Utils
                 float rawHeight = barHeight[i] * visualBoost;
                 float dynamicHeight = rawHeight * height * 0.8f;
 
-                float activity = Math.Clamp(barHeight[i], 0f, 1f);
-
-                float center = (barCount - 1) / 2f;
-                float distFromCenter = MathF.Abs(i - center) / center;
-                float centerBoost = 1f - distFromCenter;
-
-                float midEmphasis = 1f - MathF.Abs(activity - 0.5f) * 2f;
-                midEmphasis = MathF.Pow(midEmphasis, 1.5f);
-
-                float minScale = 0.7f;
-                float baseScale = activity;
-
-                float breathStrength = 0.15f + (0.15f * centerBoost);
-
-                float time = (float)Stopwatch.GetTimestamp() / Stopwatch.Frequency;
-
-                float phaseOffset = i * 0.6f;
-
-                float lag = distFromCenter * 0.08f;
-                float delayedActivity = Math.Clamp(activity - lag, 0f, 1f);
-
-                float scale = minScale + (1f - minScale) * delayedActivity;
-                scale += midEmphasis * breathStrength;
-
-                float pulse = MathF.Sin(time * 4f + phaseOffset) * (0.03f + 0.02f * centerBoost) * midEmphasis;
-                scale += pulse;
-
-                scale = Math.Clamp(scale, minScale, 1.1f);
-
-                float scaledWidth = barWidth2 * scale;
-                float scaledDotHeight = dotHeight * scale;
-
                 float bH = EnableDotWhenLow
-                    ? Math.Max(scaledDotHeight, dynamicHeight)
+                    ? Math.Max(dotHeight, dynamicHeight)
                     : dynamicHeight;
 
                 float xBase = Position.X + i * (barWidth2 + spacing2);
-                float x = xBase + (barWidth2 - scaledWidth) / 2f;
                 float barTopY = centerY - bH / 2;
 
-                var rect = SKRect.Create(x, barTopY, scaledWidth, bH);
-                var roundRect = new SKRoundRect(rect, scaledWidth / 2, scaledWidth / 2);
+                var rect = SKRect.Create(xBase, barTopY, barWidth2, bH);
+                var roundRect = new SKRoundRect(rect, barWidth2 / 2, barWidth2 / 2);
 
                 // Color logic: dot must stay at the "Secondary" color until it starts growing
                 // We calculate a 'colorActivity' based on how much it has grown past the dot

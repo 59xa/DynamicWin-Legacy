@@ -6,6 +6,7 @@ using SkiaSharp;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading;
 using Windows.Media.Control;
 
 /*
@@ -40,6 +41,7 @@ namespace DynamicWin.UI.UIElements.Custom
         // Rate-limited service bytes and flags to make thumbnail processing
         private volatile byte[]? pendingThumbnailBytesFromService = null; // bytes handed to us by service events
         private volatile bool mediaNeedsUpdate = false; // set by service event when thumbnail changed
+        private int thumbnailDecodeVersion = 0;
         private DateTime lastMediaCheck = DateTime.MinValue;
         private readonly TimeSpan mediaCheckInterval = TimeSpan.FromSeconds(2); // only decode/check media every 2s
         // Debounce short-lived 'no media' signals to avoid flicker when service emits transient nulls
@@ -464,6 +466,24 @@ namespace DynamicWin.UI.UIElements.Custom
 
             if (cts == null) StartFetchLoop();
 
+            lock (mediaLock)
+            {
+                if (mediaClearRequestedAt != DateTime.MinValue && (DateTime.UtcNow - mediaClearRequestedAt) >= mediaClearDelay)
+                {
+                    animator.ForceFinish();
+                    if (thumbnailImage != null) { try { thumbnailImage.Dispose(); } catch { } thumbnailImage = null; thumbnailFingerprint = null; }
+                    if (pendingImage != null) { try { pendingImage.Dispose(); } catch { } pendingImage = null; pendingFingerprint = null; }
+                    if (previousImage != null) { try { previousImage.Dispose(); } catch { } previousImage = null; }
+                    currentMedia = null;
+                    currentMediaKey = null;
+                    pendingMedia = null;
+                    pendingMediaKey = null;
+                    optimisticActive = false;
+                    timelineFetchedOnce = false;
+                    mediaClearRequestedAt = DateTime.MinValue;
+                }
+            }
+
             // Cache widget bounds once per frame
             var rectData = GetRect();
             cachedWidgetBounds = rectData.Rect;
@@ -758,6 +778,8 @@ namespace DynamicWin.UI.UIElements.Custom
         {
             lock (mediaLock)
             {
+                if (pendingImage == null) return;
+
                 thumbnailImage?.Dispose();
                 thumbnailImage = pendingImage;
                 thumbnailFingerprint = pendingFingerprint;
@@ -791,6 +813,7 @@ namespace DynamicWin.UI.UIElements.Custom
         {
             try
             {
+                int changeVersion = Interlocked.Increment(ref thumbnailDecodeVersion);
                 var bytes = e.ThumbnailBytes;
                 var media = e.Media;
 
@@ -814,10 +837,12 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
 
                 // Helper to queue a background decode and set pendingImage when appropriate
-                void DecodeAndQueueBytes(byte[] bts, Media? md)
+                void DecodeAndQueueBytes(byte[] bts, Media? md, int version)
                 {
                     _ = Task.Run(() =>
                     {
+                        if (version != Volatile.Read(ref thumbnailDecodeVersion)) return;
+
                         SKImage? img = null;
                         ulong? fp = null;
                         try
@@ -830,6 +855,12 @@ namespace DynamicWin.UI.UIElements.Custom
 
                         lock (mediaLock)
                         {
+                            if (version != Volatile.Read(ref thumbnailDecodeVersion))
+                            {
+                                try { img.Dispose(); } catch { }
+                                return;
+                            }
+
                             // If visually identical to current, adopt metadata only
                             if (fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
                             {
@@ -867,7 +898,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     try
                     {
                         var cloned = (byte[])bytes.Clone();
-                        DecodeAndQueueBytes(cloned, media);
+                        DecodeAndQueueBytes(cloned, media, changeVersion);
                     }
                     catch { }
 
@@ -883,7 +914,7 @@ namespace DynamicWin.UI.UIElements.Custom
                         if (svcBytes != null && svcBytes.Length > 0)
                         {
                             var cloned = (byte[])svcBytes.Clone();
-                            DecodeAndQueueBytes(cloned, media);
+                            DecodeAndQueueBytes(cloned, media, changeVersion);
                             return;
                         }
                     }
@@ -899,6 +930,7 @@ namespace DynamicWin.UI.UIElements.Custom
                             try
                             {
                                 var b = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: true).ConfigureAwait(false);
+                                if (changeVersion != Volatile.Read(ref thumbnailDecodeVersion)) return;
                                 if (b != null && b.Length > 0)
                                 {
                                     lock (mediaLock)
@@ -909,7 +941,7 @@ namespace DynamicWin.UI.UIElements.Custom
                                         mediaNeedsUpdate = false;
                                     }
 
-                                    DecodeAndQueueBytes((byte[])b.Clone(), media);
+                                    DecodeAndQueueBytes((byte[])b.Clone(), media, changeVersion);
                                 }
                             }
                             catch { }
@@ -1045,6 +1077,7 @@ namespace DynamicWin.UI.UIElements.Custom
                                 // Decode bytes into SKImage (rate-limited) only when we have new bytes
                                 if (svcBytes != null && svcBytes.Length > 0)
                                 {
+                                    int processVersion = Volatile.Read(ref thumbnailDecodeVersion);
                                     SKImage? img = null;
                                     ulong? fp = null;
                                     try
@@ -1054,9 +1087,15 @@ namespace DynamicWin.UI.UIElements.Custom
                                     catch { img = null; fp = null; }
 
                                     bool skipPending = false;
+                                    bool staleDecode = false;
                                     lock (mediaLock)
                                     {
-                                        if (img != null && fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
+                                        if (processVersion != Volatile.Read(ref thumbnailDecodeVersion))
+                                        {
+                                            if (img != null) { try { img.Dispose(); } catch { } }
+                                            staleDecode = true;
+                                        }
+                                        else if (img != null && fp.HasValue && thumbnailFingerprint.HasValue && fp.Value == thumbnailFingerprint.Value)
                                         {
                                             // Visually identical - adopt metadata only
                                             if (svcMedia != null)
@@ -1067,6 +1106,10 @@ namespace DynamicWin.UI.UIElements.Custom
                                             optimisticActive = false;
                                             skipPending = true;
                                         }
+                                    }
+                                    if (staleDecode)
+                                    {
+                                        continue;
                                     }
                                     if (skipPending)
                                     {
@@ -1192,6 +1235,8 @@ namespace DynamicWin.UI.UIElements.Custom
         // Reset thumbnail/animation state for menu close/deactivation
         private void ResetThumbnailState()
         {
+            Interlocked.Increment(ref thumbnailDecodeVersion);
+
             lock (mediaLock)
             {
                 // Reset animator to idle

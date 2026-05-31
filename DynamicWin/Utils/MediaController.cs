@@ -74,6 +74,7 @@ namespace DynamicWin.Utils
 
         // Cached data (for consumers to read)
         public static Media? Current { get; private set; }
+        public static bool HasCurrentSession => _currentSession != null;
         private static MediaTimeline? _timelineCache;
         private static byte[]? _thumbnailBytesCache;
 
@@ -91,6 +92,8 @@ namespace DynamicWin.Utils
         private static bool _debouncePending = false;
         private static GlobalSystemMediaTransportControlsSession? _debounceSession = null;
         private const double DebounceIntervalMs = 120; // 120ms debounce
+        private static int _mediaPropertiesRefreshVersion = 0;
+        private static int _thumbnailFetchVersion = 0;
 
         /// <summary>
         /// Initialises the connection to Windows Media controls once.
@@ -165,9 +168,17 @@ namespace DynamicWin.Utils
                 else
                 {
                     // No media playing
+                    Interlocked.Increment(ref _mediaPropertiesRefreshVersion);
+                    Interlocked.Increment(ref _thumbnailFetchVersion);
                     Current = null;
                     _timelineCache = null;
                     _thumbnailBytesCache = null;
+
+                    try
+                    {
+                        MediaThumbnailService.Instance.ClearCurrentMedia(forceNotify: true);
+                    }
+                    catch { }
                 }
             }
             catch (Exception ex) { Debug.WriteLine($"[MediaInfo] UpdateSession Error: {ex.Message}"); }
@@ -220,15 +231,24 @@ namespace DynamicWin.Utils
         private static void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
         {
             RefreshTimeline(sender);
+            try
+            {
+                MediaThumbnailService.Instance.ForceNotifyCurrentThumbnail();
+            }
+            catch { }
         }
 
         // Now async void, called directly from event handler
         private static async void RefreshMediaPropertiesAsync(GlobalSystemMediaTransportControlsSession session)
         {
+            int refreshVersion = Interlocked.Increment(ref _mediaPropertiesRefreshVersion);
+
             try
             {
                 var props = await session.TryGetMediaPropertiesAsync();
                 if (props == null) return;
+                if (refreshVersion != Volatile.Read(ref _mediaPropertiesRefreshVersion)) return;
+                if (!ReferenceEquals(session, _currentSession)) return;
 
                 // Update Text Metadata
                 Current = new Media
@@ -239,6 +259,7 @@ namespace DynamicWin.Utils
                 };
 
                 // Reset thumb cache on song change
+                Interlocked.Increment(ref _thumbnailFetchVersion);
                 _thumbnailBytesCache = null;
 
                 // Notify the central thumbnail service that media properties changed
@@ -309,6 +330,7 @@ namespace DynamicWin.Utils
                 return _thumbnailBytesCache;
 
             if (_currentSession == null) return null;
+            int fetchVersion = Volatile.Read(ref _thumbnailFetchVersion);
 
             try
             {
@@ -320,6 +342,8 @@ namespace DynamicWin.Utils
                 using var stream = streamRef.AsStreamForRead();
                 using var ms = new MemoryStream();
                 await stream.CopyToAsync(ms);
+
+                if (fetchVersion != Volatile.Read(ref _thumbnailFetchVersion)) return null;
 
                 _thumbnailBytesCache = ms.ToArray();
                 return _thumbnailBytesCache;

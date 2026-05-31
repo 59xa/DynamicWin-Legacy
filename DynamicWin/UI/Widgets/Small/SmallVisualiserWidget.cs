@@ -217,6 +217,7 @@ namespace DynamicWin.UI.Widgets.Small
             audioVisualiser.UseThumbnailBackground = RegisterSmallVisualiserWidgetSettings.saveData.useThumbnailBackground;
             audioVisualiser.EnableDotWhenLow = RegisterSmallVisualiserWidgetSettings.saveData.displayDotWhenIdle;
             audioVisualiser.BlurAmount = 0.3f;
+            audioVisualiser.BarSpacing = 1.8f;
 
             AddLocalObject(audioVisualiser);
 
@@ -242,6 +243,9 @@ namespace DynamicWin.UI.Widgets.Small
                     return;
                 }
 
+                // Check if this is a transition from no-media to has-media
+                bool wasNoMedia = !hasMedia || collapseProgress <= 0.001f;
+
                 // On metadata present, fetch timeline once (service will have invalidated timeline on metadata change)
                 try
                 {
@@ -249,27 +253,28 @@ namespace DynamicWin.UI.Widgets.Small
 
                     hasMedia = true;
 
-                    // Evaluate shared setting: if HideMediaWhenIdle is enabled and media has been paused for >= 1 minute, collapse
+                    // Evaluate shared setting: if HideMediaWhenIdle is enabled and media has been paused for >= 30 seconds, collapse
                     bool hideWhenIdle = RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.HideMediaWhenIdle;
                     bool shouldExpand;
 
                     if (hideWhenIdle)
                     {
-                        // If timeline is present and playing, expand; otherwise if paused longer than threshold, collapse
-                        if (tl != null && tl.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        // When playing, always expand
+                        // When transitioning from no-media to media, always expand (even if paused)
+                        // When paused and already had media, only hide if paused 30+ seconds
+                        bool isPlaying = tl == null || tl.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                        shouldExpand = isPlaying || wasNoMedia;
+
+                        if (!isPlaying && !wasNoMedia)
                         {
-                            shouldExpand = true;
-                        }
-                        else
-                        {
-                            // If paused longer than threshold -> collapse
+                            // Was already showing media and now paused - check if paused long enough to hide
                             bool pausedLong = MediaThumbnailService.Instance.IsPausedLongerThan(TimeSpan.FromSeconds(30));
                             shouldExpand = !pausedLong;
                         }
                     }
                     else
                     {
-                        shouldExpand = tl != null && tl.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+                        shouldExpand = true;
                     }
 
                     targetExpanded = shouldExpand;

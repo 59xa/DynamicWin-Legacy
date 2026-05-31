@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using SkiaSharp;
 using Windows.Media.Control;
 using DynamicWin.Utils;
+using DynamicWin.UI.Widgets.Small;
 
 namespace DynamicWin.Utils
 {
@@ -127,6 +128,7 @@ namespace DynamicWin.Utils
         private SKBitmap? lastBitmap;
         private ulong? lastBitmapFingerprint;
         private ulong? lastEncodedFingerprint;
+        private bool mediaCleared = true;
 
         // Fetch state - atomic operations to avoid locks
         private volatile bool fetchRequested = false;
@@ -134,6 +136,7 @@ namespace DynamicWin.Utils
         private int fetchRunning = 0;
         private DateTime lastFetchTime = DateTime.MinValue;
         private readonly TimeSpan fetchDebounceDelay = TimeSpan.FromMilliseconds(150);
+        private int forceNotifyVersion = 0;
 
         // Media candidate debouncing
         private Media? pendingMediaCandidate;
@@ -146,6 +149,16 @@ namespace DynamicWin.Utils
         private DateTime? lastPlaybackNotPlayingAt;
         private bool playbackStateInitialized;
         private bool hasNotifiedPausedLongThreshold;
+        private bool hiddenForIdle;
+
+        private bool ShouldHideMediaWhenIdle()
+        {
+            try
+            {
+                return RegisterSmallVisualiserWidgetSettings.SharedMediaSettings.HideMediaWhenIdle;
+            }
+            catch { return false; }
+        }
 
         public bool IsPausedLongerThan(TimeSpan duration)
         {
@@ -154,6 +167,30 @@ namespace DynamicWin.Utils
         }
 
         private MediaThumbnailService() { }
+
+        public void ClearCurrentMedia(bool forceNotify = false)
+        {
+            DisposeCachedBitmap();
+            lastBytes = null;
+            lastMedia = null;
+            lastEncodedFingerprint = null;
+            lastBitmapFingerprint = null;
+            pendingMediaCandidate = null;
+            pendingMediaCandidateTime = DateTime.MinValue;
+            if (forceNotify || !mediaCleared)
+            {
+                mediaCleared = true;
+                NotifySubscribers(null, null);
+            }
+        }
+
+        private void HideCurrentMediaForIdle()
+        {
+            if (!ShouldHideMediaWhenIdle()) return;
+            if (hiddenForIdle && mediaCleared) return;
+            hiddenForIdle = true;
+            ClearCurrentMedia(forceNotify: true);
+        }
 
         public void Subscribe(Action<Media?> callback)
         {
@@ -227,7 +264,12 @@ namespace DynamicWin.Utils
                     }
                     catch (OperationCanceledException) { break; }
 
-                    if (fetchRequested)
+                    if (fetchRequested ||
+                        lastMedia == null ||
+                        (lastMedia != null && lastBytes == null) ||
+                        (lastMedia != null &&
+                         ShouldHideMediaWhenIdle() &&
+                         _lastPlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing))
                     {
                         var forceRefresh = fetchForceRefresh;
                         fetchForceRefresh = false;
@@ -292,21 +334,39 @@ namespace DynamicWin.Utils
                 }
                 catch { }
 
+                var previousPlaybackStatus = _lastPlaybackStatus;
+
                 // Update playback status tracking
                 UpdatePlaybackStatus(playbackStatus);
 
-                // No media case
+                if (hiddenForIdle && !ShouldHideMediaWhenIdle())
+                    hiddenForIdle = false;
+
+                if (hiddenForIdle && playbackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                {
+                    ClearCurrentMedia();
+                    return;
+                }
+
+                // No media case - always notify to ensure widgets clear
                 if (media == null)
                 {
-                    if (lastMedia != null)
+                    if (MediaInfo.HasCurrentSession)
                     {
-                        DisposeCachedBitmap();
-                        lastBytes = null;
-                        lastMedia = null;
-                        lastEncodedFingerprint = null;
-
-                        NotifySubscribers(null, null);
+                        fetchRequested = true;
+                        fetchForceRefresh = true;
+                        return;
                     }
+
+                    ClearCurrentMedia();
+                    return;
+                }
+
+                if (ShouldHideMediaWhenIdle() &&
+                    playbackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                    IsPausedLongerThan(TimeSpan.FromSeconds(30)))
+                {
+                    HideCurrentMediaForIdle();
                     return;
                 }
 
@@ -320,11 +380,17 @@ namespace DynamicWin.Utils
                     {
                         pendingMediaCandidate = media;
                         pendingMediaCandidateTime = DateTime.UtcNow;
+                        fetchRequested = true;
+                        fetchForceRefresh = true;
                         return;
                     }
 
                     if ((DateTime.UtcNow - pendingMediaCandidateTime) < pendingMediaStableDelay)
+                    {
+                        fetchRequested = true;
+                        fetchForceRefresh = true;
                         return;
+                    }
 
                     pendingMediaCandidate = null;
                     metadataChanged = true;
@@ -334,9 +400,16 @@ namespace DynamicWin.Utils
                 if (!metadataChanged && lastBytes != null && !forceRefreshThumbnail)
                 {
                     // Notify if playback status relevant
-                    if (ShouldNotifyForPlaybackStatus(playbackStatus))
+                    if (ShouldNotifyForPlaybackStatus(previousPlaybackStatus, playbackStatus))
                     {
-                        NotifySubscribers(lastMedia, lastBytes);
+                        if (ShouldHideMediaWhenIdle() && IsPausedLongerThan(TimeSpan.FromSeconds(30)) && hasNotifiedPausedLongThreshold)
+                        {
+                            HideCurrentMediaForIdle();
+                        }
+                        else
+                        {
+                            NotifySubscribers(lastMedia, lastBytes);
+                        }
                     }
                     return;
                 }
@@ -346,6 +419,13 @@ namespace DynamicWin.Utils
                 try
                 {
                     bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: forceRefreshThumbnail || metadataChanged).ConfigureAwait(false);
+                }
+                catch { }
+
+                try
+                {
+                    var latestMedia = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: false).ConfigureAwait(false);
+                    if (!AreMediaEqual(media, latestMedia)) return;
                 }
                 catch { }
 
@@ -371,11 +451,13 @@ namespace DynamicWin.Utils
                     lastEncodedFingerprint = encodedFp;
 
                 lastMedia = media;
+                mediaCleared = false;
 
                 bool bytesChanged = (newFingerprint != prevFingerprint);
                 if (bytesChanged || metadataChanged)
                 {
-                    // Always include bytes when notifying - subscribers may not have them cached yet
+                    // Notify with both media and bytes - subscribers need the full picture
+                    // If we have bytes (changed or not), send them; otherwise null
                     NotifySubscribers(media, lastBytes);
                 }
             }
@@ -488,23 +570,26 @@ namespace DynamicWin.Utils
             {
                 lastPlaybackNotPlayingAt = null;
                 hasNotifiedPausedLongThreshold = false;
+                hiddenForIdle = false;
             }
         }
 
-        private bool ShouldNotifyForPlaybackStatus(GlobalSystemMediaTransportControlsSessionPlaybackStatus? current)
+        private bool ShouldNotifyForPlaybackStatus(
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus? previous,
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus? current)
         {
-            if (current == null || _lastPlaybackStatus == null) return false;
+            if (current == null) return false;
 
             // Status changed
-            if (current != _lastPlaybackStatus) return true;
+            if (previous != current) return true;
 
-            // Check 30-second pause threshold
+            // Check 30-second pause threshold - when crossed, clear the thumbnail
             if (IsPausedLongerThan(TimeSpan.FromSeconds(30)))
             {
                 if (!hasNotifiedPausedLongThreshold)
                 {
                     hasNotifiedPausedLongThreshold = true;
-                    return true;
+                    return true;  // Will send null bytes to clear UI
                 }
             }
             else if (hasNotifiedPausedLongThreshold)
@@ -518,8 +603,20 @@ namespace DynamicWin.Utils
 
         private void NotifySubscribers(Media? media, byte[]? bytes)
         {
+            // Create a copy of media with thumbnail data to avoid mutating cached objects
+            Media? mediaToNotify = null;
+            if (media != null)
+            {
+                mediaToNotify = new Media
+                {
+                    Title = media.Title,
+                    Artist = media.Artist,
+                    ThumbnailData = bytes
+                };
+            }
+
             // Notify event subscribers
-            _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(media, bytes));
+            _thumbnailChanged?.Invoke(this, new MediaChangedEventArgs(mediaToNotify, bytes));
 
             // Notify legacy subscribers
             if (legacyListeners.Count > 0)
@@ -533,7 +630,7 @@ namespace DynamicWin.Utils
 
                 foreach (var listener in snapshot)
                 {
-                    try { listener(media); }
+                    try { listener(mediaToNotify); }
                     catch { }
                 }
             }
@@ -548,6 +645,8 @@ namespace DynamicWin.Utils
         /// </summary>
         public void ForceNotifyCurrentThumbnail()
         {
+            int notifyVersion = Interlocked.Increment(ref forceNotifyVersion);
+
             // Fetch fresh data synchronously before notifying to avoid race conditions
             _ = Task.Run(async () =>
             {
@@ -555,25 +654,65 @@ namespace DynamicWin.Utils
                 {
                     // Fetch current metadata from MediaInfo (which was just updated by RefreshMediaPropertiesAsync)
                     var media = await MediaInfo.FetchCurrentMediaAsync(forceRefresh: false).ConfigureAwait(false);
+                    if (notifyVersion != Volatile.Read(ref forceNotifyVersion)) return;
+
+                    try
+                    {
+                        var timeline = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: true).ConfigureAwait(false);
+                        UpdatePlaybackStatus(timeline?.PlaybackStatus);
+
+                        if (hiddenForIdle && !ShouldHideMediaWhenIdle())
+                            hiddenForIdle = false;
+
+                        if (hiddenForIdle && timeline?.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        {
+                            ClearCurrentMedia();
+                            return;
+                        }
+
+                        if (ShouldHideMediaWhenIdle() &&
+                            timeline?.PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                            IsPausedLongerThan(TimeSpan.FromSeconds(30)))
+                        {
+                            HideCurrentMediaForIdle();
+                            return;
+                        }
+                    }
+                    catch { }
 
                     // Fetch thumbnail bytes for this media
                     byte[]? bytes = null;
                     if (media != null)
                     {
                         bytes = await MediaInfo.FetchCurrentThumbnailBytesAsync(forceRefresh: true).ConfigureAwait(false);
+                        if (notifyVersion != Volatile.Read(ref forceNotifyVersion)) return;
                     }
 
                     // Update our cache
-                    if (media != null && !AreMediaEqual(media, lastMedia))
+                    if (media == null)
+                    {
+                        if (MediaInfo.HasCurrentSession)
+                        {
+                            fetchRequested = true;
+                            fetchForceRefresh = true;
+                            return;
+                        }
+
+                        ClearCurrentMedia(forceNotify: true);
+                        return;
+                    }
+
+                    if (!AreMediaEqual(media, lastMedia))
                     {
                         lastMedia = media;
+                        mediaCleared = false;
                         lastBytes = bytes == null ? null : (byte[])bytes.Clone();
                         lastEncodedFingerprint = ComputeEncodedFingerprint(bytes);
 
                         // Update bitmap
                         UpdateBitmap(bytes);
                     }
-                    else if (media != null && (bytes != null || lastBytes != null))
+                    else if (bytes != null || lastBytes != null)
                     {
                         // Metadata is same but bytes might have changed
                         var newFp = ComputeEncodedFingerprint(bytes);
@@ -585,9 +724,16 @@ namespace DynamicWin.Utils
                         }
                     }
 
+                    if (media != null && (lastBytes == null || lastBytes.Length == 0))
+                    {
+                        fetchRequested = true;
+                        fetchForceRefresh = true;
+                    }
+
                     // Notify with fresh data
                     lock (listLock)
                     {
+                        if (notifyVersion != Volatile.Read(ref forceNotifyVersion)) return;
                         NotifySubscribers(lastMedia, lastBytes);
                     }
                 }
