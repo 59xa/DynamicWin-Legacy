@@ -30,25 +30,7 @@ namespace DynamicWin.WPFBinders
         {
             designMode = DesignerProperties.GetIsInDesignMode(this);
 
-            // Attempt to use OpenGL if possible. If GL fails, log exception and leave GRContext null to use CPU as fallback
-            try
-            {
-                var glInterface = GRGlInterface.Create();
-                if (glInterface != null)
-                {
-                    GrContext = GRContext.CreateGl(glInterface);
-                    Debug.WriteLine("SKElement: Created GL GRContext successfully.");
-                }
-                else
-                {
-                    Debug.WriteLine("SKElement: GRGlInterface.Create returned null - GL not available.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"SKElement: Failed to create GL GRContext: {ex}");
-                GrContext = null;
-            }
+            GrContext = null;
         }
 
         public SKSize CanvasSize { get; private set; }

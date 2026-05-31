@@ -12,9 +12,19 @@ namespace DynamicWin.UI.UIElements
 {
     public class DWImage : UIObject
     {
-        private SKBitmap image;
+        private SKBitmap? image;
 
-        public SKBitmap Image { get { return image; } set => image = value; }
+        public SKBitmap? Image
+        {
+            get { return image; }
+            set
+            {
+                if (ReferenceEquals(image, value)) return;
+
+                image = value;
+                MarkGpuDirty();
+            }
+        }
 
         public bool maskOwnRect = false;
         public bool allowIconThemeColor = true;
@@ -29,9 +39,9 @@ namespace DynamicWin.UI.UIElements
 
         public override void Draw(SKCanvas canvas)
         {
-            var paint = GetPaint();
-
             if (image == null) return;
+
+            using var paint = GetPaint();
 
             if (allowIconThemeColor)
             {

@@ -98,8 +98,6 @@ namespace DynamicWin.UI.UIElements.Custom
 
         public override void Draw(SKCanvas canvas)
         {
-            var paint = GetPaint();
-
             // Compute screen rect for the control
             var size = Size;
             var pos = RawPosition + LocalPosition;

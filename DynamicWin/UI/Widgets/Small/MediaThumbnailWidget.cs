@@ -504,7 +504,7 @@ namespace DynamicWin.UI.Widgets.Small
             SKBitmap? bmp;
             lock (mediaLock) { bmp = thumbnailBitmap; }
 
-            var path = BuildSuperellipsePath(thumbRect, 7f, 1f);
+            using var path = BuildSuperellipsePath(thumbRect, 7f, 1f);
 
             try
             {
@@ -524,10 +524,10 @@ namespace DynamicWin.UI.Widgets.Small
                     canvas.Translate(cx, cy);
                     canvas.Scale(flipScale * thumbScale, thumbScale);
                     var localRect = SKRect.Create(-thumbRect.Width / 2f, -thumbRect.Height / 2f, thumbRect.Width, thumbRect.Height);
-                    var localPath = BuildSuperellipsePath(localRect, 7f, 1f);
+                    using var localPath = BuildSuperellipsePath(localRect, 7f, 1f);
                     canvas.Save();
                     canvas.ClipPath(localPath, antialias: Settings.AntiAliasing);
-                    var paint = GetPaint();
+                    using var paint = GetPaint();
                     paint.IsAntialias = Settings.AntiAliasing;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     if (bmp != null)
@@ -555,7 +555,7 @@ namespace DynamicWin.UI.Widgets.Small
                     canvas.Scale(thumbScale, thumbScale);
                     canvas.Translate(-centerX, -centerY);
                     canvas.ClipPath(path, antialias: Settings.AntiAliasing);
-                    var paint = GetPaint();
+                    using var paint = GetPaint();
                     paint.IsAntialias = Settings.AntiAliasing;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
                     if (bmp != null)

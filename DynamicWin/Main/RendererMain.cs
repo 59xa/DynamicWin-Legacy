@@ -69,6 +69,8 @@ namespace DynamicWin.Main
 
         private Stopwatch? updateStopwatch;
         private int initialScreenBrightness = 0;
+        private DateTime lastBrightnessPoll = DateTime.MinValue;
+        private readonly TimeSpan brightnessPollInterval = TimeSpan.FromMilliseconds(500);
         private float deltaTime = 0f;
         public float DeltaTime => deltaTime;
 
@@ -92,10 +94,6 @@ namespace DynamicWin.Main
             MainForm.Instance.DragLeave += MainForm.Instance.MainForm_DragLeave;
             MainForm.Instance.Drop += MainForm.Instance.OnDrop;
             MainForm.Instance.MouseWheel += MainForm.Instance.OnScroll;
-
-            // Get refresh rate via centralized helper
-            int refreshRate = DisplayHelper.GetRefreshRate();
-            Debug.WriteLine($"Monitor Refresh Rate: {refreshRate} Hz");
 
             // Register to MainForm's centrally throttled render callback instead of subscribing directly to CompositionTarget.Rendering.
             MainForm.Instance.onMainFormRender += Frame;
@@ -255,17 +253,23 @@ namespace DynamicWin.Main
 
             onUpdate?.Invoke(DeltaTime);
 
-            if (BrightnessAdjustMenu.GetBrightness() != initialScreenBrightness && PopupOptions.saveData.brightnessPopup)
+            if (PopupOptions.saveData.brightnessPopup && (DateTime.UtcNow - lastBrightnessPoll) >= brightnessPollInterval)
             {
-                initialScreenBrightness = BrightnessAdjustMenu.GetBrightness();
-                if (MenuManager.Instance.ActiveMenu is HomeMenu)
+                lastBrightnessPoll = DateTime.UtcNow;
+
+                int currentBrightness = BrightnessAdjustMenu.GetBrightness();
+                if (currentBrightness != initialScreenBrightness)
                 {
-                    MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu());
-                }
-                else if (BrightnessAdjustMenu.timerUntilClose != null)
-                {
-                    BrightnessAdjustMenu.PressBK();
-                    BrightnessAdjustMenu.timerUntilClose = 0f;
+                    initialScreenBrightness = currentBrightness;
+                    if (MenuManager.Instance.ActiveMenu is HomeMenu)
+                    {
+                        MenuManager.OpenOverlayMenu(new BrightnessAdjustMenu());
+                    }
+                    else if (BrightnessAdjustMenu.timerUntilClose != null)
+                    {
+                        BrightnessAdjustMenu.PressBK();
+                        BrightnessAdjustMenu.timerUntilClose = 0f;
+                    }
                 }
             }
 

@@ -307,6 +307,8 @@ namespace DynamicWin.UI.Widgets.Small
 
             collapseAnim = new Animator(300, 1);
             bool expanding = expand;
+            if (expanding)
+                audioVisualiser.SetCapturing(IsEnabled);
 
             collapseAnim.onAnimationUpdate += (t) =>
             {
@@ -322,6 +324,7 @@ namespace DynamicWin.UI.Widgets.Small
             {
                 collapseProgress = expanding ? 1f : 0f;
                 audioVisualiser.SilentSetActive(expanding);
+                audioVisualiser.SetCapturing(expanding && IsEnabled);
 
                 try { DestroyLocalObject(collapseAnim); } catch { }
                 collapseAnim = null;
@@ -329,6 +332,12 @@ namespace DynamicWin.UI.Widgets.Small
 
             AddLocalObject(collapseAnim);
             collapseAnim.Start();
+        }
+
+        protected override void OnActiveChanged(bool isEnabled)
+        {
+            base.OnActiveChanged(isEnabled);
+            audioVisualiser.SetCapturing(isEnabled && collapseProgress > 0.001f);
         }
 
         protected override float GetWidgetWidth()

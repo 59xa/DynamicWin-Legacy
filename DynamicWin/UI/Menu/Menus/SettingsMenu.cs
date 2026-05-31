@@ -29,13 +29,18 @@ namespace DynamicWin.UI.Menu.Menus
     public class SettingsMenu : BaseMenu
     {
         private static List<IRegisterableSetting> _cachedCustomOptions;
+        private readonly Action<MouseWheelEventArgs> scrollHandler;
 
         public SettingsMenu()
         {
-            MainForm.onScrollEvent += (MouseWheelEventArgs x) =>
-            {
-                yScrollOffset += x.Delta * 0.50f;
-            };
+            scrollHandler = OnScroll;
+            MainForm.onScrollEvent += scrollHandler;
+        }
+
+        private void OnScroll(MouseWheelEventArgs x)
+        {
+            if (!ReferenceEquals(MenuManager.Instance?.ActiveMenu, this)) return;
+            yScrollOffset += x.Delta * 0.50f;
         }
 
         bool changedTheme = false;
@@ -610,6 +615,11 @@ namespace DynamicWin.UI.Menu.Menus
 
         float yScrollOffset = 0f;
         float ySmoothScroll = 0f;
+        float cachedScrollLimit = 0f;
+        float lastLayoutScroll = float.NaN;
+        float lastBigWidgetAdderHeight = float.NaN;
+        float lastSmallWidgetAdderWidth = float.NaN;
+        int lastLayoutObjectCount = -1;
 
         public override void Update()
         {
@@ -620,23 +630,45 @@ namespace DynamicWin.UI.Menu.Menus
 
             bottomMask.blurAmount = 15;
 
-            var yScrollLim = 0f;
-            var yPos = 35f;
-            var spacing = 15f;
+            bool layoutDirty =
+                float.IsNaN(lastLayoutScroll) ||
+                Math.Abs(ySmoothScroll - lastLayoutScroll) > 0.05f ||
+                lastLayoutObjectCount != UiObjects.Count ||
+                (bigWidgetAdder != null && Math.Abs(bigWidgetAdder.Size.Y - lastBigWidgetAdderHeight) > 0.05f) ||
+                (smallWidgetAdder != null && Math.Abs(smallWidgetAdder.Size.X - lastSmallWidgetAdderWidth) > 0.05f);
 
-            for (int i = 0; i < UiObjects.Count - 2; i++)
+            if (layoutDirty)
             {
-                var uiObject = UiObjects[i];
-                if (!uiObject.IsEnabled) continue;
+                var yScrollLim = 0f;
+                var yPos = 35f;
+                var spacing = 15f;
 
-                uiObject.LocalPosition.Y = yPos + ySmoothScroll;
-                yPos += uiObject.Size.Y + spacing;
+                for (int i = 0; i < UiObjects.Count - 2; i++)
+                {
+                    var uiObject = UiObjects[i];
+                    if (!uiObject.IsEnabled) continue;
 
-                if (yPos > IslandSize().Y - 50) yScrollLim += uiObject.Size.Y + spacing;
+                    uiObject.LocalPosition.Y = yPos + ySmoothScroll;
+                    yPos += uiObject.Size.Y + spacing;
+
+                    if (yPos > IslandSize().Y - 50) yScrollLim += uiObject.Size.Y + spacing;
+                }
+
+                cachedScrollLimit = yScrollLim;
+                lastLayoutScroll = ySmoothScroll;
+                lastLayoutObjectCount = UiObjects.Count;
+                lastBigWidgetAdderHeight = bigWidgetAdder?.Size.Y ?? 0f;
+                lastSmallWidgetAdderWidth = smallWidgetAdder?.Size.X ?? 0f;
             }
 
             yScrollOffset = Mathf.Lerp(yScrollOffset,
-                Mathf.Clamp(yScrollOffset, -yScrollLim, 0f), 15f * RendererMain.Instance.DeltaTime);
+                Mathf.Clamp(yScrollOffset, -cachedScrollLimit, 0f), 15f * RendererMain.Instance.DeltaTime);
+        }
+
+        public override void OnDispose()
+        {
+            MainForm.onScrollEvent -= scrollHandler;
+            base.OnDispose();
         }
 
         public override Vec2 IslandSize()

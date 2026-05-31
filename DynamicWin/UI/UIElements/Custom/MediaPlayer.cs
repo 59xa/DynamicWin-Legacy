@@ -36,7 +36,7 @@ namespace DynamicWin.UI.UIElements.Custom
         private DynamicWin.Utils.Media? pendingMedia; // Pending metadata object
         private readonly object mediaLock = new object();
         // How often the background loop waits between iterations (cooperative wait broken into steps)
-        private readonly TimeSpan fetchInterval = TimeSpan.FromMilliseconds(250); // faster timeline updates
+        private readonly TimeSpan fetchInterval = TimeSpan.FromSeconds(1);
 
         // Rate-limited service bytes and flags to make thumbnail processing
         private volatile byte[]? pendingThumbnailBytesFromService = null; // bytes handed to us by service events
@@ -60,6 +60,8 @@ namespace DynamicWin.UI.UIElements.Custom
         private float titleScrollTimer = 0f;  // Timer for delay
         private bool isTitleScrolling = false;
         private string? fullTitleText = null;
+        private string cachedTruncatedTitleText = "No media playing";
+        private string cachedDisplayArtistText = "No media playing";
         private float titleTextWidth = 0f;
         private const int titleScrollCharThreshold = 35;
 
@@ -88,7 +90,6 @@ namespace DynamicWin.UI.UIElements.Custom
         private float displayFill = 0f;
 
         private readonly float timelineHeight = 6f; // Thickness of the bar
-        private readonly SKColor timelineBgColor; // subtle background
         private Col timelineFgColor = Theme.TextMain; // active fill
         private readonly float timelineBarPadding = 12f; // vertical padding below buttons
         private readonly float timelineSidePadding = 40f; // space on left/right for timeline text
@@ -125,6 +126,11 @@ namespace DynamicWin.UI.UIElements.Custom
         private bool displayedElapsedInitialized = false;
         // Extra height applied to timeline when hovering/seeking (smoothed)
         private float timelineExtraHeight = 0f;
+        private string cachedTimelineLeftText = "--:--";
+        private string cachedTimelineRightText = "--:--";
+        private float cachedTimelineRightTextWidth = 0f;
+        private int cachedTimelineElapsedSecond = int.MinValue;
+        private int cachedTimelineDurationSecond = int.MinValue;
 
         // Track whether we are subscribed to the thumbnail service so we can unsubscribe when not enabled
         private bool isThumbnailSubscribed = false;
@@ -143,16 +149,8 @@ namespace DynamicWin.UI.UIElements.Custom
         private float cachedBarX;
         private float cachedBarY;
         private SKRect cachedTimelineBarRect = SKRect.Empty;
-        private DateTime lastLayoutCacheTime = DateTime.MinValue;
-
-        // Paint cache for text rendering (reduces allocation pressure)
-        private SKPaint? cachedTitlePaint;
-        private SKPaint? cachedArtistPaint;
-        private SKPaint? cachedTimelineTextPaint;
-
         public MediaPlayer(UIObject? parent, Vec2 position, Vec2 size, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, size, alignment)
         {
-            timelineBgColor = GetColor(Theme.WidgetBackground.Override(a: 200)).Value();
             controller = new MediaController();
             keyBuilder = new StringBuilder(128);
 
@@ -263,6 +261,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 EnableColourTransition = false,
             };
             AddLocalObject(visualiser);
+            visualiser.SetCapturing(false);
 
             // Timeline progress bar (created as local object; size/pos updated in Update)
             timelineBar = new DWProgressBarEx(this, new Vec2(0, 0), new Vec2(200, timelineHeight), UIAlignment.TopCenter,
@@ -308,6 +307,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
             if (isEnabled)
             {
+                visualiser.SetCapturing(true);
+
                 // Re-subscribe to thumbnail service if needed
                 if (!isThumbnailSubscribed)
                 {
@@ -413,6 +414,8 @@ namespace DynamicWin.UI.UIElements.Custom
             }
             else
             {
+                visualiser.SetCapturing(false);
+
                 // When disabled, stop background work but keep subscribed to the thumbnail service
                 StopFetchLoop(disposeCached: true);
                 ResetThumbnailState();
@@ -689,12 +692,22 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
             }
 
-            string newTitle = !string.IsNullOrEmpty(currentMedia?.Title) ? currentMedia.Title : "No media playing";
+            string? mediaTitle;
+            string? mediaArtist;
+            lock (mediaLock)
+            {
+                mediaTitle = currentMedia?.Title;
+                mediaArtist = currentMedia?.Artist;
+            }
+
+            string newTitle = !string.IsNullOrEmpty(mediaTitle) ? mediaTitle : "No media playing";
 
             if (fullTitleText != newTitle)
             {
                 fullTitleText = newTitle;
-                var paint = GetPaint();
+                cachedTruncatedTitleText = DWText.Truncate(fullTitleText, titleScrollCharThreshold);
+
+                using var paint = GetPaint();
                 paint.TextSize = 14f;
                 paint.Typeface = Res.SFProBold;
                 titleTextWidth = paint.MeasureText(fullTitleText);
@@ -722,6 +735,10 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
             }
 
+            string newArtist = !string.IsNullOrEmpty(mediaArtist) ? mediaArtist : "No media playing";
+            if (cachedDisplayArtistText != newArtist)
+                cachedDisplayArtistText = DWText.Truncate(newArtist, 45);
+
             // Elapsed time display
             if (sampleElapsed.HasValue)
             {
@@ -744,6 +761,8 @@ namespace DynamicWin.UI.UIElements.Custom
 
             float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
             timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
+            UpdateTimelineTextCache();
+            UpdateTimelineBarState();
 
             // Ensure metadata is populated when we have an image but no metadata
             bool needMeta = false;
@@ -806,6 +825,68 @@ namespace DynamicWin.UI.UIElements.Custom
             {
                 previousImage.Dispose();
                 previousImage = null;
+            }
+        }
+
+        private void UpdateTimelineTextCache()
+        {
+            int elapsedSecond = displayedElapsedInitialized
+                ? Math.Max(0, (int)Math.Floor(displayedElapsedSeconds))
+                : -1;
+            int durationSecond = timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0
+                ? Math.Max(0, (int)Math.Floor(timelineDuration.Value.TotalSeconds))
+                : -1;
+
+            if (elapsedSecond == cachedTimelineElapsedSecond && durationSecond == cachedTimelineDurationSecond)
+                return;
+
+            cachedTimelineElapsedSecond = elapsedSecond;
+            cachedTimelineDurationSecond = durationSecond;
+
+            if (durationSecond > 0 && elapsedSecond >= 0)
+            {
+                elapsedSecond = Math.Min(elapsedSecond, durationSecond);
+                cachedTimelineLeftText = FormatTimeSpanForDisplay(TimeSpan.FromSeconds(elapsedSecond));
+                cachedTimelineRightText = "-" + FormatTimeSpanForDisplay(TimeSpan.FromSeconds(Math.Max(0, durationSecond - elapsedSecond)));
+            }
+            else
+            {
+                cachedTimelineLeftText = "--:--";
+                cachedTimelineRightText = "--:--";
+            }
+
+            using var paint = GetPaint();
+            paint.TextSize = timelineTextSize;
+            paint.Typeface = Res.SFProRegular;
+            cachedTimelineRightTextWidth = paint.MeasureText(cachedTimelineRightText);
+        }
+
+        private void UpdateTimelineBarState()
+        {
+            if (timelineBar == null || cachedWidgetBounds == SKRect.Empty) return;
+
+            float drawTimelineHeight = timelineHeight + timelineExtraHeight;
+            timelineBar.Size = new Vec2(cachedBarWidth, drawTimelineHeight);
+            timelineBar.LocalPosition = new Vec2(cachedBarX - cachedWidgetBounds.Left - 40f, cachedBarY - cachedWidgetBounds.Top + 3.5f);
+            timelineBar.CornerRadius = drawTimelineHeight / 2f;
+            timelineBar.ForegroundColor = timelineFgColor.Override(a: 0.6f);
+            timelineBar.BackgroundColor = Theme.WidgetBackground.Override(a: 0.04f);
+
+            bool hasMedia;
+            lock (mediaLock)
+            {
+                hasMedia = currentMedia != null;
+            }
+
+            if (!hasMedia)
+            {
+                timelineBar.IsLocked = true;
+                timelineBar.ForceSetImmediate(0f);
+            }
+            else
+            {
+                timelineBar.IsLocked = false;
+                timelineBar.ForceSetValue(displayFill);
             }
         }
 
@@ -1282,26 +1363,18 @@ namespace DynamicWin.UI.UIElements.Custom
             float thumbRadius = Math.Max(12f, thumbSize * 0.18f);
             SKRect thumbRect = SKRect.Create(rect.Left, rect.Top, thumbSize, thumbSize);
 
-            string title = "No media playing";
-            string artist = "No media playing";
             SKImage? img = null;
 
             lock (mediaLock)
             {
-                if (currentMedia != null)
-                {
-                    title = currentMedia.Title ?? "No media playing";
-                    artist = currentMedia.Artist ?? "No media playing";
-                }
                 img = thumbnailImage;
             }
 
-            if (img == null && string.IsNullOrEmpty(title) && string.IsNullOrEmpty(artist)) return;
+            if (img == null && string.IsNullOrEmpty(fullTitleText) && string.IsNullOrEmpty(cachedDisplayArtistText)) return;
 
             SKImage? displayImg = img;
-            SKImage? prevImg = previousImage;
 
-            var squirclePath = BuildSuperellipsePath(thumbRect, 30f, 1f);
+            using var squirclePath = BuildSuperellipsePath(thumbRect, 30f, 1f);
 
             try
             {
@@ -1322,11 +1395,11 @@ namespace DynamicWin.UI.UIElements.Custom
                     canvas.Translate(cx, cy);
                     canvas.Scale(flipScale * thumbScale, thumbScale);
                     var localRect = SKRect.Create(-thumbSize / 2f, -thumbSize / 2f, thumbSize, thumbSize);
-                    var localPath = BuildSuperellipsePath(localRect, 30f, 1f);
+                    using var localPath = BuildSuperellipsePath(localRect, 30f, 1f);
                     canvas.Save();
                     canvas.ClipPath(localPath, antialias: Settings.AntiAliasing);
 
-                    var paint = GetPaint();
+                    using var paint = GetPaint();
                     paint.IsAntialias = Settings.AntiAliasing;
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
@@ -1364,7 +1437,7 @@ namespace DynamicWin.UI.UIElements.Custom
                     canvas.Translate(-centerX, -centerY);
                     canvas.ClipPath(squirclePath, antialias: Settings.AntiAliasing);
 
-                    var paint = GetPaint();
+                    using var paint = GetPaint();
                     paint.IsAntialias = Settings.AntiAliasing;
                     paint.IsStroke = false;
                     paint.ImageFilter = animator.BlurAmount > 0f ? SKImageFilter.CreateBlur(animator.BlurAmount, animator.BlurAmount) : null;
@@ -1399,13 +1472,13 @@ namespace DynamicWin.UI.UIElements.Custom
             float textX = thumbRect.Right + 14f;
             float textY = rect.Top + 16f;
 
-            var titlePaint = GetPaint();
+            using var titlePaint = GetPaint();
             titlePaint.IsStroke = false;
             titlePaint.TextSize = 14f;
             titlePaint.Typeface = Resources.Res.SFProBold;
             titlePaint.Color = GetColor(Theme.TextMain).Value();
 
-            var artistPaint = GetPaint();
+            using var artistPaint = GetPaint();
             artistPaint.IsStroke = false;
             artistPaint.TextSize = 12f;
             artistPaint.Typeface = Resources.Res.SFProRegular;
@@ -1428,15 +1501,13 @@ namespace DynamicWin.UI.UIElements.Custom
                 }
                 else
                 {
-                    var truncated = DWText.Truncate(fullTitleText, titleScrollCharThreshold);
-                    canvas.DrawText(truncated, textX, textY + titlePaint.TextSize, titlePaint);
+                    canvas.DrawText(cachedTruncatedTitleText, textX, textY + titlePaint.TextSize, titlePaint);
                 }
             }
 
-            if (!string.IsNullOrEmpty(artist))
+            if (!string.IsNullOrEmpty(cachedDisplayArtistText))
             {
-                var displayArtist = DWText.Truncate(artist, 45);
-                canvas.DrawText(displayArtist, textX, textY + titlePaint.TextSize + artistPaint.TextSize + 6f, artistPaint);
+                canvas.DrawText(cachedDisplayArtistText, textX, textY + titlePaint.TextSize + artistPaint.TextSize + 6f, artistPaint);
             }
 
             try
@@ -1445,51 +1516,6 @@ namespace DynamicWin.UI.UIElements.Custom
                 float barX = rect.Left + (rect.Width - barWidth) / 2f;
                 float barY = rect.Top + 95f + timelineBarPadding;
                 if (barY + timelineHeight > rect.Bottom) barY = rect.Bottom - timelineHeight - timelineBarPadding;
-
-                float drawTimelineHeight = timelineHeight + timelineExtraHeight;
-
-                // If we have a DWProgressBarEx instance, position it and draw it
-                if (timelineBar != null)
-                {
-                    // Set size and local position relative to this object's rect
-                    timelineBar.Size = new Vec2(barWidth, drawTimelineHeight);
-                    timelineBar.LocalPosition = new Vec2(barX - rect.Left - 40f, barY - rect.Top + 3.5f);
-                    timelineBar.CornerRadius = drawTimelineHeight / 2f;
-                    // timelineBar target value is driven from Update to respect locking; do not set Value here.
-                    timelineBar.ForegroundColor = timelineFgColor.Override(a: 0.6f);
-                    timelineBar.BackgroundColor = Theme.WidgetBackground.Override(a: 0.04f);
-                    // If there's no media playing, lock and force the bar to zero immediately
-                    if (currentMedia == null)
-                    {
-                        timelineBar.IsLocked = true;
-                        timelineBar.ForceSetImmediate(0f);
-                    }
-                    else
-                    {
-                        timelineBar.IsLocked = false;
-                        // Drive the target value so smoothing animates the visual
-                        timelineBar.ForceSetValue(displayFill);
-                    }
-
-                    // Draw the progress bar as a child at the computed location
-                    timelineBar.Draw(canvas);
-                }
-
-                string leftText;
-                string rightText;
-
-                if (timelineDuration.HasValue && timelineDuration.Value.TotalSeconds > 0)
-                {
-                    var leftTs = TimeSpan.FromSeconds(displayedElapsedSeconds);
-                    var rightRemain = timelineDuration.Value - TimeSpan.FromSeconds(displayedElapsedSeconds);
-                    leftText = FormatTimeSpanForDisplay(leftTs);
-                    rightText = "-" + FormatTimeSpanForDisplay(rightRemain);
-                }
-                else
-                {
-                    leftText = "--:--";
-                    rightText = "--:--";
-                }
 
                 using (var paint = GetPaint())
                 {
@@ -1501,11 +1527,10 @@ namespace DynamicWin.UI.UIElements.Custom
 
                     float timelineTextY = barY + timelineHeight + timelineTextSize - 10f;
                     float leftX = barX - timelineSidePadding + 4f;
-                    canvas.DrawText(leftText, leftX, timelineTextY, paint);
+                    canvas.DrawText(cachedTimelineLeftText, leftX, timelineTextY, paint);
 
-                    float rightTextWidth = paint.MeasureText(rightText);
-                    float rightX = barX + barWidth + timelineSidePadding - rightTextWidth - 4f;
-                    canvas.DrawText(rightText, rightX, timelineTextY, paint);
+                    float rightX = barX + barWidth + timelineSidePadding - cachedTimelineRightTextWidth - 4f;
+                    canvas.DrawText(cachedTimelineRightText, rightX, timelineTextY, paint);
                 }
             }
             catch { }

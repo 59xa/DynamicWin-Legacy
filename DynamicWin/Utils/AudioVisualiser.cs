@@ -40,7 +40,7 @@ namespace DynamicWin.Utils
 
         private float[] bandBalance = new float[] { 1f, 1f, 1.15f, 1.10f, 1.25f, 1.35f };
 
-        private WasapiLoopbackCapture capture;
+        private WasapiLoopbackCapture? capture;
         private readonly object fftLock = new object();
 
         // Precomputed
@@ -143,15 +143,9 @@ namespace DynamicWin.Utils
 
             barSumSquares = new float[barCount];
 
-            if (DynamicWinMain.defaultDevice != null)
-            {
-                capture = new WasapiLoopbackCapture(DynamicWinMain.defaultDevice);
-                capture.DataAvailable += OnDataAvailable;
-                capture.StartRecording();
-            }
-
             // Precompute FFT bin mapping
-            InitBarBinMapping(capture?.WaveFormat.SampleRate ?? 44100f);
+            InitBarBinMapping(44100f);
+            SetCapturing(true);
 
             // Subscribe to central thumbnail service. Only capture bytes in event handlers to avoid
             // creating Skia objects on background threads which can cause native crashes.
@@ -228,6 +222,55 @@ namespace DynamicWin.Utils
             }
         }
 
+        public void SetCapturing(bool enabled)
+        {
+            if (enabled)
+                StartCapture();
+            else
+                StopCapture(resetBars: true);
+        }
+
+        private void StartCapture()
+        {
+            if (capture != null || DynamicWinMain.defaultDevice == null) return;
+
+            try
+            {
+                capture = new WasapiLoopbackCapture(DynamicWinMain.defaultDevice);
+                capture.DataAvailable += OnDataAvailable;
+                InitBarBinMapping(capture.WaveFormat.SampleRate);
+                capture.StartRecording();
+            }
+            catch
+            {
+                StopCapture(resetBars: true);
+            }
+        }
+
+        private void StopCapture(bool resetBars)
+        {
+            var activeCapture = capture;
+            capture = null;
+
+            if (activeCapture != null)
+            {
+                try { activeCapture.DataAvailable -= OnDataAvailable; } catch { }
+                try { activeCapture.StopRecording(); } catch { }
+                try { activeCapture.Dispose(); } catch { }
+            }
+
+            if (resetBars)
+            {
+                lock (fftLock)
+                {
+                    Array.Clear(barSumSquares, 0, barSumSquares.Length);
+                    Array.Clear(targetHeights, 0, targetHeights.Length);
+                    Array.Clear(barHeight, 0, barHeight.Length);
+                    averageAmplitude = 0f;
+                }
+            }
+        }
+
         private void OnThumbnailChanged(Media? m)
         {
             try
@@ -300,16 +343,7 @@ namespace DynamicWin.Utils
             try { MediaThumbnailService.Instance.Unsubscribe(OnThumbnailChanged); } catch { }
             try { MediaThumbnailService.Instance.ThumbnailChanged -= OnThumbnailChangedEvent; } catch { }
 
-            try
-            {
-                if (capture != null)
-                {
-                    capture.DataAvailable -= OnDataAvailable;
-                    capture.StopRecording();
-                    capture.Dispose();
-                }
-            }
-            catch (ThreadInterruptedException) { }
+            StopCapture(resetBars: false);
 
             // Dispose cached thumbnail image
             lock (thumbLock)

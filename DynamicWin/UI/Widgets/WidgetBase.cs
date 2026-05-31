@@ -72,7 +72,7 @@ namespace DynamicWin.UI.Widgets
 
             if (hoverProgress > 0.025f)
             {
-                var paint = GetPaint();
+                using var paint = GetPaint();
                 paint.ImageFilter = SKImageFilter.CreateDropShadowOnly(
                     0, 0,
                     hoverProgress * 10, hoverProgress * 10,
@@ -86,7 +86,7 @@ namespace DynamicWin.UI.Widgets
                 canvas.Scale(1 + hoverProgress / 60, 1 + hoverProgress / 60, p.X, p.Y);
 
                 // Build squircle path for hover shadow
-                var shadowPath = BuildSuperellipsePath(GetRawRect(), radius: roundRadius, t: 1.0f);
+                using var shadowPath = BuildSuperellipsePath(GetRawRect(), radius: roundRadius, t: 1.0f);
 
                 // Clip outside the widget rect and draw shadow
                 int clipSave = canvas.Save();
@@ -102,7 +102,7 @@ namespace DynamicWin.UI.Widgets
 
             if (isEditMode)
             {
-                var paint = GetPaint();
+                using var paint = GetPaint();
 
                 paint.IsStroke = true;
                 paint.StrokeCap = SKStrokeCap.Round;
@@ -113,7 +113,7 @@ namespace DynamicWin.UI.Widgets
                 var brect = SKRect.Create(Position.X - expand / 2, Position.Y - expand / 2, Size.X + expand, Size.Y + expand);
 
                 // Squircle path for edit mode border
-                var borderPath = BuildSuperellipsePath(brect, radius: roundRadius, t: 1.0f);
+                using var borderPath = BuildSuperellipsePath(brect, radius: roundRadius, t: 1.0f);
 
                 int noClip = canvas.Save();
                 paint.Color = SKColors.DimGray;
