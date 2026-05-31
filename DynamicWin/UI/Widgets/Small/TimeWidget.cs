@@ -79,20 +79,33 @@ namespace DynamicWin.UI.Widgets.Small
     public class TimeWidget : SmallWidgetBase
     {
         DWText timeText;
+        private string lastRenderedTime = string.Empty;
+        private DateTime nextTimeRefresh = DateTime.MinValue;
 
         public TimeWidget(UIObject? parent, Vec2 position, UIAlignment alignment = UIAlignment.TopCenter) : base(parent, position, alignment)
         {
-            timeText = new DWText(this, GetTime(), Vec2.zero, UIAlignment.Center);
+            lastRenderedTime = GetTime();
+            timeText = new DWText(this, lastRenderedTime, Vec2.zero, UIAlignment.Center);
             timeText.TextSize = 14;
             timeText.Font = Res.SFProRegular;
             AddLocalObject(timeText);
+            ScheduleNextRefresh();
         }
 
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            timeText.Text = GetTime();
+            if (DateTime.Now < nextTimeRefresh) return;
+
+            string current = GetTime();
+            if (current != lastRenderedTime)
+            {
+                lastRenderedTime = current;
+                timeText.SilentSetText(current);
+            }
+
+            ScheduleNextRefresh();
         }
 
         protected override float GetWidgetWidth() { return RegisterTimeWidgetSettings.saveData.militaryTime ? 35 : 55; }
@@ -100,6 +113,14 @@ namespace DynamicWin.UI.Widgets.Small
         string GetTime()
         {
             return RegisterTimeWidgetSettings.saveData.militaryTime ? DateTime.Now.ToString("HH:mm") : DateTime.Now.ToString("hh:mm tt", new System.Globalization.CultureInfo("en-US"));
+        }
+
+        private void ScheduleNextRefresh()
+        {
+            var now = DateTime.Now;
+            nextTimeRefresh = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0)
+                .AddMinutes(1)
+                .AddMilliseconds(50);
         }
     }
 }

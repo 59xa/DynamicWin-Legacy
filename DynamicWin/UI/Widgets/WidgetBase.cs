@@ -183,23 +183,9 @@ namespace DynamicWin.UI.Widgets
         /// IMPORTANT: Do not touch UI objects directly from this method. Marshal to UI thread via BeginInvokeUI(...) OR update thread-safe fields and read them on UI thread
         /// Default implementation is a simple no-op loop
         /// </summary>
-        protected virtual async Task RunBackgroundAsync(CancellationToken token)
+        protected virtual Task RunBackgroundAsync(CancellationToken token)
         {
-            // Default: nothing heavy, but keep an awaitable loop so derived classes can override without re-implementing the loop
-            try
-            {
-                // Use a short non-cancelable delay to avoid throwing TaskCanceledException when the token is cancelled
-                // Checking the token between delays keeps shutdown responsive without generating exceptions
-                while (!token.IsCancellationRequested)
-                {
-                    await Task.Delay(200).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
-            {
-                // Log unexpected exceptions but avoid noisy cancellation exceptions
-                System.Diagnostics.Debug.WriteLine("[WIDGET BASE] RunBackgroundAsync exception: " + ex);
-            }
+            return Task.CompletedTask;
         }
 
         /// <summary>

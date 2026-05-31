@@ -193,6 +193,7 @@ namespace DynamicWin.UI.UIElements.Custom
             {
                 UseThumbnailBackground = true,
                 EnableColourTransition = false,
+                ThumbnailBlurAmount = 5f,
             };
             AddLocalObject(visualiser);
             visualiser.SetCapturing(false);
@@ -354,7 +355,7 @@ namespace DynamicWin.UI.UIElements.Custom
             if (visualiserCaptureEnabled == enabled) return;
 
             visualiserCaptureEnabled = enabled;
-            visualiser.SetCapturing(enabled);
+            visualiser.SetCapturing(enabled, resetBarsOnStop: false);
         }
 
         private void SubscribeToThumbnailService()
@@ -1190,7 +1191,30 @@ namespace DynamicWin.UI.UIElements.Custom
             }
 
             visualiser.SilentSetActive(hasMedia);
-            SetVisualiserCapture(hasMedia);
+            SetVisualiserCapture(hasMedia && GetEffectivePlayingState());
+        }
+
+        public override bool WantsRealtimeUpdate
+        {
+            get
+            {
+                if (!ShouldRenderMediaPlayer()) return false;
+
+                return userIsSeeking ||
+                       mouseDownOverTimeline ||
+                       animator.State != MediaAnimator.AnimState.Idle ||
+                       Math.Abs(thumbnailAnim - (GetEffectivePlayingState() ? 1f : 0f)) > 0.01f ||
+                       Math.Abs(timelineExtraHeight - (userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f))) > 0.05f;
+            }
+        }
+
+        public override bool WantsContinuousUpdate
+        {
+            get
+            {
+                if (!ShouldRenderMediaPlayer()) return false;
+                return GetEffectivePlayingState() || isTitleScrolling || WantsRealtimeUpdate;
+            }
         }
 
         private void EnsureLayout()

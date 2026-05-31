@@ -489,6 +489,27 @@ namespace DynamicWin.UI.Widgets.Small
                 });
         }
 
+        public override bool WantsRealtimeUpdate
+        {
+            get
+            {
+                bool isPaused = false;
+                try
+                {
+                    var status = MediaThumbnailService.Instance?.LastPlaybackStatus;
+                    if (status.HasValue)
+                        isPaused = status.Value != Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                }
+                catch { }
+
+                float target = isPaused ? 0f : 1f;
+                return animator.State != MediaAnimator.AnimState.Idle ||
+                       Math.Abs(thumbnailAnim - target) > 0.01f;
+            }
+        }
+
+        public override bool WantsContinuousUpdate => WantsRealtimeUpdate;
+
         public override void Draw(SKCanvas canvas)
         {
             if (collapseProgress <= 0f) return;

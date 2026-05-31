@@ -157,21 +157,32 @@ namespace DynamicWin.UI.Widgets.Small
         float sinCycleMicrophone = 0f;
 
         float sinSpeed = 2.75f;
+        private DateTime lastDeviceUsagePoll = DateTime.MinValue;
+        private readonly TimeSpan deviceUsagePollInterval = TimeSpan.FromMilliseconds(750);
+        private bool cachedCamActive;
+        private bool cachedMicActive;
 
         public override void Update(float deltaTime)
         {
             base.Update(deltaTime);
 
-            sinCycleCamera += sinSpeed * deltaTime;
-            sinCycleMicrophone += sinSpeed * deltaTime;
+            if (cachedCamActive)
+                sinCycleCamera += sinSpeed * deltaTime;
+            if (cachedMicActive || isMicrophoneIndicatorShowing)
+                sinCycleMicrophone += sinSpeed * deltaTime;
 
-            bool isCamActive = DeviceUsageChecker.IsWebcamInUse();
-            bool isMicActive = DeviceUsageChecker.IsMicrophoneInUse();
+            var now = DateTime.UtcNow;
+            if ((now - lastDeviceUsagePoll) >= deviceUsagePollInterval)
+            {
+                lastDeviceUsagePoll = now;
+                cachedCamActive = DeviceUsageChecker.IsWebcamInUse();
+                cachedMicActive = DeviceUsageChecker.IsMicrophoneInUse();
+            }
 
-            camDotSizeCurrent = Mathf.Lerp(camDotSizeCurrent, isCamActive ? camDotSize : 0f, 5f * deltaTime);
-            micDotSizeCurrent = Mathf.Lerp(micDotSizeCurrent, isMicActive ? micDotSize : 0f, 5f * deltaTime);
+            camDotSizeCurrent = Mathf.Lerp(camDotSizeCurrent, cachedCamActive ? camDotSize : 0f, 5f * deltaTime);
+            micDotSizeCurrent = Mathf.Lerp(micDotSizeCurrent, cachedMicActive ? micDotSize : 0f, 5f * deltaTime);
 
-            if(isCamActive && isMicActive)
+            if(cachedCamActive && cachedMicActive)
             {
                 camDotPositionX = Mathf.Lerp(camDotPositionX, seperation, 5f * deltaTime);
                 micDotPositionX = Mathf.Lerp(micDotPositionX, -seperation, 5f * deltaTime);
@@ -182,10 +193,19 @@ namespace DynamicWin.UI.Widgets.Small
                 micDotPositionX = Mathf.Lerp(micDotPositionX, 0, 5f * deltaTime);
             }
 
-            isMicrophoneIndicatorShowing = LoudnessMeter.GetMicrophoneLoudness() > RegisterUsedDevicesOptions.saveData.indicatorThreshold;
+            isMicrophoneIndicatorShowing =
+                RegisterUsedDevicesOptions.saveData.enableIndicator &&
+                LoudnessMeter.GetMicrophoneLoudness() > RegisterUsedDevicesOptions.saveData.indicatorThreshold;
         }
 
         bool isMicrophoneIndicatorShowing = false;
+
+        public override bool WantsContinuousUpdate =>
+            cachedCamActive ||
+            cachedMicActive ||
+            isMicrophoneIndicatorShowing ||
+            camDotSizeCurrent > 0.05f ||
+            micDotSizeCurrent > 0.05f;
 
         public override void DrawWidget(SKCanvas canvas)
         {

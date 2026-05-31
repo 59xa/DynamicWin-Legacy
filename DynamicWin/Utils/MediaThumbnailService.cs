@@ -120,7 +120,7 @@ namespace DynamicWin.Utils
 
         private CancellationTokenSource? cts;
         private readonly object listLock = new object();
-        private readonly TimeSpan pollInterval = TimeSpan.FromMilliseconds(250); // Reduced from 1s for faster response
+        private readonly TimeSpan pollInterval = TimeSpan.FromMilliseconds(500);
 
         // Cached data
         private byte[]? lastBytes;

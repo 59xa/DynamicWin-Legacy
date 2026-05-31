@@ -96,6 +96,8 @@ namespace DynamicWin.UI.UIElements.Custom
             }
         }
 
+        public override bool WantsRealtimeUpdate => Math.Abs(displayedValue - Value) > 0.001f;
+
         public override void Draw(SKCanvas canvas)
         {
             // Compute screen rect for the control

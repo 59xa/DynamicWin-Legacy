@@ -29,6 +29,8 @@ namespace DynamicWin.Utils
 
         }
 
+        public override bool WantsRealtimeUpdate => isRunning;
+
         public void Interrupt()
         {
             onAnimationInterrupt?.Invoke();
@@ -39,6 +41,7 @@ namespace DynamicWin.Utils
         {
             isRunning = true;
             elapsed = 0;
+            try { MainForm.Instance?.RequestRenderBurst(animationDuration + 50); } catch { }
         }
 
         float elapsed = 0;

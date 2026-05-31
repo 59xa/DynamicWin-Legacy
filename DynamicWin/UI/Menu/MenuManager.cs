@@ -181,6 +181,7 @@ namespace DynamicWin.UI.Menu
         static List<BaseMenu> menuLoadQueue = new List<BaseMenu>();
 
         Animator menuAnimatorOut;
+        public bool IsAnimating => (menuAnimatorOut != null && menuAnimatorOut.IsRunning) || menuLoadQueue.Count > 0;
 
         public void Update(float deltaTime)
         {

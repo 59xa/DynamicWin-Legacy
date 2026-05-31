@@ -29,7 +29,7 @@ namespace DynamicWin.Utils
     {
         // Initialise variables
         private const int V = 5;
-        private readonly int fftLength = 2048;
+        private readonly int fftLength = 1024;
         private readonly int barCount = 6;
 
         private float[] fftMagnitudes;
@@ -41,6 +41,7 @@ namespace DynamicWin.Utils
         private float[] bandBalance = new float[] { 1f, 1f, 1.15f, 1.10f, 1.25f, 1.35f };
 
         private WasapiLoopbackCapture? capture;
+        private bool captureRequested = true;
         private readonly object fftLock = new object();
 
         // Precomputed
@@ -78,7 +79,21 @@ namespace DynamicWin.Utils
         private float thumbnailFade = 3f;
         public float ThumbnailFadeDuration { get; set; } = 0.35f;
         private readonly object thumbLock = new object();
-        public bool UseThumbnailBackground { get; set; } = false;
+        private bool useThumbnailBackground = false;
+        public bool UseThumbnailBackground
+        {
+            get => useThumbnailBackground;
+            set
+            {
+                if (useThumbnailBackground == value) return;
+
+                useThumbnailBackground = value;
+                if (useThumbnailBackground && IsEnabled)
+                    SetThumbnailSubscription(true);
+                else
+                    SetThumbnailSubscription(false);
+            }
+        }
         public float ThumbnailFetchInterval { get; set; } = 1.0f;
         public float ThumbnailBlurAmount { get; set; } = 5f;
         private bool thumbnailServiceSubscribed;
@@ -147,28 +162,6 @@ namespace DynamicWin.Utils
             // Precompute FFT bin mapping
             InitBarBinMapping(44100f);
             SetCapturing(true);
-
-            // Subscribe to central thumbnail service. Only capture bytes in event handlers to avoid
-            // creating Skia objects on background threads which can cause native crashes.
-            SetThumbnailSubscription(true);
-
-            // Prime thumbnail cache from central service using bytes if available. Avoid creating SKImage here.
-            try
-            {
-                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
-                if (bytes != null && bytes.Length > 0)
-                {
-                    lock (thumbLock)
-                    {
-                        cachedThumbnailBytes = (byte[])bytes.Clone();
-                        pendingThumbnailBytes = cachedThumbnailBytes;
-                        thumbnailDirty = true;
-                        thumbnailFade = 0f;
-                        lastDecodeTime = DateTime.MinValue;
-                    }
-                }
-            }
-            catch { }
         }
 
         private void InitBarBinMapping(float sampleRate)
@@ -224,10 +217,33 @@ namespace DynamicWin.Utils
 
         public void SetCapturing(bool enabled)
         {
+            SetCapturing(enabled, resetBarsOnStop: true);
+        }
+
+        public void SetCapturing(bool enabled, bool resetBarsOnStop)
+        {
+            captureRequested = enabled;
             if (enabled)
+            {
+                if (IsEnabled)
+                    StartCapture();
+            }
+            else
+            {
+                StopCapture(resetBars: resetBarsOnStop, clearInput: true);
+            }
+        }
+
+        protected override void OnActiveChanged(bool isEnabled)
+        {
+            base.OnActiveChanged(isEnabled);
+
+            if (isEnabled && captureRequested)
                 StartCapture();
             else
-                StopCapture(resetBars: true);
+                StopCapture(resetBars: true, clearInput: true);
+
+            SetThumbnailSubscription(isEnabled && UseThumbnailBackground);
         }
 
         public void SetThumbnailSubscription(bool enabled)
@@ -239,6 +255,7 @@ namespace DynamicWin.Utils
                 MediaThumbnailService.Instance.Subscribe(OnThumbnailChanged);
                 MediaThumbnailService.Instance.ThumbnailChanged += OnThumbnailChangedEvent;
                 thumbnailServiceSubscribed = true;
+                PrimeThumbnailCache();
                 return;
             }
 
@@ -258,6 +275,26 @@ namespace DynamicWin.Utils
             }
         }
 
+        private void PrimeThumbnailCache()
+        {
+            try
+            {
+                var bytes = MediaThumbnailService.Instance.GetCurrentThumbnailBytes();
+                if (bytes != null && bytes.Length > 0)
+                {
+                    lock (thumbLock)
+                    {
+                        cachedThumbnailBytes = (byte[])bytes.Clone();
+                        pendingThumbnailBytes = cachedThumbnailBytes;
+                        thumbnailDirty = true;
+                        thumbnailFade = 0f;
+                        lastDecodeTime = DateTime.MinValue;
+                    }
+                }
+            }
+            catch { }
+        }
+
         private void StartCapture()
         {
             if (capture != null || DynamicWinMain.defaultDevice == null) return;
@@ -271,11 +308,11 @@ namespace DynamicWin.Utils
             }
             catch
             {
-                StopCapture(resetBars: true);
+                StopCapture(resetBars: true, clearInput: true);
             }
         }
 
-        private void StopCapture(bool resetBars)
+        private void StopCapture(bool resetBars, bool clearInput = true)
         {
             var activeCapture = capture;
             capture = null;
@@ -287,14 +324,17 @@ namespace DynamicWin.Utils
                 try { activeCapture.Dispose(); } catch { }
             }
 
-            if (resetBars)
+            if (resetBars || clearInput)
             {
                 lock (fftLock)
                 {
                     Array.Clear(barSumSquares, 0, barSumSquares.Length);
                     Array.Clear(targetHeights, 0, targetHeights.Length);
-                    Array.Clear(barHeight, 0, barHeight.Length);
-                    averageAmplitude = 0f;
+                    if (resetBars)
+                    {
+                        Array.Clear(barHeight, 0, barHeight.Length);
+                        averageAmplitude = 0f;
+                    }
                 }
             }
         }
@@ -370,7 +410,7 @@ namespace DynamicWin.Utils
             // Unsubscribe
             SetThumbnailSubscription(false);
 
-            StopCapture(resetBars: false);
+            StopCapture(resetBars: false, clearInput: true);
 
             // Dispose cached thumbnail image
             lock (thumbLock)
@@ -565,7 +605,7 @@ namespace DynamicWin.Utils
 
         public override void Draw(SKCanvas canvas)
         {
-            if (capture == null) return;
+            if (capture == null && !HasVisibleBars()) return;
 
             SKImage? thumbnailImage = null;
             SKImage? prevThumb = null;
@@ -738,6 +778,19 @@ namespace DynamicWin.Utils
             }
 
             // Do not dispose cached images here - they are owned by this object and will be disposed in OnDestroy or when replaced
+        }
+
+        public override bool WantsContinuousUpdate => capture != null || HasVisibleBars() || (UseThumbnailBackground && thumbnailFade < 1f);
+
+        private bool HasVisibleBars()
+        {
+            for (int i = 0; i < barHeight.Length; i++)
+            {
+                if (barHeight[i] > 0.003f)
+                    return true;
+            }
+
+            return false;
         }
 
         private void DrawThumbnailBar(SKCanvas canvas, SKRoundRect roundRect, SKImage current, SKImage? previous, float totalWidth, float totalHeight, float fade)

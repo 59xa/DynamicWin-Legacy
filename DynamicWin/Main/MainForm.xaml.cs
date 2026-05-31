@@ -37,13 +37,23 @@ namespace DynamicWin.Main
         // Mouse/motion tracking for idle detection
         private System.Windows.Point _lastMousePos = new System.Windows.Point(-1, -1);
         private DateTime _lastMouseMoveTime = DateTime.MinValue;
-        private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromSeconds(1.0);
+        private readonly TimeSpan _idleMouseThreshold = TimeSpan.FromMilliseconds(180);
         private readonly TimeSpan _refreshRatePollInterval = TimeSpan.FromSeconds(2.0);
         private int _cachedRefreshRate = 60;
         private DateTime _lastRefreshRateCheck = DateTime.MinValue;
+        private DateTime _renderBurstUntil = DateTime.MinValue;
+        private const int ContinuousRenderHz = 60;
+        private const int StaticIdleRenderHz = 8;
 
         // Rendering pause flag (used for suspend/hibernate)
         private bool _renderPaused = false;
+
+        public void RequestRenderBurst(int milliseconds = 350)
+        {
+            var until = DateTime.UtcNow.AddMilliseconds(Math.Max(1, milliseconds));
+            if (until > _renderBurstUntil)
+                _renderBurstUntil = until;
+        }
 
         #region Win32 API Definitions
 
@@ -240,36 +250,55 @@ namespace DynamicWin.Main
             // Decide refresh rate dynamically based on settings and idle state
             try
             {
+                RefreshCachedRefreshRate(now);
                 int displayRefresh = _cachedRefreshRate;
                 if (displayRefresh <= 0) displayRefresh = 60;
 
-                int targetHz = 60;
+                int fullRefreshHz = Settings.ToggleHighRefreshRate
+                    ? displayRefresh
+                    : Math.Min(60, displayRefresh);
+                int targetHz = fullRefreshHz;
 
                 if (Settings.ToggleHighRefreshRate)
                 {
-                    RefreshCachedRefreshRate(now);
-                    displayRefresh = _cachedRefreshRate;
-                    if (displayRefresh <= 0) displayRefresh = 60;
-
-                    targetHz = displayRefresh;
-
-                    if (Settings.LimitRefreshRateWhenIdle)
-                    {
-                        bool islandHover = false;
-                        try
-                        {
-                            islandHover = RendererMain.Instance?.MainIsland?.IsHovering ?? false;
-                        }
-                        catch { }
-
-                        bool idle = !islandHover ||
-                                    ((now - _lastMouseMoveTime) > _idleMouseThreshold);
-
-                        if (idle)
-                            targetHz = 60;
-                    }
+                    fullRefreshHz = displayRefresh;
                 }
 
+                if (Settings.LimitRefreshRateWhenIdle)
+                {
+                    bool leftMouseDown = false;
+                    try { leftMouseDown = System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed; } catch { }
+
+                    var renderer = RendererMain.Instance;
+                    bool islandHover = renderer?.MainIsland?.IsHovering == true;
+                    bool inputActive = leftMouseDown ||
+                                       now <= _renderBurstUntil ||
+                                       (islandHover && (now - _lastMouseMoveTime) <= _idleMouseThreshold);
+                    bool wantsRealtime = renderer?.WantsRealtimeRendering == true;
+                    bool wantsContinuous = renderer?.WantsContinuousRendering == true;
+
+                    if (inputActive || wantsRealtime)
+                    {
+                        targetHz = fullRefreshHz;
+                    }
+                    else if (wantsContinuous)
+                    {
+                        targetHz = Math.Min(ContinuousRenderHz, fullRefreshHz);
+                    }
+                    else
+                    {
+                        targetHz = Math.Min(StaticIdleRenderHz, fullRefreshHz);
+                    }
+                }
+                else
+                {
+                    targetHz = fullRefreshHz;
+                }
+
+                if (!Settings.ToggleHighRefreshRate)
+                    targetHz = Math.Min(targetHz, 60);
+
+                targetHz = Math.Max(1, targetHz);
                 _targetElapsedTime = TimeSpan.FromMilliseconds(1000.0 / targetHz);
 
                 if (targetHz >= displayRefresh)

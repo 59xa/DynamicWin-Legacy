@@ -330,31 +330,33 @@ namespace DynamicWin.UI
 
             if (canInteract)
             {
-                var rect = SKRect.Create(RendererMain.CursorPosition.X, RendererMain.CursorPosition.Y, 1, 1);
+                var cursor = RendererMain.CursorPosition;
+                bool leftMouseDown = RendererMain.IsLeftMouseButtonDown;
+                var rect = SKRect.Create(cursor.X, cursor.Y, 1, 1);
                 isHovering = GetInteractionRect().Contains(rect);
 
-                if (!isGlobalMouseDown && Mouse.LeftButton == MouseButtonState.Pressed)
+                if (!isGlobalMouseDown && leftMouseDown)
                 {
                     isGlobalMouseDown = true;
                     OnGlobalMouseDown();
                 }
-                else if (isGlobalMouseDown && !(Mouse.LeftButton == MouseButtonState.Pressed))
+                else if (isGlobalMouseDown && !leftMouseDown)
                 {
                     isGlobalMouseDown = false;
                     OnGlobalMouseUp();
                 }
 
-                if (IsHovering && !IsMouseDown && Mouse.LeftButton == MouseButtonState.Pressed)
+                if (IsHovering && !IsMouseDown && leftMouseDown)
                 {
                     IsMouseDown = true;
                     OnMouseDown();
                 }
-                else if (IsHovering && IsMouseDown && !(Mouse.LeftButton == MouseButtonState.Pressed))
+                else if (IsHovering && IsMouseDown && !leftMouseDown)
                 {
                     IsMouseDown = false;
                     OnMouseUp();
                 }
-                else if (IsMouseDown && !(Mouse.LeftButton == MouseButtonState.Pressed))
+                else if (IsMouseDown && !leftMouseDown)
                 {
                     IsMouseDown = false;
                 }
@@ -375,6 +377,41 @@ namespace DynamicWin.UI
         }
 
         public virtual void Update(float deltaTime) { }
+
+        public virtual bool WantsRealtimeUpdate => false;
+        public virtual bool WantsContinuousUpdate => false;
+
+        public bool SubtreeWantsRealtimeUpdate()
+        {
+            if (!isEnabled) return false;
+            if (WantsRealtimeUpdate) return true;
+            if (!drawLocalObjects) return false;
+
+            for (int i = 0; i < localObjects.Count; i++)
+            {
+                var obj = localObjects[i];
+                if (obj != null && obj.SubtreeWantsRealtimeUpdate())
+                    return true;
+            }
+
+            return false;
+        }
+
+        public bool SubtreeWantsContinuousUpdate()
+        {
+            if (!isEnabled) return false;
+            if (WantsContinuousUpdate || WantsRealtimeUpdate) return true;
+            if (!drawLocalObjects) return false;
+
+            for (int i = 0; i < localObjects.Count; i++)
+            {
+                var obj = localObjects[i];
+                if (obj != null && obj.SubtreeWantsContinuousUpdate())
+                    return true;
+            }
+
+            return false;
+        }
 
         // GPU caching fields
         private SKImage? gpuCache = null;
@@ -620,6 +657,9 @@ namespace DynamicWin.UI
 
         public void SilentSetActive(bool isEnabled)
         {
+            if (this.isEnabled == isEnabled && lastSetActiveCall == isEnabled) return;
+            lastSetActiveCall = isEnabled;
+            OnActiveChanged(isEnabled);
             this.isEnabled = isEnabled;
         }
 

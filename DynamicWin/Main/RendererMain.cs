@@ -32,6 +32,9 @@ namespace DynamicWin.Main
         {
             get
             {
+                if (instance != null && instance.inputSnapshotValid)
+                    return instance.cachedScreenDimensions;
+
                 var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
                 if (active != null) return new Vec2((float)active.Width, (float)active.Height);
                 return new Vec2((float)MainForm.Instance.Width, (float)MainForm.Instance.Height);
@@ -42,6 +45,9 @@ namespace DynamicWin.Main
         {
             get
             {
+                if (instance != null && instance.inputSnapshotValid)
+                    return instance.cachedCursorPosition;
+
                 var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible);
                 if (active != null)
                 {
@@ -50,6 +56,17 @@ namespace DynamicWin.Main
                 }
                 var mainPos = Mouse.GetPosition(MainForm.Instance);
                 return new Vec2((float)mainPos.X, (float)mainPos.Y);
+            }
+        }
+
+        public static bool IsLeftMouseButtonDown
+        {
+            get
+            {
+                if (instance != null && instance.inputSnapshotValid)
+                    return instance.cachedLeftMouseDown;
+
+                return Mouse.LeftButton == MouseButtonState.Pressed;
             }
         }
 
@@ -76,6 +93,14 @@ namespace DynamicWin.Main
 
         private bool isInitialized = false;
         public int canvasWithoutClip;
+
+        private bool inputSnapshotValid;
+        private Vec2 cachedCursorPosition = Vec2.zero;
+        private Vec2 cachedScreenDimensions = Vec2.zero;
+        private bool cachedLeftMouseDown;
+
+        public bool WantsRealtimeRendering { get; private set; } = true;
+        public bool WantsContinuousRendering { get; private set; } = true;
 
         public RendererMain()
         {
@@ -239,6 +264,8 @@ namespace DynamicWin.Main
 
         private void Update()
         {
+            CaptureInputSnapshot();
+
             if (updateStopwatch != null)
             {
                 updateStopwatch.Stop();
@@ -324,7 +351,11 @@ namespace DynamicWin.Main
             // Update island shadow to follow island
             islandShadow?.UpdateCall(DeltaTime);
 
-            if (MainIsland.hidden) return;
+            if (MainIsland.hidden)
+            {
+                UpdateRenderDemand();
+                return;
+            }
 
             // Take a stable snapshot of the menu object list to avoid InvalidOperationException
             var uiObjectsSnapshot = objects?.ToArray();
@@ -337,6 +368,77 @@ namespace DynamicWin.Main
                     uiObject.UpdateCall(DeltaTime);
                 }
             }
+
+            UpdateRenderDemand();
+        }
+
+        private void CaptureInputSnapshot()
+        {
+            try
+            {
+                var active = System.Windows.Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsActive && w.IsVisible)
+                    ?? MainForm.Instance;
+
+                var pos = Mouse.GetPosition(active);
+                cachedCursorPosition = new Vec2((float)pos.X, (float)pos.Y);
+
+                double width = active.ActualWidth > 0 ? active.ActualWidth : active.Width;
+                double height = active.ActualHeight > 0 ? active.ActualHeight : active.Height;
+                cachedScreenDimensions = new Vec2((float)width, (float)height);
+                cachedLeftMouseDown = Mouse.LeftButton == MouseButtonState.Pressed;
+                inputSnapshotValid = true;
+            }
+            catch
+            {
+                inputSnapshotValid = false;
+                cachedLeftMouseDown = Mouse.LeftButton == MouseButtonState.Pressed;
+            }
+        }
+
+        private void UpdateRenderDemand()
+        {
+            bool realtime = false;
+            bool continuous = false;
+
+            try
+            {
+                realtime |= MenuManager.Instance?.IsAnimating == true;
+                realtime |= islandObject.SubtreeWantsRealtimeUpdate();
+                continuous |= islandObject.SubtreeWantsContinuousUpdate();
+
+                if (islandShadow != null)
+                {
+                    realtime |= islandShadow.SubtreeWantsRealtimeUpdate();
+                    continuous |= islandShadow.SubtreeWantsContinuousUpdate();
+                }
+
+                var activeObjects = objects;
+                if (activeObjects != null)
+                {
+                    for (int i = 0; i < activeObjects.Count; i++)
+                    {
+                        var obj = activeObjects[i];
+                        if (obj == null) continue;
+
+                        if (!realtime && obj.SubtreeWantsRealtimeUpdate())
+                            realtime = true;
+
+                        if (!continuous && obj.SubtreeWantsContinuousUpdate())
+                            continuous = true;
+
+                        if (realtime && continuous)
+                            break;
+                    }
+                }
+            }
+            catch
+            {
+                realtime = true;
+                continuous = true;
+            }
+
+            WantsRealtimeRendering = realtime;
+            WantsContinuousRendering = continuous || realtime;
         }
 
         protected override void OnPaintSurface(SKPaintSurfaceEventArgs e)
