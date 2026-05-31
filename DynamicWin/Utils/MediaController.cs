@@ -77,6 +77,7 @@ namespace DynamicWin.Utils
         public static bool HasCurrentSession => _currentSession != null;
         private static MediaTimeline? _timelineCache;
         private static byte[]? _thumbnailBytesCache;
+        public static event Action<MediaTimeline?>? TimelineChanged;
 
         // WinRT Objects
         // Keep these alive so we don't recreate them constantly
@@ -150,6 +151,7 @@ namespace DynamicWin.Utils
                 {
                     _currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
                     _currentSession.PlaybackInfoChanged -= OnPlaybackInfoChanged;
+                    _currentSession.TimelinePropertiesChanged -= OnTimelinePropertiesChanged;
                     _currentSession = null;
                 }
 
@@ -160,10 +162,11 @@ namespace DynamicWin.Utils
                     _currentSession = session;
                     _currentSession.MediaPropertiesChanged += OnMediaPropertiesChanged;
                     _currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
+                    _currentSession.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
 
                     // Immediate fetch of initial data
                     RefreshMediaPropertiesAsync(session);
-                    RefreshTimeline(session);
+                    RefreshTimeline(session, notify: true);
                 }
                 else
                 {
@@ -173,6 +176,7 @@ namespace DynamicWin.Utils
                     Current = null;
                     _timelineCache = null;
                     _thumbnailBytesCache = null;
+                    NotifyTimelineChanged(null);
 
                     try
                     {
@@ -230,12 +234,17 @@ namespace DynamicWin.Utils
         // Triggered by Windows when Play/Pause/Position changes
         private static void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
         {
-            RefreshTimeline(sender);
+            RefreshTimeline(sender, notify: true);
             try
             {
                 MediaThumbnailService.Instance.ForceNotifyCurrentThumbnail();
             }
             catch { }
+        }
+
+        private static void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
+        {
+            RefreshTimeline(sender, notify: true);
         }
 
         // Now async void, called directly from event handler
@@ -273,22 +282,81 @@ namespace DynamicWin.Utils
             catch { }
         }
 
-        private static void RefreshTimeline(GlobalSystemMediaTransportControlsSession session)
+        private static MediaTimeline? RefreshTimeline(GlobalSystemMediaTransportControlsSession session, bool notify = false)
         {
             try
             {
                 var timeline = session.GetTimelineProperties();
                 var info = session.GetPlaybackInfo();
+                var now = DateTimeOffset.UtcNow;
+                var lastUpdated = timeline.LastUpdatedTime == default
+                    ? now
+                    : timeline.LastUpdatedTime.ToUniversalTime();
 
-                _timelineCache = new MediaTimeline
+                var next = new MediaTimeline
                 {
                     Position = timeline.Position,
                     StartTime = timeline.StartTime,
                     EndTime = timeline.EndTime,
+                    LastUpdatedTime = lastUpdated,
+                    CachedAt = now,
                     PlaybackStatus = info?.PlaybackStatus ?? GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed
                 };
+
+                _timelineCache = next;
+                var projected = ProjectTimeline(next);
+
+                if (notify)
+                    NotifyTimelineChanged(projected);
+
+                return projected;
             }
-            catch { }
+            catch
+            {
+                return ProjectTimeline(_timelineCache);
+            }
+        }
+
+        private static void NotifyTimelineChanged(MediaTimeline? timeline)
+        {
+            try { TimelineChanged?.Invoke(timeline); } catch { }
+        }
+
+        private static MediaTimeline? ProjectTimeline(MediaTimeline? timeline)
+        {
+            if (timeline == null) return null;
+
+            var now = DateTimeOffset.UtcNow;
+            var projected = new MediaTimeline
+            {
+                Position = timeline.Position,
+                StartTime = timeline.StartTime,
+                EndTime = timeline.EndTime,
+                LastUpdatedTime = timeline.LastUpdatedTime,
+                CachedAt = timeline.CachedAt,
+                PlaybackStatus = timeline.PlaybackStatus
+            };
+
+            if (projected.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+            {
+                var anchor = projected.LastUpdatedTime == default ? projected.CachedAt : projected.LastUpdatedTime;
+                if (anchor != default)
+                {
+                    var delta = now - anchor.ToUniversalTime();
+                    if (delta > TimeSpan.Zero && delta < TimeSpan.FromHours(6))
+                        projected.Position += delta;
+                }
+            }
+
+            if (projected.Position < projected.StartTime)
+                projected.Position = projected.StartTime;
+
+            if (projected.EndTime > projected.StartTime && projected.Position > projected.EndTime)
+                projected.Position = projected.EndTime;
+
+            projected.LastUpdatedTime = now;
+            projected.CachedAt = now;
+            return projected;
         }
 
         // Public API
@@ -315,10 +383,10 @@ namespace DynamicWin.Utils
             // but for metadata, we just return the cache
             if (forceRefresh && _currentSession != null)
             {
-                RefreshTimeline(_currentSession);
+                return RefreshTimeline(_currentSession);
             }
 
-            return _timelineCache;
+            return ProjectTimeline(_timelineCache);
         }
 
         public static async Task<byte[]?> FetchCurrentThumbnailBytesAsync(bool forceRefresh = false)
@@ -376,8 +444,14 @@ namespace DynamicWin.Utils
 
         public static async Task<bool> SeekCurrentSessionAsync(TimeSpan position)
         {
-            if (_currentSession == null) return false;
-            return await _currentSession.TryChangePlaybackPositionAsync(position.Ticks);
+            var session = _currentSession;
+            if (session == null) return false;
+
+            bool changed = await session.TryChangePlaybackPositionAsync(position.Ticks);
+            if (changed && ReferenceEquals(session, _currentSession))
+                RefreshTimeline(session, notify: true);
+
+            return changed;
         }
     }
 }

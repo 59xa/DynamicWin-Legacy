@@ -8,6 +8,8 @@ namespace DynamicWin.Utils
         public System.TimeSpan Position { get; set; }
         public System.TimeSpan StartTime { get; set; }
         public System.TimeSpan EndTime { get; set; }
+        public System.DateTimeOffset LastUpdatedTime { get; set; }
+        public System.DateTimeOffset CachedAt { get; set; }
         public Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus PlaybackStatus { get; set; }
     }
 

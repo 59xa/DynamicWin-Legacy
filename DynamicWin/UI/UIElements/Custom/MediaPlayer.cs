@@ -73,9 +73,14 @@ namespace DynamicWin.UI.UIElements.Custom
         private DateTime lastMissingThumbnailFetch = DateTime.MinValue;
         private readonly TimeSpan missingThumbnailFetchInterval = TimeSpan.FromSeconds(1);
         private readonly TimeSpan optimisticStatusGrace = TimeSpan.FromMilliseconds(900);
+        private readonly TimeSpan timelineSeekConfirmationWindow = TimeSpan.FromMilliseconds(1200);
+        private const double TimelineSeekMatchToleranceSeconds = 2.0;
+        private const double TimelineSampleJitterToleranceSeconds = 0.35;
+        private const double TimelineVisualSnapSeconds = 2.0;
 
         private CancellationTokenSource? timelineCts;
         private int timelineFetchRunning;
+        private int timelineRefreshPending;
         private readonly TimeSpan timelineFetchInterval = TimeSpan.FromSeconds(2);
 
         private TimeSpan? lastSampleElapsed;
@@ -84,6 +89,9 @@ namespace DynamicWin.UI.UIElements.Custom
         private GlobalSystemMediaTransportControlsSessionPlaybackStatus lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
         private MediaTimeline? currentTimeline;
 
+        private TimeSpan? pendingSeekElapsed;
+        private DateTime pendingSeekStartedAt = DateTime.MinValue;
+        private DateTime pendingSeekUntil = DateTime.MinValue;
         private TimeSpan? timelinePosition;
         private TimeSpan? timelineDuration;
         private bool isPlayingFlag;
@@ -101,6 +109,7 @@ namespace DynamicWin.UI.UIElements.Custom
         private float thumbnailAnim = 1f;
 
         private bool isThumbnailSubscribed;
+        private bool isTimelineSubscribed;
         private bool childrenAreActive;
         private bool visualiserCaptureEnabled;
 
@@ -217,6 +226,7 @@ namespace DynamicWin.UI.UIElements.Custom
             {
                 visualiser.SetThumbnailSubscription(true);
                 SubscribeToThumbnailService();
+                SubscribeToTimelineEvents();
                 StartTimelineLoop();
                 RequestTimelineRefresh();
             }
@@ -226,6 +236,7 @@ namespace DynamicWin.UI.UIElements.Custom
                 SetVisualiserCapture(false);
                 visualiser.SetThumbnailSubscription(false);
                 StopTimelineLoop();
+                UnsubscribeFromTimelineEvents();
                 UnsubscribeFromThumbnailService();
                 ResetMediaState(clearText: true);
             }
@@ -236,19 +247,23 @@ namespace DynamicWin.UI.UIElements.Custom
             base.Update(deltaTime);
 
             bool visible = ShouldRenderMediaPlayer();
+            bool becameVisible = visible && !childrenAreActive;
             SetChildInteraction(visible);
             if (!visible) return;
 
             StartTimelineLoop();
+            if (becameVisible)
+                RequestTimelineRefresh();
+
             ClearMediaAfterDebounce();
 
             EnsureLayout();
             StepThumbnailAnimation(deltaTime);
             StepThumbnailSwapAnimation(deltaTime);
+            HandleTimelineInput();
             UpdateTimelineSnapshot();
             UpdateDisplayFill(deltaTime);
             UpdateButtonLayoutAndIcon();
-            HandleTimelineInput();
             UpdateTextCache(deltaTime);
             UpdateTimelineTextCache();
             UpdateVisualiserState();
@@ -278,6 +293,7 @@ namespace DynamicWin.UI.UIElements.Custom
             base.OnDestroy();
 
             UnsubscribeFromThumbnailService();
+            UnsubscribeFromTimelineEvents();
             StopTimelineLoop();
             visualiser.SetThumbnailSubscription(false);
             ResetMediaState(clearText: true);
@@ -374,6 +390,22 @@ namespace DynamicWin.UI.UIElements.Custom
             isThumbnailSubscribed = false;
         }
 
+        private void SubscribeToTimelineEvents()
+        {
+            if (isTimelineSubscribed) return;
+
+            MediaInfo.TimelineChanged += OnTimelineChanged;
+            isTimelineSubscribed = true;
+        }
+
+        private void UnsubscribeFromTimelineEvents()
+        {
+            if (!isTimelineSubscribed) return;
+
+            try { MediaInfo.TimelineChanged -= OnTimelineChanged; } catch { }
+            isTimelineSubscribed = false;
+        }
+
         private void StartTimelineLoop()
         {
             if (timelineCts != null) return;
@@ -417,46 +449,30 @@ namespace DynamicWin.UI.UIElements.Custom
             var token = timelineCts?.Token ?? CancellationToken.None;
             if (token.IsCancellationRequested) return;
 
+            if (Volatile.Read(ref timelineFetchRunning) != 0)
+            {
+                Interlocked.Exchange(ref timelineRefreshPending, 1);
+                return;
+            }
+
             _ = FetchTimelineSampleAsync(token);
         }
 
         private async Task FetchTimelineSampleAsync(CancellationToken token)
         {
             if (token.IsCancellationRequested || userIsSeeking) return;
-            if (Interlocked.CompareExchange(ref timelineFetchRunning, 1, 0) != 0) return;
+            if (Interlocked.CompareExchange(ref timelineFetchRunning, 1, 0) != 0)
+            {
+                Interlocked.Exchange(ref timelineRefreshPending, 1);
+                return;
+            }
 
             try
             {
                 var timeline = await MediaInfo.FetchCurrentTimelineAsync(forceRefresh: true).ConfigureAwait(false);
                 if (token.IsCancellationRequested || userIsSeeking) return;
 
-                lock (mediaLock)
-                {
-                    if (timeline == null)
-                    {
-                        lastSampleElapsed = null;
-                        lastSampleDuration = null;
-                        lastSampleReceivedAt = DateTime.MinValue;
-                        lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
-                        currentTimeline = null;
-                        optimisticActive = false;
-                        return;
-                    }
-
-                    var duration = timeline.EndTime - timeline.StartTime;
-                    if (duration < TimeSpan.Zero) duration = TimeSpan.Zero;
-
-                    var elapsed = timeline.Position - timeline.StartTime;
-                    if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-                    if (duration > TimeSpan.Zero && elapsed > duration) elapsed = duration;
-
-                    lastSampleElapsed = elapsed;
-                    lastSampleDuration = duration;
-                    lastSampleReceivedAt = DateTime.UtcNow;
-                    lastPlaybackStatus = timeline.PlaybackStatus;
-                    currentTimeline = timeline;
-                    optimisticActive = false;
-                }
+                ApplyTimelineSample(timeline, DateTime.UtcNow);
             }
             catch
             {
@@ -464,7 +480,172 @@ namespace DynamicWin.UI.UIElements.Custom
             finally
             {
                 Interlocked.Exchange(ref timelineFetchRunning, 0);
+                if (Interlocked.Exchange(ref timelineRefreshPending, 0) != 0 &&
+                    !token.IsCancellationRequested &&
+                    !userIsSeeking)
+                {
+                    _ = FetchTimelineSampleAsync(token);
+                }
             }
+        }
+
+        private void OnTimelineChanged(MediaTimeline? timeline)
+        {
+            if (userIsSeeking) return;
+
+            ApplyTimelineSample(timeline, DateTime.UtcNow);
+            MainForm.Instance?.RequestRenderBurst(250);
+        }
+
+        private void ApplyTimelineSample(MediaTimeline? timeline, DateTime receivedAt)
+        {
+            lock (mediaLock)
+            {
+                if (timeline == null)
+                {
+                    ResetTimelineLocked();
+                    return;
+                }
+
+                var duration = timeline.EndTime - timeline.StartTime;
+                if (duration < TimeSpan.Zero) duration = TimeSpan.Zero;
+
+                var elapsed = timeline.Position - timeline.StartTime;
+                if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+                if (duration > TimeSpan.Zero && elapsed > duration) elapsed = duration;
+                var sampleAt = GetTimelineSampleTime(timeline, receivedAt);
+
+                if (pendingSeekElapsed.HasValue)
+                {
+                    var pendingElapsed = GetPendingSeekProjectionLocked(sampleAt);
+                    var previousProjection = lastSampleElapsed.HasValue
+                        ? GetTimelineProjectionLocked(sampleAt)
+                        : pendingElapsed;
+                    bool pendingExpired = receivedAt > pendingSeekUntil;
+                    bool matchesPendingSeek = Math.Abs((elapsed - pendingElapsed).TotalSeconds) <= TimelineSeekMatchToleranceSeconds;
+                    bool closerToPendingSeek =
+                        Math.Abs((elapsed - pendingElapsed).TotalSeconds) <=
+                        Math.Abs((elapsed - previousProjection).TotalSeconds) + 0.05;
+
+                    if (!pendingExpired && (!matchesPendingSeek || !closerToPendingSeek))
+                        return;
+
+                    ClearPendingSeekLocked();
+                }
+
+                if (lastSampleElapsed.HasValue &&
+                    lastSampleReceivedAt != DateTime.MinValue &&
+                    DurationsClose(lastSampleDuration, duration))
+                {
+                    var projectedElapsed = GetTimelineProjectionLocked(sampleAt);
+                    double correctionSeconds = (elapsed - projectedElapsed).TotalSeconds;
+                    bool wasPlaying = lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                    bool isPlaying = timeline.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+
+                    if (wasPlaying && isPlaying && Math.Abs(correctionSeconds) <= TimelineSampleJitterToleranceSeconds)
+                    {
+                        lastSampleDuration = duration;
+                        lastPlaybackStatus = timeline.PlaybackStatus;
+                        currentTimeline = timeline;
+                        optimisticActive = false;
+                        return;
+                    }
+
+                    if (wasPlaying &&
+                        !isPlaying &&
+                        correctionSeconds < 0 &&
+                        Math.Abs(correctionSeconds) <= TimelineSampleJitterToleranceSeconds)
+                    {
+                        elapsed = projectedElapsed;
+                    }
+                }
+
+                lastSampleElapsed = elapsed;
+                lastSampleDuration = duration;
+                lastSampleReceivedAt = sampleAt;
+                lastPlaybackStatus = timeline.PlaybackStatus;
+                currentTimeline = timeline;
+                optimisticActive = false;
+            }
+        }
+
+        private static DateTime GetTimelineSampleTime(MediaTimeline timeline, DateTime fallback)
+        {
+            var timestamp = timeline.LastUpdatedTime != default
+                ? timeline.LastUpdatedTime
+                : timeline.CachedAt;
+
+            if (timestamp == default)
+                return fallback;
+
+            var utc = timestamp.UtcDateTime;
+            if (utc > fallback.AddSeconds(2) || utc < fallback.AddHours(-6))
+                return fallback;
+
+            return utc;
+        }
+
+        private TimeSpan GetTimelineProjectionLocked(DateTime now)
+        {
+            if (!lastSampleElapsed.HasValue)
+                return TimeSpan.Zero;
+
+            var elapsed = lastSampleElapsed.Value;
+            if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                lastSampleReceivedAt != DateTime.MinValue)
+            {
+                elapsed += now - lastSampleReceivedAt;
+            }
+
+            return ClampTimelineElapsed(elapsed, lastSampleDuration);
+        }
+
+        private TimeSpan GetPendingSeekProjectionLocked(DateTime now)
+        {
+            if (!pendingSeekElapsed.HasValue)
+                return TimeSpan.Zero;
+
+            var elapsed = pendingSeekElapsed.Value;
+            if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                pendingSeekStartedAt != DateTime.MinValue)
+            {
+                elapsed += now - pendingSeekStartedAt;
+            }
+
+            return ClampTimelineElapsed(elapsed, lastSampleDuration);
+        }
+
+        private void BeginPendingSeekLocked(TimeSpan elapsed, DateTime now)
+        {
+            pendingSeekElapsed = ClampTimelineElapsed(elapsed, lastSampleDuration);
+            pendingSeekStartedAt = now;
+            pendingSeekUntil = now + timelineSeekConfirmationWindow;
+        }
+
+        private void ClearPendingSeekLocked()
+        {
+            pendingSeekElapsed = null;
+            pendingSeekStartedAt = DateTime.MinValue;
+            pendingSeekUntil = DateTime.MinValue;
+        }
+
+        private static TimeSpan ClampTimelineElapsed(TimeSpan elapsed, TimeSpan? duration)
+        {
+            if (elapsed < TimeSpan.Zero)
+                return TimeSpan.Zero;
+
+            if (duration.HasValue && duration.Value > TimeSpan.Zero && elapsed > duration.Value)
+                return duration.Value;
+
+            return elapsed;
+        }
+
+        private static bool DurationsClose(TimeSpan? previous, TimeSpan next)
+        {
+            if (!previous.HasValue)
+                return false;
+
+            return Math.Abs((previous.Value - next).TotalSeconds) <= 1.0;
         }
 
         private void HandlePlayPauseClick()
@@ -723,6 +904,7 @@ namespace DynamicWin.UI.UIElements.Custom
             lastSampleReceivedAt = DateTime.MinValue;
             lastPlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
             currentTimeline = null;
+            ClearPendingSeekLocked();
         }
 
         private void ClearMediaAfterDebounce()
@@ -867,27 +1049,43 @@ namespace DynamicWin.UI.UIElements.Custom
             TimeSpan? sampleElapsed = null;
             TimeSpan? sampleDuration = null;
             GlobalSystemMediaTransportControlsSessionPlaybackStatus playbackStatus;
+            var now = DateTime.UtcNow;
 
             lock (mediaLock)
             {
                 playbackStatus = lastPlaybackStatus;
 
-                if (lastSampleElapsed.HasValue && lastSampleReceivedAt != DateTime.MinValue)
+                if (pendingSeekElapsed.HasValue && now > pendingSeekUntil)
+                    ClearPendingSeekLocked();
+
+                if (userIsSeeking)
                 {
                     sampleDuration = lastSampleDuration;
+                    sampleElapsed = userSeekElapsed;
+                }
+                else if (pendingSeekElapsed.HasValue)
+                {
+                    sampleDuration = lastSampleDuration;
+                    sampleElapsed = GetPendingSeekProjectionLocked(now);
+                }
+                else if (lastSampleElapsed.HasValue && lastSampleReceivedAt != DateTime.MinValue)
+                {
+                    sampleDuration = lastSampleDuration;
+                    sampleElapsed = GetTimelineProjectionLocked(now);
+                }
+            }
 
-                    if (userIsSeeking)
-                    {
-                        sampleElapsed = userSeekElapsed;
-                    }
-                    else if (lastPlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-                    {
-                        sampleElapsed = lastSampleElapsed.Value + (DateTime.UtcNow - lastSampleReceivedAt);
-                    }
-                    else
-                    {
-                        sampleElapsed = lastSampleElapsed.Value;
-                    }
+            if (sampleElapsed.HasValue &&
+                !userIsSeeking &&
+                playbackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing &&
+                timelinePosition.HasValue &&
+                sampleElapsed.Value < timelinePosition.Value &&
+                (timelinePosition.Value - sampleElapsed.Value).TotalSeconds <= TimelineSampleJitterToleranceSeconds)
+            {
+                sampleElapsed = timelinePosition.Value;
+                if (sampleDuration.HasValue)
+                {
+                    sampleElapsed = ClampTimelineElapsed(sampleElapsed.Value, sampleDuration.Value);
                 }
             }
 
@@ -916,46 +1114,43 @@ namespace DynamicWin.UI.UIElements.Custom
         private void UpdateDisplayFill(float deltaTime)
         {
             double durationSeconds = timelineDuration?.TotalSeconds ?? 0;
-            float targetFill = 0f;
-            bool hasTarget = false;
 
-            if (durationSeconds > 0)
-            {
-                if (userIsSeeking)
-                {
-                    targetFill = Math.Clamp((float)(userSeekElapsed.TotalSeconds / durationSeconds), 0f, 1f);
-                    hasTarget = true;
-                }
-                else if (timelinePosition.HasValue)
-                {
-                    targetFill = Math.Clamp((float)(timelinePosition.Value.TotalSeconds / durationSeconds), 0f, 1f);
-                    hasTarget = true;
-                }
-            }
-
-            if (!hasTarget)
+            if (durationSeconds <= 0 || !timelinePosition.HasValue)
             {
                 displayFill = Mathf.Lerp(displayFill, 0f, Math.Min(1f, 18f * deltaTime));
+                displayedElapsedInitialized = false;
+
+                float emptyTargetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
+                timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, emptyTargetExtra, Math.Min(1f, 12f * deltaTime));
+                return;
+            }
+
+            float targetSeconds = (float)Math.Clamp(
+                (userIsSeeking ? userSeekElapsed : timelinePosition.Value).TotalSeconds,
+                0,
+                durationSeconds);
+
+            if (userIsSeeking || !displayedElapsedInitialized || !isPlayingFlag)
+            {
+                displayedElapsedSeconds = targetSeconds;
+                displayedElapsedInitialized = true;
             }
             else
             {
-                displayFill = Mathf.Lerp(displayFill, targetFill, Math.Min(1f, 30f * deltaTime));
-            }
+                float deltaSeconds = targetSeconds - displayedElapsedSeconds;
 
-            if (timelinePosition.HasValue)
-            {
-                float desired = (float)(userIsSeeking ? userSeekElapsed.TotalSeconds : timelinePosition.Value.TotalSeconds);
-
-                if (userIsSeeking || !displayedElapsedInitialized || !isPlayingFlag)
+                if (Math.Abs(deltaSeconds) >= TimelineVisualSnapSeconds)
                 {
-                    displayedElapsedSeconds = desired;
-                    displayedElapsedInitialized = true;
+                    displayedElapsedSeconds = targetSeconds;
                 }
-                else
+                else if (deltaSeconds >= 0f)
                 {
-                    displayedElapsedSeconds = Mathf.Lerp(displayedElapsedSeconds, desired, Math.Min(1f, 12f * deltaTime));
+                    displayedElapsedSeconds = Mathf.Lerp(displayedElapsedSeconds, targetSeconds, Math.Min(1f, 12f * deltaTime));
                 }
             }
+
+            displayedElapsedSeconds = Math.Clamp(displayedElapsedSeconds, 0f, (float)durationSeconds);
+            displayFill = Math.Clamp(displayedElapsedSeconds / Math.Max(1f, (float)durationSeconds), 0f, 1f);
 
             float targetExtra = userIsSeeking ? 3f : (isHoveringOverTimeline ? 6f : 0f);
             timelineExtraHeight = Mathf.Lerp(timelineExtraHeight, targetExtra, Math.Min(1f, 12f * deltaTime));
@@ -1029,25 +1224,34 @@ namespace DynamicWin.UI.UIElements.Custom
                     {
                         var seekElapsed = userSeekElapsed;
                         var seekTarget = start.Value + seekElapsed;
+                        lock (mediaLock)
+                        {
+                            BeginPendingSeekLocked(seekElapsed, DateTime.UtcNow);
+                        }
+                        MainForm.Instance?.RequestRenderBurst(800);
 
                         _ = Task.Run(async () =>
                         {
+                            bool seekSucceeded = false;
                             try
                             {
-                                if (await MediaInfo.SeekCurrentSessionAsync(seekTarget).ConfigureAwait(false))
-                                {
-                                    lock (mediaLock)
-                                    {
-                                        lastSampleElapsed = seekElapsed;
-                                        lastSampleReceivedAt = DateTime.UtcNow;
-                                    }
-                                }
+                                seekSucceeded = await MediaInfo.SeekCurrentSessionAsync(seekTarget).ConfigureAwait(false);
+                                if (seekSucceeded)
+                                    RequestTimelineRefreshPulse();
                             }
                             catch
                             {
                             }
                             finally
                             {
+                                if (!seekSucceeded)
+                                {
+                                    lock (mediaLock)
+                                    {
+                                        ClearPendingSeekLocked();
+                                    }
+                                }
+
                                 RequestTimelineRefresh();
                             }
                         });
@@ -1062,6 +1266,29 @@ namespace DynamicWin.UI.UIElements.Custom
         {
             float relative = Math.Clamp((mouseX - timelineBaseRect.Left) / Math.Max(1f, timelineBaseRect.Width), 0f, 1f);
             return TimeSpan.FromSeconds(relative * durationSeconds);
+        }
+
+        private void RequestTimelineRefreshPulse(int count = 6, int intervalMs = 75)
+        {
+            var token = timelineCts?.Token ?? CancellationToken.None;
+            if (token.IsCancellationRequested) return;
+
+            _ = Task.Run(async () =>
+            {
+                for (int i = 0; i < count && !token.IsCancellationRequested; i++)
+                {
+                    RequestTimelineRefresh();
+
+                    try
+                    {
+                        await Task.Delay(intervalMs, token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }, token);
         }
 
         private void UpdateTextCache(float deltaTime)
