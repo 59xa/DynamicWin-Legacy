@@ -1,35 +1,65 @@
-﻿using DynamicWin.Main;
+using DynamicWin.Main;
 using DynamicWin.Resources;
 using DynamicWin.UI.Menu.Menus.SettingsMenuObjects;
 using DynamicWin.UI.UIElements;
 using DynamicWin.UI.UIElements.Custom;
 using DynamicWin.UI.Widgets;
-using DynamicWin.UI.Widgets.Small;
 using DynamicWin.Utils;
-using Newtonsoft.Json.Linq;
 using SkiaSharp;
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.IO;
-using System.Linq;
 using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Controls;
-using System.Windows.Forms;
 using System.Windows.Input;
-using System.Windows.Navigation;
-using System.Xml.Linq;
-using static DynamicWin.UI.UIElements.IslandObject;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace DynamicWin.UI.Menu.Menus
 {
     public class SettingsMenu : BaseMenu
     {
-        private static List<IRegisterableSetting> _cachedCustomOptions;
+        private const float ContentLeft = 25f;
+        private const float ContentTop = 35f;
+        private const float ContentSpacing = 10f;
+        private const float TitleBottomTuck = -12f;
+        private const float SectionTitleBottomTuck = -6f;
+        private const float BottomReserve = 85f;
+        private const float ScrollSpeed = 0.50f;
+        private const float ScrollSmoothSpeed = 10f;
+        private const float ScrollClampSpeed = 15f;
+        private const float ScrollEpsilon = 0.05f;
+
+        private static readonly Vec2 CheckboxSize = new Vec2(25, 32);
+        private static List<IRegisterableSetting>? cachedCustomOptions;
+
         private readonly Action<MouseWheelEventArgs> scrollHandler;
+
+        private List<UIObject> contentObjects = new List<UIObject>();
+        private readonly Dictionary<UIObject, float> layoutBottomAdjustments = new Dictionary<UIObject, float>();
+        private SmallWidgetAdder? smallWidgetAdder;
+        private BigWidgetAdder? bigWidgetAdder;
+        private UIObject? bottomMask;
+
+        private SettingsCheckbox allowBlur = null!;
+        private SettingsCheckbox allowAnimation = null!;
+        private SettingsCheckbox antiAliasing = null!;
+        private SettingsCheckbox runOnStartup = null!;
+        private SettingsCheckbox allowAutomaticUpdates = null!;
+        private SettingsCheckbox alwaysTopmost = null!;
+        private SettingsCheckbox reduceWorkingArea = null!;
+        private SettingsCheckbox toggleIslandShadow = null!;
+        private SettingsCheckbox toggleHomeMenuShadow = null!;
+        private SettingsCheckbox toggleHighRefreshRate = null!;
+        private SettingsCheckbox limitRefreshRateWhenIdle = null!;
+
+        private DWText limitRefreshRateDisclaimer1 = null!;
+        private DWText limitRefreshRateDisclaimer2 = null!;
+        private DWMultiSelectionButton? bigMenuModeSelector;
+
+        private bool changedTheme;
+        private bool layoutDirty = true;
+        private float yScrollOffset;
+        private float ySmoothScroll;
+        private float cachedScrollLimit;
+        private float lastContentSignature = float.NaN;
+        private float lastIslandWidth = float.NaN;
+        private float lastIslandHeight = float.NaN;
 
         public SettingsMenu()
         {
@@ -37,558 +67,383 @@ namespace DynamicWin.UI.Menu.Menus
             MainForm.onScrollEvent += scrollHandler;
         }
 
-        private void OnScroll(MouseWheelEventArgs x)
+        public override List<UIObject> InitializeMenu(IslandObject island)
         {
-            if (!ReferenceEquals(MenuManager.Instance?.ActiveMenu, this)) return;
-            yScrollOffset += x.Delta * 0.50f;
+            contentObjects = new List<UIObject>();
+            layoutBottomAdjustments.Clear();
+            layoutDirty = true;
+            changedTheme = false;
+            yScrollOffset = 0f;
+            ySmoothScroll = 0f;
+            cachedScrollLimit = 0f;
+            lastContentSignature = float.NaN;
+
+            var objects = base.InitializeMenu(island);
+            var customOptions = LoadCustomOptions();
+
+            foreach (var option in customOptions)
+                option.LoadSettings();
+
+            AddGap(objects, island, 10f);
+            AddTitle(objects, island, "General");
+            AddSectionTitle(objects, island, "Island Mode");
+            var islandMode = AddSelector(objects, island, new[] { "Island", "Notch" });
+            islandMode.SelectedIndex = Settings.IslandMode == IslandObject.IslandMode.Island ? 0 : 1;
+            islandMode.onClick += index =>
+            {
+                Settings.IslandMode = index == 0
+                    ? IslandObject.IslandMode.Island
+                    : IslandObject.IslandMode.Notch;
+            };
+
+            AddBodyText(objects, island, "Renders the interface to its minimum height and width possible, also improves performance.");
+            AddBodyText(objects, island, "Disabling this setting may prevent the interface from being placed correctly at the top.");
+
+            alwaysTopmost = AddCheckbox(objects, island, "Keep interface always topmost", Settings.AlwaysTopmost);
+            AddBodyText(objects, island, "Prevents the interface from overlapping on top of other windows.");
+
+            reduceWorkingArea = AddCheckbox(objects, island, "Reduce working area", Settings.ReduceWorkingArea);
+            allowBlur = AddCheckbox(objects, island, "Toggle blur", Settings.AllowBlur);
+            allowAnimation = AddCheckbox(objects, island, "Toggle animations", Settings.AllowAnimation);
+            antiAliasing = AddCheckbox(objects, island, "Toggle anti-aliasing", Settings.AntiAliasing);
+
+            AddBodyText(objects, island, "Enables application to run at the highest refresh rate supported by your monitor.");
+            AddBodyText(objects, island, "This setting will cause performance degradation on some devices, proceed with caution.");
+            toggleHighRefreshRate = AddCheckbox(objects, island, "Toggle high-refresh-rate mode", Settings.ToggleHighRefreshRate, () =>
+            {
+                bool enabled = toggleHighRefreshRate.IsChecked;
+                SetRefreshRateSubSettingsEnabled(enabled, immediate: false);
+
+                if (!enabled)
+                    Settings.LimitRefreshRateWhenIdle = false;
+            });
+
+            limitRefreshRateDisclaimer1 = AddBodyText(objects, island, "Renders the application at 60 hertz when not hovered.", left: 65f);
+            limitRefreshRateDisclaimer2 = AddBodyText(objects, island, "Toggle this setting to improve some of the performance usage.", left: 65f);
+            limitRefreshRateWhenIdle = AddCheckbox(objects, island, "Limit refresh rate when idle", Settings.LimitRefreshRateWhenIdle, left: 65f);
+            SetRefreshRateSubSettingsEnabled(toggleHighRefreshRate.IsChecked, immediate: true);
+
+            toggleIslandShadow = AddCheckbox(objects, island, "Toggle island shadow", Settings.ToggleIslandShadow, () =>
+            {
+                bool enabled = toggleIslandShadow.IsChecked;
+                SetHomeMenuShadowEnabled(enabled, immediate: false);
+
+                if (!enabled)
+                    Settings.ToggleHomeMenuShadow = false;
+            });
+
+            toggleHomeMenuShadow = AddCheckbox(objects, island, "Toggle home menu shadow when idle", Settings.ToggleHomeMenuShadow, left: 65f);
+            SetHomeMenuShadowEnabled(toggleIslandShadow.IsChecked, immediate: true);
+
+            runOnStartup = AddCheckbox(objects, island, "Start application on login", Settings.RunOnStartup);
+            allowAutomaticUpdates = AddCheckbox(objects, island, "Allow automatic updates", Settings.AllowAutomaticUpdates);
+
+            AddMonitorSelector(objects, island);
+            AddDefaultBigMenuSelector(objects, island);
+            AddThemeSelector(objects, island);
+
+            AddGap(objects, island, 18f);
+            AddTitle(objects, island, "Widgets");
+
+            AddSectionTitle(objects, island, "Small widgets (right click to add/edit)");
+            smallWidgetAdder = new SmallWidgetAdder(island, Vec2.zero, new Vec2(IslandSize().X - 50, 35), UIAlignment.TopCenter);
+            AddContent(objects, smallWidgetAdder);
+
+            AddSectionTitle(objects, island, "Big widgets (right click to add/edit)", topPadding: 15f);
+            bigWidgetAdder = new BigWidgetAdder(island, Vec2.zero, new Vec2(IslandSize().X - 50, 35), UIAlignment.TopCenter);
+            AddContent(objects, bigWidgetAdder);
+
+            AddGap(objects, island, 18f);
+            AddTitle(objects, island, "Widget Settings");
+            AddCustomOptions(objects, island, customOptions);
+
+            AddReleaseStream(objects, island);
+            AddVersionInfo(objects, island);
+
+            objects.Add(new SettingsRenderDemand(island, NeedsRealtimeLayout));
+            AddSaveButton(objects, island);
+
+            return objects;
         }
 
-        bool changedTheme = false;
+        public override void Update()
+        {
+            base.Update();
 
-        DWMultiSelectionButton bigMenuModeSelector;
+            if (bottomMask != null)
+                bottomMask.blurAmount = 15;
 
-        void SaveAndBack()
+            float deltaTime = RendererMain.Instance?.DeltaTime ?? 1f / 60f;
+
+            float signature = BuildContentSignature();
+            if (float.IsNaN(lastContentSignature) || Math.Abs(signature - lastContentSignature) > 0.01f)
+            {
+                lastContentSignature = signature;
+                layoutDirty = true;
+            }
+
+            var islandSize = IslandSize();
+            if (float.IsNaN(lastIslandWidth)
+                || Math.Abs(lastIslandWidth - islandSize.X) > 0.05f
+                || Math.Abs(lastIslandHeight - islandSize.Y) > 0.05f)
+            {
+                lastIslandWidth = islandSize.X;
+                lastIslandHeight = islandSize.Y;
+                layoutDirty = true;
+            }
+
+            float clampedTarget = Mathf.Clamp(yScrollOffset, -cachedScrollLimit, 0f);
+            yScrollOffset = Smooth(yScrollOffset, clampedTarget, ScrollClampSpeed, deltaTime, ScrollEpsilon);
+
+            float previousSmooth = ySmoothScroll;
+            ySmoothScroll = Smooth(ySmoothScroll, yScrollOffset, ScrollSmoothSpeed, deltaTime, ScrollEpsilon);
+            if (Math.Abs(previousSmooth - ySmoothScroll) > 0.001f)
+                layoutDirty = true;
+
+            if (layoutDirty)
+                LayoutContent();
+        }
+
+        public override void OnDispose()
+        {
+            MainForm.onScrollEvent -= scrollHandler;
+            base.OnDispose();
+        }
+
+        public override Vec2 IslandSize()
+        {
+            var vec = new Vec2(525, 425);
+
+            if (smallWidgetAdder != null)
+                vec.X = Math.Max(vec.X, smallWidgetAdder.Size.X + 50);
+
+            return vec;
+        }
+
+        public override Vec2 IslandSizeBig()
+        {
+            return IslandSize() + 5;
+        }
+
+        public override Col IslandBorderColor()
+        {
+            return Settings.IslandMode == IslandObject.IslandMode.Island
+                ? new Col(0.5f, 0.5f, 0.5f)
+                : Col.Transparent;
+        }
+
+        public static List<IRegisterableSetting> LoadCustomOptions()
+        {
+            if (cachedCustomOptions != null)
+                return cachedCustomOptions;
+
+            cachedCustomOptions = new List<IRegisterableSetting>();
+
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                AddRegisterableSettingsFromAssembly(assembly, cachedCustomOptions);
+
+            string dirPath = Path.Combine(SaveManager.SavePath, "Extensions");
+            if (!Directory.Exists(dirPath))
+            {
+                Directory.CreateDirectory(dirPath);
+                return cachedCustomOptions;
+            }
+
+            foreach (string file in Directory.GetFiles(dirPath, "*.dll"))
+            {
+                try
+                {
+                    AddRegisterableSettingsFromAssembly(Assembly.LoadFile(file), cachedCustomOptions);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"SettingsMenu: failed to load extension settings from {file}: {ex.Message}");
+                }
+            }
+
+            return cachedCustomOptions;
+        }
+
+        private void OnScroll(MouseWheelEventArgs e)
+        {
+            if (!ReferenceEquals(MenuManager.Instance?.ActiveMenu, this))
+                return;
+
+            yScrollOffset += e.Delta * ScrollSpeed;
+            yScrollOffset = Mathf.Clamp(yScrollOffset, -cachedScrollLimit, 0f);
+            layoutDirty = true;
+        }
+
+        private void SaveAndBack()
         {
             Settings.AllowBlur = allowBlur.IsChecked;
             Settings.AllowAnimation = allowAnimation.IsChecked;
             Settings.AntiAliasing = antiAliasing.IsChecked;
             Settings.ToggleHighRefreshRate = toggleHighRefreshRate.IsChecked;
-            Settings.LimitRefreshRateWhenIdle = limitRefreshRateWhenIdle != null && limitRefreshRateWhenIdle.IsChecked;
+            Settings.LimitRefreshRateWhenIdle = toggleHighRefreshRate.IsChecked && limitRefreshRateWhenIdle.IsChecked;
             Settings.ToggleIslandShadow = toggleIslandShadow.IsChecked;
-            Settings.ToggleHomeMenuShadow = toggleHomeMenuShadow.IsChecked;
+            Settings.ToggleHomeMenuShadow = toggleIslandShadow.IsChecked && toggleHomeMenuShadow.IsChecked;
             Settings.RunOnStartup = runOnStartup.IsChecked;
             Settings.AllowAutomaticUpdates = allowAutomaticUpdates.IsChecked;
             Settings.AlwaysTopmost = alwaysTopmost.IsChecked;
             Settings.ReduceWorkingArea = reduceWorkingArea.IsChecked;
 
-            // Save the selected default big menu mode
             if (bigMenuModeSelector != null)
             {
                 Settings.DefaultBigMenuMode = bigMenuModeSelector.SelectedIndex switch
                 {
-                    0 => HomeMenu.BigMenuMode.Widgets,
                     1 => HomeMenu.BigMenuMode.Tray,
                     2 => HomeMenu.BigMenuMode.Media,
                     _ => HomeMenu.BigMenuMode.Widgets
                 };
             }
 
+            foreach (var item in LoadCustomOptions())
+                item.SaveSettings();
+
             DynamicWinMain.UpdateStartup();
 
             if (changedTheme)
+            {
                 Theme.Instance.UpdateTheme(true);
+            }
             else
             {
                 Res.HomeMenu = new HomeMenu();
                 MenuManager.OpenMenu(Res.HomeMenu);
             }
 
-            foreach (var item in _cachedCustomOptions)
-            {
-                item.SaveSettings();
-            }
-
             Settings.Save();
         }
 
-        DWCheckbox allowBlur;
-        DWCheckbox allowAnimation;
-        DWCheckbox antiAliasing;
-        DWCheckbox runOnStartup;
-        DWCheckbox allowAutomaticUpdates;
-        DWCheckbox alwaysTopmost;
-        DWCheckbox reduceWorkingArea;
-        DWCheckbox toggleIslandShadow;
-        DWCheckbox toggleHomeMenuShadow;
-        DWCheckbox toggleHighRefreshRate;
-        DWCheckbox limitRefreshRateWhenIdle;
-
-        DWText refreshRateDisclaimer1, refreshRateDisclaimer2, limitRefreshRateDisclaimer1, limitRefreshRateDisclaimer2, topmostDisclaimer, topmostDisclaimer2, workingAreaDisclaimer;
-
-        UIObject bottomMask;
-
-        public override List<UIObject> InitializeMenu(IslandObject island)
+        private void AddMonitorSelector(List<UIObject> objects, IslandObject island)
         {
-            var objects = base.InitializeMenu(island);
+            AddSectionTitle(objects, island, "Selected Monitor");
 
-            LoadCustomOptions();
+            int monitorCount = Math.Max(1, MainForm.GetMonitorCount());
+            var selectedMonitors = new string[monitorCount];
 
-            foreach (var item in _cachedCustomOptions)
+            for (int i = 0; i < monitorCount; i++)
             {
-                item.LoadSettings();
+                var screen = System.Windows.Forms.Screen.AllScreens[Math.Min(i, System.Windows.Forms.Screen.AllScreens.Length - 1)];
+                string monitorLabel = i == 0 ? "Primary" : $"Monitor {i + 1}";
+                selectedMonitors[i] = $"{monitorLabel} ({screen.Bounds.Width}x{screen.Bounds.Height})";
             }
 
-            var generalTitle = new DWText(island, "General", new Vec2(25, 0), UIAlignment.TopLeft);
-            generalTitle.Font = Res.SFProBold;
-            generalTitle.Anchor.X = 0;
-            objects.Add(generalTitle);
-
+            var selectedMonitor = AddSelector(objects, island, selectedMonitors);
+            selectedMonitor.SelectedIndex = Math.Clamp(Settings.ScreenIndex, 0, monitorCount - 1);
+            selectedMonitor.onClick += index =>
             {
-                var islandModesTitle = new DWText(island, "Island Mode", new Vec2(25, 0), UIAlignment.TopLeft);
-                islandModesTitle.Font = Res.SFProBold;
-                islandModesTitle.Color = Theme.TextMain;
-                islandModesTitle.TextSize = 15;
-                islandModesTitle.Anchor.X = 0;
-                objects.Add(islandModesTitle);
-
-                var islandModes = new string[] { "Island", "Notch" };
-                var islandMode = new DWMultiSelectionButton(island, islandModes, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-                islandMode.SelectedIndex = (Settings.IslandMode == IslandObject.IslandMode.Island) ? 0 : 1;
-                islandMode.Anchor.X = 0;
-                islandMode.onClick += (index) =>
-                {
-                    Settings.IslandMode = (index == 0) ? IslandObject.IslandMode.Island : IslandObject.IslandMode.Notch;
-                };
-                objects.Add(islandMode);
-            }
-
-            topmostDisclaimer = new DWText(island, "Renders the interface to its minimum height and width possible, also improves performance.", new Vec2(25, 0), UIAlignment.TopLeft);
-            topmostDisclaimer.Font = Res.SFProRegular;
-            topmostDisclaimer.TextSize = 12;
-            topmostDisclaimer.Anchor.X = 0;
-
-            topmostDisclaimer2 = new DWText(island, "Disabling this setting may prevent the interface from being placed correctly at the top.", new Vec2(25, 0), UIAlignment.TopLeft);
-            topmostDisclaimer2.Font = Res.SFProRegular;
-            topmostDisclaimer2.TextSize = 12;
-            topmostDisclaimer2.Anchor.X = 0;
-
-            objects.Add(topmostDisclaimer);
-            objects.Add(topmostDisclaimer2);
-
-            alwaysTopmost = new DWCheckbox(island, "Keep interface always topmost", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            alwaysTopmost.IsChecked = Settings.AlwaysTopmost;
-            alwaysTopmost.Anchor.X = 0;
-            objects.Add(alwaysTopmost);
-
-            workingAreaDisclaimer = new DWText(island, "Prevents the interface from overlapping on top of other windows.", new Vec2(25, 0), UIAlignment.TopLeft);
-            workingAreaDisclaimer.TextSize = 12;
-            workingAreaDisclaimer.Font = Res.SFProRegular;
-            workingAreaDisclaimer.Anchor.X = 0;
-
-            reduceWorkingArea = new DWCheckbox(island, "Reduce working area", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            reduceWorkingArea.IsChecked = Settings.ReduceWorkingArea;
-            reduceWorkingArea.Anchor.X = 0;
-
-            objects.Add(workingAreaDisclaimer);
-            objects.Add(reduceWorkingArea);
-
-            allowBlur = new DWCheckbox(island, "Toggle blur", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            allowBlur.IsChecked = Settings.AllowBlur;
-            allowBlur.Anchor.X = 0;
-            objects.Add(allowBlur);
-
-            allowAnimation = new DWCheckbox(island, "Toggle animations", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            allowAnimation.IsChecked = Settings.AllowAnimation;
-            allowAnimation.Anchor.X = 0;
-            objects.Add(allowAnimation);
-
-            antiAliasing = new DWCheckbox(island, "Toggle anti-aliasing", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            antiAliasing.IsChecked = Settings.AntiAliasing;
-            antiAliasing.Anchor.X = 0;
-            objects.Add(antiAliasing);
-
-            refreshRateDisclaimer1 = new DWText(island, "Enables application to run at the highest refresh rate supported by your monitor.", new Vec2(25, 0), UIAlignment.TopLeft);
-            refreshRateDisclaimer1.Font = Res.SFProRegular;
-            refreshRateDisclaimer1.TextSize = 12;
-            refreshRateDisclaimer1.Anchor.X = 0;
-
-            refreshRateDisclaimer2 = new DWText(island, "This setting will cause performance degradation on some devices, proceed with caution.", new Vec2(25, 0), UIAlignment.TopLeft);
-            refreshRateDisclaimer2.Font = Res.SFProRegular;
-            refreshRateDisclaimer2.TextSize = 12;
-            refreshRateDisclaimer2.Anchor.X = 0;
-
-            toggleHighRefreshRate = new DWCheckbox(
-                island,
-                "Toggle high-refresh-rate mode",
-                new Vec2(25, 0),
-                new Vec2(25, 25),
-                () =>
-                {
-                    bool enabled = toggleHighRefreshRate.IsChecked;
-
-                    limitRefreshRateWhenIdle.IsEnabled = enabled;
-                    limitRefreshRateDisclaimer1.IsEnabled = enabled;
-                    limitRefreshRateDisclaimer2.IsEnabled = enabled;
-
-                    if (!enabled)
-                    {
-                        limitRefreshRateWhenIdle.IsChecked = false;
-                        Settings.LimitRefreshRateWhenIdle = false;
-                    }
-                },
-                UIAlignment.TopLeft
-            );
-            toggleHighRefreshRate.IsChecked = Settings.ToggleHighRefreshRate;
-            toggleHighRefreshRate.Anchor.X = 0;
-
-            objects.Add(refreshRateDisclaimer1);
-            objects.Add(refreshRateDisclaimer2);
-            objects.Add(toggleHighRefreshRate);
-
-            limitRefreshRateWhenIdle = new DWCheckbox(
-                island,
-                "Limit refresh rate when idle",
-                new Vec2(65, 0),
-                new Vec2(25, 25),
-                () => { },
-                UIAlignment.TopLeft
-            );
-            limitRefreshRateWhenIdle.IsChecked = Settings.LimitRefreshRateWhenIdle;
-            limitRefreshRateWhenIdle.Anchor.X = 0;
-
-            limitRefreshRateDisclaimer1 = new DWText(
-                island,
-                "Renders the application at 60 hertz when not hovered.",
-                new Vec2(65, 0),
-                UIAlignment.TopLeft
-            )
-            {
-                Font = Res.SFProRegular,
-                TextSize = 12,
-                Anchor = new Vec2(0, 0)
+                Settings.ScreenIndex = index;
+                MainForm.Instance?.SetMonitor(index);
             };
+        }
 
-            limitRefreshRateDisclaimer2 = new DWText(
-                island,
-                "Toggle this setting to improve some of the performance usage.",
-                new Vec2(65, 0),
-                UIAlignment.TopLeft
-            )
+        private void AddDefaultBigMenuSelector(List<UIObject> objects, IslandObject island)
+        {
+            AddSectionTitle(objects, island, "Default Big Menu Mode");
+
+            bigMenuModeSelector = AddSelector(objects, island, new[] { "Widgets", "Tray", "Media" });
+            bigMenuModeSelector.SelectedIndex = Settings.DefaultBigMenuMode switch
             {
-                Font = Res.SFProRegular,
-                TextSize = 12,
-                Anchor = new Vec2(0, 0)
+                HomeMenu.BigMenuMode.Tray => 1,
+                HomeMenu.BigMenuMode.Media => 2,
+                _ => 0
             };
-
-            objects.Add(limitRefreshRateDisclaimer1);
-            objects.Add(limitRefreshRateDisclaimer2);
-            objects.Add(limitRefreshRateWhenIdle);
-
-            bool enableRefreshRateSubSettings = toggleHighRefreshRate.IsChecked;
-
-            limitRefreshRateWhenIdle.IsEnabled = enableRefreshRateSubSettings;
-            limitRefreshRateDisclaimer1.IsEnabled = enableRefreshRateSubSettings;
-            limitRefreshRateDisclaimer2.IsEnabled = enableRefreshRateSubSettings;
-
-            toggleIslandShadow = new DWCheckbox(
-                island,
-                "Toggle island shadow",
-                new Vec2(25, 0),
-                new Vec2(25, 25),
-                () =>
+            bigMenuModeSelector.onClick += index =>
+            {
+                Settings.DefaultBigMenuMode = index switch
                 {
-                    bool enabled = toggleIslandShadow.IsChecked;
+                    1 => HomeMenu.BigMenuMode.Tray,
+                    2 => HomeMenu.BigMenuMode.Media,
+                    _ => HomeMenu.BigMenuMode.Widgets
+                };
+            };
+        }
 
-                    toggleHomeMenuShadow.IsEnabled = enabled;
-                    if (!enabled)
+        private void AddThemeSelector(List<UIObject> objects, IslandObject island)
+        {
+            AddSectionTitle(objects, island, "Themes");
+
+            var theme = AddSelector(objects, island, new[] { "Custom", "Dark", "Light", "Candy", "Forest Dawn", "Sunset Glow" });
+            theme.SelectedIndex = Settings.Theme + 1;
+            theme.onClick += index =>
+            {
+                Settings.Theme = index - 1;
+                changedTheme = true;
+            };
+        }
+
+        private void AddCustomOptions(List<UIObject> objects, IslandObject island, List<IRegisterableSetting> customOptions)
+        {
+            foreach (var option in customOptions)
+            {
+                AddSectionTitle(objects, island, option.SettingTitle);
+
+                foreach (var optionItem in option.SettingsObjects())
+                {
+                    optionItem.Parent = island;
+
+                    if (optionItem.alignment == UIAlignment.TopLeft)
                     {
-                        toggleHomeMenuShadow.IsChecked = false;
-                        Settings.ToggleHomeMenuShadow = false;
+                        optionItem.Position = new Vec2(ContentLeft, 0);
+                        optionItem.Anchor.X = 0;
                     }
-                },
-                UIAlignment.TopLeft);
-            toggleIslandShadow.IsChecked = Settings.ToggleIslandShadow;
-            toggleIslandShadow.Anchor.X = 0;
-            objects.Add(toggleIslandShadow);
 
-            toggleHomeMenuShadow = new DWCheckbox(
-                island,
-                "Toggle home menu shadow when idle",
-                new Vec2(65, 0),
-                new Vec2(25, 25),
-                () => { },
-                UIAlignment.TopLeft);
-            toggleHomeMenuShadow.IsChecked = Settings.ToggleHomeMenuShadow;
-            toggleHomeMenuShadow.Anchor.X = 0;
-            objects.Add(toggleHomeMenuShadow);
-
-            bool enableIslandShadowSubSettings = toggleIslandShadow.IsChecked;
-
-            toggleHomeMenuShadow.IsEnabled = enableIslandShadowSubSettings;
-
-            runOnStartup = new DWCheckbox(island, "Start application on login", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            runOnStartup.IsChecked = Settings.RunOnStartup;
-            runOnStartup.Anchor.X = 0;
-            objects.Add(runOnStartup);
-
-            allowAutomaticUpdates = new DWCheckbox(island, "Allow automatic updates", new Vec2(25, 0), new Vec2(25, 25), () => { }, UIAlignment.TopLeft);
-            allowAutomaticUpdates.IsChecked = Settings.AllowAutomaticUpdates;
-            allowAutomaticUpdates.Anchor.X = 0;
-            objects.Add(allowAutomaticUpdates);
-
-            {
-                var selectedMonitorTitle = new DWText(island, "Selected Monitor", new Vec2(25, 0), UIAlignment.TopLeft);
-                selectedMonitorTitle.Font = Res.SFProBold;
-                selectedMonitorTitle.TextSize = 15;
-                selectedMonitorTitle.Anchor.X = 0;
-                objects.Add(selectedMonitorTitle);
-
-                // Get current monitor count and names
-                int monitorCount = MainForm.GetMonitorCount();
-                var selectedMonitors = new string[monitorCount];
-
-                for (int i = 0; i < monitorCount; i++)
-                {
-                    // Get the specific monitor to show resolution/friendly name if possible
-                    var screen = System.Windows.Forms.Screen.AllScreens[i];
-                    string monitorLabel = (i == 0) ? "Primary" : $"Monitor {i + 1}";
-                    selectedMonitors[i] = $"{monitorLabel} ({screen.Bounds.Width}x{screen.Bounds.Height})";
-                }
-
-                var selectedMonitor = new DWMultiSelectionButton(island, selectedMonitors, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-
-                // Clamp the index to ensure it doesn't crash if a monitor was unplugged
-                selectedMonitor.SelectedIndex = Math.Clamp(Settings.ScreenIndex, 0, monitorCount - 1);
-                selectedMonitor.Anchor.X = 0;
-
-                selectedMonitor.onClick += (index) =>
-                {
-                    Settings.ScreenIndex = index;
-                    // Immediate preview: move the island to the selected monitor
-                    if (MainForm.Instance != null)
+                    if (optionItem is DWText text)
                     {
-                        MainForm.Instance.SetMonitor(index);
+                        text.Color = Theme.TextSecond;
+                        text.Font = Res.SFProRegular;
+                        text.TextSize = 12;
+                        text.Size = text.GetBoundsForString(text.Text);
                     }
-                };
-                objects.Add(selectedMonitor);
-            }
-
-            {
-                var bigMenuModeTitle = new DWText(island, "Default Big Menu Mode", new Vec2(25, 0), UIAlignment.TopLeft);
-                bigMenuModeTitle.Font = Res.SFProBold;
-                bigMenuModeTitle.TextSize = 15;
-                bigMenuModeTitle.Anchor.X = 0;
-                objects.Add(bigMenuModeTitle);
-                var bigMenuModes = new string[] { "Widgets", "Tray", "Media" };
-                bigMenuModeSelector = new DWMultiSelectionButton(island, bigMenuModes, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-                bigMenuModeSelector.SelectedIndex = Settings.DefaultBigMenuMode switch
-                {
-                    HomeMenu.BigMenuMode.Widgets => 0,
-                    HomeMenu.BigMenuMode.Tray => 1,
-                    HomeMenu.BigMenuMode.Media => 2,
-                    _ => 0
-                };
-                bigMenuModeSelector.Anchor.X = 0;
-                bigMenuModeSelector.onClick += (index) =>
-                {
-                    Settings.DefaultBigMenuMode = index switch
+                    else if (optionItem is DWCheckbox)
                     {
-                        0 => HomeMenu.BigMenuMode.Widgets,
-                        1 => HomeMenu.BigMenuMode.Tray,
-                        2 => HomeMenu.BigMenuMode.Media,
-                        _ => HomeMenu.BigMenuMode.Widgets
-                    };
-                };
-                objects.Add(bigMenuModeSelector);
-            }
-
-            {
-                var themeTitle = new DWText(island, "Themes", new Vec2(25, 0), UIAlignment.TopLeft);
-                themeTitle.Font = Res.SFProBold;
-                themeTitle.TextSize = 15;
-                themeTitle.Anchor.X = 0;
-                objects.Add(themeTitle);
-
-                var themeOptions = new string[] { "Custom", "Dark", "Light", "Candy", "Forest Dawn", "Sunset Glow" };
-                var theme = new DWMultiSelectionButton(island, themeOptions, new Vec2(25, 0), new Vec2(IslandSize().X - 50, 25), UIAlignment.TopLeft);
-                theme.SelectedIndex = Settings.Theme + 1;
-                theme.Anchor.X = 0;
-                theme.onClick += (index) =>
-                {
-                    Settings.Theme = index - 1;
-                    changedTheme = true;
-                };
-                objects.Add(theme);
-            }
-
-            objects.Add(new DWText(island, " ", new Vec2(0, 0))
-            {
-                TextSize = 2
-            });
-
-            var widgetsTitle = new DWText(island, "Widgets", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetsTitle.Font = Res.SFProBold;
-            widgetsTitle.Color = Theme.TextMain;
-            widgetsTitle.Anchor.X = 0;
-            objects.Add(widgetsTitle);
-
-            {
-                var wTitle = new DWText(island, "Small widgets (right click to add/edit)", new Vec2(25, 0), UIAlignment.TopLeft);
-                wTitle.Font = Res.SFProBold;
-                wTitle.Color = Theme.TextMain;
-                wTitle.TextSize = 15;
-                wTitle.Anchor.X = 0;
-                objects.Add(wTitle);
-
-                smallWidgetAdder = new SmallWidgetAdder(island, Vec2.zero, new Vec2(IslandSize().X - 50, 35), UIAlignment.TopCenter);
-                objects.Add(smallWidgetAdder);
-            }
-
-            {
-                var wTitle = new DWText(island, "Big widgets (right click to add/edit)", new Vec2(25, 15), UIAlignment.TopLeft);
-                wTitle.Font = Res.SFProBold;
-                wTitle.Color = Theme.TextMain;
-                wTitle.TextSize = 15;
-                wTitle.Anchor.X = 0;
-                objects.Add(wTitle);
-
-                bigWidgetAdder = new BigWidgetAdder(island, Vec2.zero, new Vec2(IslandSize().X - 50, 35), UIAlignment.TopCenter);
-                objects.Add(bigWidgetAdder);
-            }
-
-            objects.Add(new DWText(island, " ", new Vec2(25, 0), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
-                TextSize = 20
-            });
-
-            var widgetOptionsTitle = new DWText(island, "Widget Settings", new Vec2(25, 0), UIAlignment.TopLeft);
-            widgetOptionsTitle.Font = Res.SFProBold;
-            widgetOptionsTitle.Color = Theme.TextMain;
-            widgetOptionsTitle.Anchor.X = 0;
-            objects.Add(widgetOptionsTitle);
-
-            {
-                foreach (var option in _cachedCustomOptions)
-                {
-                    var wTitle = new DWText(island, option.SettingTitle, new Vec2(25, 0), UIAlignment.TopLeft);
-                    wTitle.Font = Res.SFProBold;
-                    wTitle.TextSize = 15;
-                    wTitle.Anchor.X = 0;
-                    objects.Add(wTitle);
-
-                    foreach (var optionItem in option.SettingsObjects())
-                    {
-                        optionItem.Parent = island;
-
-                        if (optionItem.alignment == UIAlignment.TopLeft)
-                        {
-                            optionItem.Position = new Vec2(25, 0);
-                            optionItem.Anchor.X = 0;
-                        }
-
-                        if (optionItem is DWText)
-                        {
-                            ((DWText)optionItem).Color = Theme.TextMain;
-                            ((DWText)optionItem).Font = Res.SFProRegular;
-                            ((DWText)optionItem).TextSize = 13;
-                        }
-                        else if (optionItem is DWCheckbox)
-                        {
-                            optionItem.Size = new Vec2(25, 25);
-                        }
-
-                        objects.Add(optionItem);
+                        optionItem.Size = CheckboxSize;
                     }
+
+                    AddContent(objects, optionItem);
                 }
             }
+        }
 
-            var releaseStreamTitle = new DWText(island, "Release Stream", new Vec2(25, 0), UIAlignment.TopLeft);
-            releaseStreamTitle.Font = Res.SFProBold;
-            releaseStreamTitle.Color = Theme.TextMain;
-            releaseStreamTitle.Anchor.X = 0;
-            objects.Add(releaseStreamTitle);
+        private void AddReleaseStream(List<UIObject> objects, IslandObject island)
+        {
+            AddSectionTitle(objects, island, "Release Stream");
+            AddBodyText(objects, island, "Updates will be checked after you restart the application", topPadding: -15f);
+            AddBodyText(objects, island, "or by pressing the 'Check for updates now' button.", topPadding: -15f);
 
-            var releaseStreamDisclaimerPt1 = new DWText(island, "Updates will be checked after you restart the application", new Vec2(25, -15), UIAlignment.TopLeft);
-            releaseStreamDisclaimerPt1.Font = Res.SFProRegular;
-            releaseStreamDisclaimerPt1.TextSize = 12;
-            releaseStreamDisclaimerPt1.Color = Theme.TextSecond;
-            releaseStreamDisclaimerPt1.Anchor.X = 0;
-            objects.Add(releaseStreamDisclaimerPt1);
-
-            var releaseStreamDisclaimerPt2 = new DWText(island, "or by pressing the 'Check for updates now' button.", new Vec2(25, -30), UIAlignment.TopLeft);
-            releaseStreamDisclaimerPt2.Font = Res.SFProRegular;
-            releaseStreamDisclaimerPt2.TextSize = 12;
-            releaseStreamDisclaimerPt2.Color = Theme.TextSecond;
-            releaseStreamDisclaimerPt2.Anchor.X = 0;
-            objects.Add(releaseStreamDisclaimerPt2);
+            var releaseStream = AddSelector(objects, island, new[] { "Release", "Canary" });
+            releaseStream.SelectedIndex = Settings.ReleaseStream;
+            releaseStream.onClick += index =>
             {
-                var releaseStreams = new string[] { "Release", "Canary" };
-                var releaseStream = new DWMultiSelectionButton(island, releaseStreams, new Vec2(25, -25), new Vec2(IslandSize().X - 50, 30), UIAlignment.TopLeft);
-                releaseStream.SelectedIndex = Settings.ReleaseStream;
-                releaseStream.Anchor.X = 0;
-                releaseStream.onClick += (index) =>
-                {
-                    Settings.ReleaseStream = index;
-                    Settings.Save();
-                };
-                objects.Add(releaseStream);
-            }
+                Settings.ReleaseStream = index;
+                Settings.Save();
+            };
 
-            // Trigger update logic immediately upon pressing the update button
-            var checkForUpdateBtn = new DWTextButton(island, "Check for updates now", new Vec2(25, -25), new Vec2(IslandSize().X - 360, 30), () =>
-            {
-                SaveManager.Add("settings.ReleaseStream", Settings.ReleaseStream);
-
-                // Show overlay immediately on UI thread
-                MenuManager.OpenOverlayMenu(new UpdaterOverlay(), 0f);
-
-                // Perform check in background
-                _ = Task.Run(async () =>
-                {
-                    var updater = new Updater();
-                    AppVersion? update = null;
-                    try { update = await updater.CheckForUpdate(); } catch { update = null; }
-
-                    // Back to UI thread to update menus
-                    System.Windows.Application.Current?.Dispatcher.Invoke(() =>
-                    {
-                        MenuManager.CloseOverlay();
-                        MenuManager.Instance?.UnlockMenu();
-
-                        if (update == null)
-                        {
-                            MenuManager.OpenMenu(Res.HomeMenu);
-                        }
-                        else
-                        {
-                            MenuManager.OpenMenu(new UpdaterMenu(update));
-                        }
-                    });
-                });
-            }, UIAlignment.TopLeft);
+            var checkForUpdateBtn = new DWTextButton(
+                island,
+                "Check for updates now",
+                new Vec2(ContentLeft, 0),
+                new Vec2(IslandSize().X - 360, 32),
+                CheckForUpdate,
+                UIAlignment.TopLeft);
             checkForUpdateBtn.Anchor.X = 0;
-            objects.Add(checkForUpdateBtn);
+            AddContent(objects, checkForUpdateBtn);
+        }
 
-            objects.Add(new DWText(island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream.ToFriendlyString()})", new Vec2(25, -15), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextMain,
-                Anchor = new Vec2(0, 0),
-                TextSize = 15,
-                Font = Res.SFProBold
-            });
+        private void AddVersionInfo(List<UIObject> objects, IslandObject island)
+        {
+            AddText(objects, island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream.ToFriendlyString()})", 15, Res.SFProBold, Theme.TextMain);
+            AddText(objects, island, $"Software architecture: {DynamicWinMain.ProcessArchitecture.ToString().ToLower()}", 13, Res.SFProBold, Theme.TextMain, topPadding: -10f);
+            AddText(objects, island, "Maintained and developed by 59xa", 13, Res.SFProRegular, Theme.TextThird, topPadding: -10f);
+            AddText(objects, island, "Created by Florian Butz", 13, Res.SFProRegular, Theme.TextThird, topPadding: -10f);
+            AddText(objects, island, "Licenced under CC BY-SA 4.0", 13, Res.SFProRegular, Theme.TextThird, topPadding: -10f);
+        }
 
-            objects.Add(new DWText(island, $"Software architecture: {DynamicWinMain.ProcessArchitecture.ToString().ToLower()}", new Vec2(25, -25), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextMain,
-                Anchor = new Vec2(0, 0),
-                TextSize = 13,
-                Font = Res.SFProBold
-            });
-
-            objects.Add(new DWText(island, "Maintained and developed by 59xa", new Vec2(25, -25), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
-                TextSize = 13,
-            });
-
-            objects.Add(new DWText(island, "Created by Florian Butz", new Vec2(25, -25), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
-                TextSize = 13
-            });
-
-            objects.Add(new DWText(island, "Licenced under CC BY-SA 4.0", new Vec2(25, -25), UIAlignment.TopLeft)
-            {
-                Color = Theme.TextThird,
-                Anchor = new Vec2(0, 0.5f),
-                TextSize = 13
-            });
-
-            var backBtn = new DWTextButton(island, "Save changes", new Vec2(0, -45), new Vec2(250, 40), () => { SaveAndBack(); }, UIAlignment.BottomCenter)
+        private void AddSaveButton(List<UIObject> objects, IslandObject island)
+        {
+            var backBtn = new DWTextButton(island, "Save changes", new Vec2(0, -45), new Vec2(250, 40), SaveAndBack, UIAlignment.BottomCenter)
             {
                 roundRadius = 25
             };
@@ -606,142 +461,295 @@ namespace DynamicWin.UI.Menu.Menus
 
             objects.Add(bottomMask);
             objects.Add(backBtn);
-
-            return objects;
         }
 
-        SmallWidgetAdder smallWidgetAdder;
-        BigWidgetAdder bigWidgetAdder;
-
-        float yScrollOffset = 0f;
-        float ySmoothScroll = 0f;
-        float cachedScrollLimit = 0f;
-        float lastLayoutScroll = float.NaN;
-        float lastBigWidgetAdderHeight = float.NaN;
-        float lastSmallWidgetAdderWidth = float.NaN;
-        int lastLayoutObjectCount = -1;
-
-        public override void Update()
+        private void CheckForUpdate()
         {
-            base.Update();
+            SaveManager.Add("settings.ReleaseStream", Settings.ReleaseStream);
+            MenuManager.OpenOverlayMenu(new UpdaterOverlay(), 0f);
 
-            ySmoothScroll = Mathf.Lerp(ySmoothScroll,
-                yScrollOffset, 10f * RendererMain.Instance.DeltaTime);
-
-            bottomMask.blurAmount = 15;
-
-            bool layoutDirty =
-                float.IsNaN(lastLayoutScroll) ||
-                Math.Abs(ySmoothScroll - lastLayoutScroll) > 0.05f ||
-                lastLayoutObjectCount != UiObjects.Count ||
-                (bigWidgetAdder != null && Math.Abs(bigWidgetAdder.Size.Y - lastBigWidgetAdderHeight) > 0.05f) ||
-                (smallWidgetAdder != null && Math.Abs(smallWidgetAdder.Size.X - lastSmallWidgetAdderWidth) > 0.05f);
-
-            if (layoutDirty)
+            _ = Task.Run(async () =>
             {
-                var yScrollLim = 0f;
-                var yPos = 35f;
-                var spacing = 15f;
+                var updater = new Updater();
+                AppVersion? update = null;
 
-                for (int i = 0; i < UiObjects.Count - 2; i++)
+                try
                 {
-                    var uiObject = UiObjects[i];
-                    if (!uiObject.IsEnabled) continue;
-
-                    uiObject.LocalPosition.Y = yPos + ySmoothScroll;
-                    yPos += uiObject.Size.Y + spacing;
-
-                    if (yPos > IslandSize().Y - 50) yScrollLim += uiObject.Size.Y + spacing;
+                    update = await updater.CheckForUpdate();
+                }
+                catch
+                {
+                    update = null;
                 }
 
-                cachedScrollLimit = yScrollLim;
-                lastLayoutScroll = ySmoothScroll;
-                lastLayoutObjectCount = UiObjects.Count;
-                lastBigWidgetAdderHeight = bigWidgetAdder?.Size.Y ?? 0f;
-                lastSmallWidgetAdderWidth = smallWidgetAdder?.Size.X ?? 0f;
-            }
+                System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    MenuManager.CloseOverlay();
+                    MenuManager.Instance?.UnlockMenu();
 
-            yScrollOffset = Mathf.Lerp(yScrollOffset,
-                Mathf.Clamp(yScrollOffset, -cachedScrollLimit, 0f), 15f * RendererMain.Instance.DeltaTime);
+                    if (update == null)
+                        MenuManager.OpenMenu(Res.HomeMenu);
+                    else
+                        MenuManager.OpenMenu(new UpdaterMenu(update));
+                });
+            });
         }
 
-        public override void OnDispose()
+        private SettingsCheckbox AddCheckbox(
+            List<UIObject> objects,
+            IslandObject island,
+            string text,
+            bool isChecked,
+            Action? onChanged = null,
+            float left = ContentLeft)
         {
-            MainForm.onScrollEvent -= scrollHandler;
-            base.OnDispose();
-        }
-
-        public override Vec2 IslandSize()
-        {
-            var vec = new Vec2(525, 425);
-
-            if (smallWidgetAdder != null)
+            var checkbox = new SettingsCheckbox(island, text, new Vec2(left, 0), CheckboxSize, onChanged, UIAlignment.TopLeft)
             {
-                vec.X = Math.Max(vec.X, smallWidgetAdder.Size.X + 50);
-            }
-
-            return vec;
+                Anchor = new Vec2(0, 0.5f)
+            };
+            checkbox.IsChecked = isChecked;
+            AddContent(objects, checkbox);
+            return checkbox;
         }
 
-        public override Vec2 IslandSizeBig()
+        private DWMultiSelectionButton AddSelector(
+            List<UIObject> objects,
+            IslandObject island,
+            string[] options,
+            float left = ContentLeft,
+            float height = 32f)
         {
-            return IslandSize() + 5;
+            var selector = new DWMultiSelectionButton(
+                island,
+                options,
+                new Vec2(left, 0),
+                new Vec2(IslandSize().X - left * 2f, height),
+                UIAlignment.TopLeft);
+
+            selector.Anchor.X = 0;
+            AddContent(objects, selector);
+            return selector;
         }
 
-        public static List<IRegisterableSetting> LoadCustomOptions()
+        private DWText AddTitle(List<UIObject> objects, IslandObject island, string text)
         {
-            if (_cachedCustomOptions != null) return _cachedCustomOptions;
+            return AddText(objects, island, text, 24, Res.SFProBold, Theme.TextMain, bottomAdjustment: TitleBottomTuck);
+        }
 
-            _cachedCustomOptions = new List<IRegisterableSetting>();
+        private DWText AddSectionTitle(List<UIObject> objects, IslandObject island, string text, float left = ContentLeft, float topPadding = 0f)
+        {
+            return AddText(objects, island, text, 15, Res.SFProBold, Theme.TextMain, left, topPadding, SectionTitleBottomTuck);
+        }
 
-            var registerableSettings = AppDomain.CurrentDomain.GetAssemblies()
-            .SelectMany(s => s.GetTypes())
-            .Where(p => typeof(IRegisterableSetting).IsAssignableFrom(p) && p.IsClass);
+        private DWText AddBodyText(List<UIObject> objects, IslandObject island, string text, float left = ContentLeft, float topPadding = 0f)
+        {
+            return AddText(objects, island, text, 12, Res.SFProRegular, Theme.TextSecond, left, topPadding);
+        }
 
-            foreach (var option in registerableSettings)
+        private DWText AddText(
+            List<UIObject> objects,
+            IslandObject island,
+            string text,
+            float textSize,
+            SKTypeface font,
+            Col color,
+            float left = ContentLeft,
+            float topPadding = 0f,
+            float bottomAdjustment = 0f)
+        {
+            if (topPadding > 0.001f)
+                AddGap(objects, island, topPadding);
+
+            var label = new DWText(island, text, new Vec2(left, 0), UIAlignment.TopLeft)
             {
-                var optionInstance = (IRegisterableSetting)Activator.CreateInstance(option);
-                _cachedCustomOptions.Add(optionInstance);
-            }
+                Anchor = new Vec2(0, 0),
+                Color = color,
+                Font = font,
+                TextSize = textSize
+            };
+            label.Size = label.GetBoundsForString(text);
 
-            // Loading in custom DLLs
+            AddContent(objects, label);
+            if (Math.Abs(bottomAdjustment) > 0.001f)
+                layoutBottomAdjustments[label] = bottomAdjustment;
 
-            var dirPath = Path.Combine(SaveManager.SavePath, "Extensions");
+            return label;
+        }
 
-            if (!Directory.Exists(dirPath))
-            {
-                Directory.CreateDirectory(dirPath);
-            }
+        private void AddGap(List<UIObject> objects, IslandObject island, float height)
+        {
+            AddContent(objects, new SettingsSpacer(island, height));
+        }
+
+        private void AddContent(List<UIObject> objects, UIObject obj)
+        {
+            contentObjects.Add(obj);
+            objects.Add(obj);
+        }
+
+        private void SetRefreshRateSubSettingsEnabled(bool enabled, bool immediate)
+        {
+            SetObjectEnabled(limitRefreshRateWhenIdle, enabled, immediate);
+            SetObjectEnabled(limitRefreshRateDisclaimer1, enabled, immediate);
+            SetObjectEnabled(limitRefreshRateDisclaimer2, enabled, immediate);
+
+            if (!enabled && limitRefreshRateWhenIdle != null)
+                limitRefreshRateWhenIdle.IsChecked = false;
+
+            layoutDirty = true;
+        }
+
+        private void SetHomeMenuShadowEnabled(bool enabled, bool immediate)
+        {
+            SetObjectEnabled(toggleHomeMenuShadow, enabled, immediate);
+
+            if (!enabled && toggleHomeMenuShadow != null)
+                toggleHomeMenuShadow.IsChecked = false;
+
+            layoutDirty = true;
+        }
+
+        private static void SetObjectEnabled(UIObject? obj, bool enabled, bool immediate)
+        {
+            if (obj == null)
+                return;
+
+            if (immediate)
+                obj.SilentSetActive(enabled);
             else
-            {
-                foreach (var file in Directory.GetFiles(dirPath))
-                {
-                    if (Path.GetExtension(file).ToLower().Equals(".dll"))
-                    {
-                        System.Diagnostics.Debug.WriteLine(file);
-                        var DLL = Assembly.LoadFile(Path.Combine(dirPath, file));
-
-                        var dllRegisterableSettings = DLL.GetTypes()
-                            .Where(p => typeof(IRegisterableSetting).IsAssignableFrom(p) && p.IsClass);
-
-                        foreach (var option in dllRegisterableSettings)
-                        {
-                            var optionInstance = (IRegisterableSetting)Activator.CreateInstance(option);
-                            _cachedCustomOptions.Add(optionInstance);
-                        }
-                    }
-                }
-            }
-
-            return _cachedCustomOptions;
+                obj.IsEnabled = enabled;
         }
 
-        // Border should only be rendered if on island mode instead of notch
-        public override Col IslandBorderColor()
+        private bool NeedsRealtimeLayout()
         {
-            IslandMode mode = Settings.IslandMode; // Reads either Island or Notch as value
-            if (mode == IslandMode.Island) return new Col(0.5f, 0.5f, 0.5f);
-            else return new Col(0, 0, 0, 0); // Render transparent if island mode is Notch
+            return layoutDirty
+                || Math.Abs(yScrollOffset - Mathf.Clamp(yScrollOffset, -cachedScrollLimit, 0f)) > ScrollEpsilon
+                || Math.Abs(ySmoothScroll - yScrollOffset) > ScrollEpsilon;
+        }
+
+        private void LayoutContent()
+        {
+            float y = ContentTop;
+
+            foreach (var uiObject in contentObjects)
+            {
+                if (uiObject == null || !uiObject.IsEnabled)
+                    continue;
+
+                uiObject.LocalPosition.Y = y + ySmoothScroll;
+                y += Math.Max(1f, uiObject.Size.Y) + ContentSpacing + GetLayoutBottomAdjustment(uiObject);
+            }
+
+            float contentHeight = Math.Max(0f, y - ContentTop - ContentSpacing);
+            float visibleHeight = Math.Max(1f, IslandSize().Y - ContentTop - BottomReserve);
+            cachedScrollLimit = Math.Max(0f, contentHeight - visibleHeight);
+
+            if (cachedScrollLimit <= 0f)
+            {
+                yScrollOffset = 0f;
+                ySmoothScroll = 0f;
+            }
+
+            layoutDirty = false;
+        }
+
+        private float BuildContentSignature()
+        {
+            float signature = contentObjects.Count * 19f;
+
+            foreach (var uiObject in contentObjects)
+            {
+                if (uiObject == null || !uiObject.IsEnabled)
+                    continue;
+
+                signature += uiObject.Size.X * 0.013f + uiObject.Size.Y * 0.37f;
+                signature += GetLayoutBottomAdjustment(uiObject) * 0.11f;
+            }
+
+            return signature;
+        }
+
+        private float GetLayoutBottomAdjustment(UIObject uiObject)
+        {
+            return layoutBottomAdjustments.TryGetValue(uiObject, out float adjustment) ? adjustment : 0f;
+        }
+
+        private static float Smooth(float current, float target, float speed, float deltaTime, float epsilon)
+        {
+            if (Math.Abs(current - target) <= epsilon)
+                return target;
+
+            return Mathf.Lerp(current, target, speed * deltaTime);
+        }
+
+        private static void AddRegisterableSettingsFromAssembly(Assembly assembly, List<IRegisterableSetting> target)
+        {
+            foreach (var option in GetLoadableTypes(assembly))
+            {
+                if (!typeof(IRegisterableSetting).IsAssignableFrom(option) || !option.IsClass || option.IsAbstract)
+                    continue;
+
+                try
+                {
+                    if (Activator.CreateInstance(option) is IRegisterableSetting optionInstance)
+                        target.Add(optionInstance);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"SettingsMenu: failed to create setting {option.FullName}: {ex.Message}");
+                }
+            }
+        }
+
+        private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types.OfType<Type>();
+            }
+            catch
+            {
+                return Enumerable.Empty<Type>();
+            }
+        }
+
+        private sealed class SettingsSpacer : UIObject
+        {
+            public SettingsSpacer(UIObject? parent, float height)
+                : base(parent, Vec2.zero, new Vec2(1, Math.Max(1f, height)), UIAlignment.TopLeft)
+            {
+                UseGpuCaching = false;
+                Color = Col.Transparent;
+            }
+
+            public override void Draw(SKCanvas canvas)
+            {
+            }
+        }
+
+        private sealed class SettingsRenderDemand : UIObject
+        {
+            private readonly Func<bool> shouldRender;
+
+            public SettingsRenderDemand(UIObject? parent, Func<bool> shouldRender)
+                : base(parent, Vec2.zero, Vec2.one, UIAlignment.TopLeft)
+            {
+                this.shouldRender = shouldRender;
+                UseGpuCaching = false;
+                Color = Col.Transparent;
+                maskInToIsland = false;
+                expandInteractionRect = 0;
+            }
+
+            public override bool WantsRealtimeUpdate => shouldRender();
+
+            public override void Draw(SKCanvas canvas)
+            {
+            }
         }
     }
 }

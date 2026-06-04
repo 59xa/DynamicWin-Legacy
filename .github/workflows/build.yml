@@ -38,7 +38,7 @@
 
 name: build
 env:
-  DWAppVersion: v1.7.0r
+  DWAppVersion: v1.7.1r
 permissions:
   contents: write
 
