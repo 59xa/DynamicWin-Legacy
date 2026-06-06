@@ -112,6 +112,46 @@ namespace DynamicWin.Main
             set => defaultBigMenuMode = value;
         }
 
+        private static void ApplyDefaultSettings()
+        {
+            smallWidgetsLeft = new List<string>();
+            smallWidgetsRight = new List<string>();
+            smallWidgetsMiddle = new List<string>();
+            bigWidgets = new List<string>();
+
+            smallWidgetsRight.Add("DynamicWin.UI.Widgets.Small.RegisterSmallVisualiserWidget");
+            smallWidgetsLeft.Add("DynamicWin.UI.Widgets.Small.RegisterMediaThumbnailWidget");
+            bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterWeatherWidget");
+            bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterTimerWidget");
+
+            IslandMode = IslandObject.IslandMode.Island;
+            AllowBlur = true;
+            AllowAnimation = true;
+            AntiAliasing = true;
+            ToggleHighRefreshRate = false;
+            LimitRefreshRateWhenIdle = true;
+            ToggleIslandShadow = true;
+            ToggleHomeMenuShadow = false;
+            RunOnStartup = false;
+            ReleaseStream = 0;
+            AllowAutomaticUpdates = true;
+            AlwaysTopmost = true;
+            ReduceWorkingArea = true;
+            Theme = 0;
+            ScreenIndex = 0;
+            DefaultBigMenuMode = HomeMenu.BigMenuMode.Widgets;
+
+            SaveManager.Add("settings", 1);
+        }
+
+        public static void ResetToDefaults()
+        {
+            SaveManager.SaveData = new Dictionary<string, object>();
+            ApplyDefaultSettings();
+            AfterSettingsLoaded();
+            Save();
+        }
+
         public static void InitializeSettings()
         {
             try
@@ -176,34 +216,7 @@ namespace DynamicWin.Main
                 }
                 else
                 {
-                    smallWidgetsLeft = new List<string>();
-                    smallWidgetsRight = new List<string>();
-                    smallWidgetsMiddle = new List<string>();
-                    bigWidgets = new List<string>();
-
-                    smallWidgetsRight.Add("DynamicWin.UI.Widgets.Small.RegisterSmallVisualiserWidget");
-                    smallWidgetsLeft.Add("DynamicWin.UI.Widgets.Small.RegisterMediaThumbnailWidget");
-                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterWeatherWidget");
-                    bigWidgets.Add("DynamicWin.UI.Widgets.Big.RegisterTimerWidget");
-
-                    IslandMode = IslandObject.IslandMode.Island;
-                    AllowBlur = true;
-                    AllowAnimation = true;
-                    AntiAliasing = true;
-                    ToggleHighRefreshRate = false;
-                    LimitRefreshRateWhenIdle = true;
-                    ToggleIslandShadow = true;
-                    ToggleHomeMenuShadow = false;
-                    ReleaseStream = 0;
-
-                    // default automatic updates enabled
-                    AllowAutomaticUpdates = true;
-                    AlwaysTopmost = true;
-                    ReduceWorkingArea = true;
-
-                    Theme = 0;
-
-                    SaveManager.SaveData.Add("settings", 1);
+                    ApplyDefaultSettings();
                 }
 
                 // This must be run after loading all settings
