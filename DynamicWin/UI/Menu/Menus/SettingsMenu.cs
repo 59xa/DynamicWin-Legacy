@@ -6,6 +6,7 @@ using DynamicWin.UI.UIElements.Custom;
 using DynamicWin.UI.Widgets;
 using DynamicWin.Utils;
 using SkiaSharp;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Windows.Input;
@@ -60,6 +61,11 @@ namespace DynamicWin.UI.Menu.Menus
         private float lastContentSignature = float.NaN;
         private float lastIslandWidth = float.NaN;
         private float lastIslandHeight = float.NaN;
+        private DWTextButton resetConfigBtn = null!;
+        private Col resetConfigNormalColor = null!;
+        private Col resetConfigHoverColor = null!;
+        private Col resetConfigClickColor = null!;
+        private int resetConfigIndexCount = 0;
 
         public SettingsMenu()
         {
@@ -77,6 +83,7 @@ namespace DynamicWin.UI.Menu.Menus
             ySmoothScroll = 0f;
             cachedScrollLimit = 0f;
             lastContentSignature = float.NaN;
+            resetConfigIndexCount = 0;
 
             var objects = base.InitializeMenu(island);
             var customOptions = LoadCustomOptions();
@@ -96,8 +103,8 @@ namespace DynamicWin.UI.Menu.Menus
                     : IslandObject.IslandMode.Notch;
             };
 
-            AddBodyText(objects, island, "Renders the interface to its minimum height and width possible, also improves performance.");
-            AddBodyText(objects, island, "Disabling this setting may prevent the interface from being placed correctly at the top.");
+            AddBodyText(objects, island, "Renders the interface to its minimum height and width possible if toggled off.");
+            AddBodyText(objects, island, "Toggling off this setting may prevent the interface from being placed correctly at the top.");
 
             alwaysTopmost = AddCheckbox(objects, island, "Keep interface always topmost", Settings.AlwaysTopmost);
             AddBodyText(objects, island, "Prevents the interface from overlapping on top of other windows.");
@@ -158,6 +165,7 @@ namespace DynamicWin.UI.Menu.Menus
             AddCustomOptions(objects, island, customOptions);
 
             AddReleaseStream(objects, island);
+            AddConfigurationOptions(objects, island);
             AddVersionInfo(objects, island);
 
             objects.Add(new SettingsRenderDemand(island, NeedsRealtimeLayout));
@@ -432,6 +440,37 @@ namespace DynamicWin.UI.Menu.Menus
             AddContent(objects, checkForUpdateBtn);
         }
 
+        private void AddConfigurationOptions(List<UIObject> objects, IslandObject island)
+        {
+            AddSectionTitle(objects, island, "Configuration");
+
+            var openConfigDirectoryBtn = new DWTextButton(
+                island,
+                "Open config directory",
+                new Vec2(ContentLeft, 0),
+                new Vec2(IslandSize().X - 360, 32),
+                OpenConfigDirectory,
+                UIAlignment.TopLeft);
+            openConfigDirectoryBtn.Anchor.X = 0;
+
+            resetConfigBtn = new DWTextButton(
+                island,
+                "Reset config to defaults",
+                new Vec2(ContentLeft, 0),
+                new Vec2(IslandSize().X - 360, 32),
+                ResetConfig,
+                UIAlignment.TopLeft 
+            );
+
+            resetConfigBtn.Anchor.X = 0;
+            resetConfigNormalColor = resetConfigBtn.normalColor;
+            resetConfigHoverColor = resetConfigBtn.hoverColor;
+            resetConfigClickColor = resetConfigBtn.clickColor;
+
+            AddContent(objects, openConfigDirectoryBtn);
+            AddContent(objects, resetConfigBtn);
+        }
+
         private void AddVersionInfo(List<UIObject> objects, IslandObject island)
         {
             AddText(objects, island, $"Application version: {DynamicWinMain.Version} ({DynamicWinMain.ReleaseStream.ToFriendlyString()})", 15, Res.SFProBold, Theme.TextMain);
@@ -493,6 +532,48 @@ namespace DynamicWin.UI.Menu.Menus
                         MenuManager.OpenMenu(new UpdaterMenu(update));
                 });
             });
+        }
+
+        private void OpenConfigDirectory()
+        {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string path = Path.Combine(appData, "DynamicWin");
+
+            if (Directory.Exists(path))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                   FileName = path,
+                   UseShellExecute = true 
+                });
+            }
+        }
+
+        private void ResetConfig()
+        {
+            resetConfigIndexCount += 1;
+
+            switch (resetConfigIndexCount)
+            {
+                case 1:
+                    resetConfigBtn.normalColor = Theme.Error.Override(a: 0.45f);
+                    resetConfigBtn.hoverColor = Theme.Error.Override(a: 0.6f);
+                    resetConfigBtn.clickColor = Theme.Error.Override(a: 0.8f);
+                    resetConfigBtn.Color = resetConfigBtn.normalColor;
+                    resetConfigBtn.Text.SilentSetText("Are you sure");
+                    break;
+                case 2:
+                    string path = Path.Combine(SaveManager.SavePath, "Settings.json");
+
+                    if (File.Exists(path))
+                        File.Delete(path);
+
+                    Settings.ResetToDefaults();
+                    DynamicWinMain.UpdateStartup();
+                    Res.HomeMenu = new HomeMenu();
+                    MenuManager.OpenMenu(Res.HomeMenu);
+                    break;
+            }
         }
 
         private SettingsCheckbox AddCheckbox(

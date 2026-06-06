@@ -37,7 +37,7 @@ namespace DynamicWin.Utils
             var json = File.ReadAllText(fullPath);
             cachedJsonSave = json;
 
-            data = JsonConvert.DeserializeObject<Dictionary<string, object>>(json);
+            data = JsonConvert.DeserializeObject<Dictionary<string, object>>(json) ?? new Dictionary<string, object>();
         }
 
         public static void SaveAll()
@@ -46,9 +46,6 @@ namespace DynamicWin.Utils
 
             var fullPath = Path.Combine(SavePath, fileName);
             var json = JsonConvert.SerializeObject(data, Formatting.Indented);
-
-            if (!File.Exists(fullPath))
-                File.Create(fullPath);
 
             File.WriteAllText(fullPath, json);
         }
